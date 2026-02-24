@@ -1,9 +1,11 @@
 import torch
 import numpy as np
 import gc
-from metrics import compute_mmd
+from metrics import compute_clip_mmd, encode_images_clip
+
 
 def generate_and_store(pipe, prompt, sobel_cond_pil, num_samples, batch_size=2):
+    """Unchanged — still used for generating target images."""
     original_vae_dtype = pipe.vae.dtype
     pipe.vae.to(dtype=torch.float16)
     all_images, all_lats = [], []
@@ -43,7 +45,7 @@ def compute_pred_x0(scheduler, noise_pred, t, latents_in):
     if hasattr(so, 'pred_original_sample') and so.pred_original_sample is not None:
         return so.pred_original_sample
     alpha = scheduler.alphas_cumprod[t.long().cpu()].to(latents_in.device)
-    return (latents_in - (1 - alpha)**0.5 * noise_pred) / alpha**0.5
+    return (latents_in - (1 - alpha) ** 0.5 * noise_pred) / alpha ** 0.5
 
 
 def denoise_step(scheduler, noise_pred, t, latents_in, correction=None):
@@ -54,36 +56,68 @@ def denoise_step(scheduler, noise_pred, t, latents_in, correction=None):
 
 
 def run_dps_step(latents, latents_step, noise_pred, pixel_x0_norm,
-                 sprinter, all_latents, num_variations, variation_batch_size, base_zeta_prime):
-    variation_latents_list = []
+                 sprinter, clip_model, target_clip_embs,
+                 num_variations, variation_batch_size, base_zeta_prime):
+    """
+    DPS guidance step using MMD in CLIP embedding space (Option B).
+
+    Gradient path:
+        latents_step → pixel_x0_norm → sprinter (checkpointed)
+        → variation_pixels (float32) → CLIP encoder → CLIP embs
+        → CLIP-MMD loss → grad w.r.t latents_step
+
+    target_clip_embs: precomputed + detached CLIP embs of target images (M, D)
+    """
+    variation_pixels_list = []
+    device = pixel_x0_norm.device
     print(f"  Generating {num_variations} variations...")
 
     for start_idx in range(0, num_variations, variation_batch_size):
-        end_idx = min(start_idx + variation_batch_size, num_variations)
-        bs = end_idx - start_idx
+        bs = min(variation_batch_size, num_variations - start_idx)
         ctrl_batch = pixel_x0_norm[0].unsqueeze(0).repeat(bs, 1, 1, 1)
 
         def sprinter_forward(ctrl):
+            # output_type="pt" → returns pixel tensor (B, 3, H, W) in [0,1]
+            # grad flows through this call back to ctrl → pixel_x0_norm → latents_step
             return sprinter(
                 prompt=["a superrealistic professional photograph of"] * ctrl.shape[0],
-                image=ctrl, num_inference_steps=2, guidance_scale=0.0,
-                controlnet_conditioning_scale=0.8, output_type="latent", return_dict=True,
-            ).images
+                image=ctrl,
+                num_inference_steps=2,
+                guidance_scale=0.0,
+                controlnet_conditioning_scale=0.8,
+                output_type="pt",  # ← pixel tensors, not latents
+                return_dict=True,
+            ).images  # (B, 3, H, W) float in [0, 1]
 
         with torch.cuda.amp.autocast():
-            vl = torch.utils.checkpoint.checkpoint(sprinter_forward, ctrl_batch, use_reentrant=False)
-        variation_latents_list.append(vl)
+            pix = torch.utils.checkpoint.checkpoint(
+                sprinter_forward, ctrl_batch, use_reentrant=False
+            )
+        # Cast to float32 before CLIP — CLIP encoder expects float32
+        variation_pixels_list.append(pix.float())
 
-
-    variation_latents = torch.cat(variation_latents_list, dim=0)
+    variation_pixels = torch.cat(variation_pixels_list, dim=0)  # (N, 3, H, W)
     torch.cuda.empty_cache()
-    mmd_squared = compute_mmd(variation_latents, torch.tensor(all_latents, device=variation_latents.device))
+
+    # ── CLIP encode variations — grad flows through here ─────────────────────
+    # DO NOT wrap in no_grad — this is Option B, graph must stay live
+    gen_clip_embs = encode_images_clip(variation_pixels, clip_model)  # (N, D)
+
+    # ── MMD in CLIP space ─────────────────────────────────────────────────────
+    # target_clip_embs is detached (precomputed) — grad only through gen_clip_embs
+    mmd_squared = compute_clip_mmd(gen_clip_embs, target_clip_embs)
     mmd_loss = torch.sqrt(mmd_squared + 1e-8)
     loss_norm = mmd_loss.detach()
     zeta_i = base_zeta_prime / loss_norm
 
-    grad = torch.autograd.grad(mmd_loss, latents_step, retain_graph=False, create_graph=False)[0]
-    vl_flat = variation_latents.detach().cpu().numpy().reshape(variation_latents.shape[0], -1)
-    del variation_latents_list, variation_latents
+    # ── Gradient w.r.t latents_step ──────────────────────────────────────────
+    grad = torch.autograd.grad(
+        mmd_loss, latents_step,
+        retain_graph=False, create_graph=False
+    )[0]
 
+    # Store CLIP embs (not pixels) for PCA visualization
+    vl_flat = gen_clip_embs.detach().cpu().numpy()  # (N, 512)
+
+    del variation_pixels_list, variation_pixels, gen_clip_embs
     return grad, mmd_loss, zeta_i, loss_norm, vl_flat

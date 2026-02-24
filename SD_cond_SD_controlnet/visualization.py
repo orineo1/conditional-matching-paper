@@ -61,17 +61,3 @@ def visualize_step(sd, architect, sprinter, all_latents_flat, num_cond=4):
         for ax in row: ax.axis("off")
     axes[1,6].axis("on")
     plt.tight_layout(); plt.show()
-```
-
----
-
-**`main.ipynb`** — clean cell-by-cell orchestration:
-```
-Cell 1: Imports & device
-Cell 2: Load models (models.py)
-Cell 3: Build base image + Sobel (image_utils.py)
-Cell 4: Generate target distributions + PCA plot (generation.py, visualization.py)
-Cell 5: Config (n_steps, zeta, prompts, etc.)
-Cell 6: Encode prompts, prepare latents
-Cell 7: DPS denoising loop
-Cell 8: Final results & summary plots

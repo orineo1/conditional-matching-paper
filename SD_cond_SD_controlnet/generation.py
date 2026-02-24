@@ -73,10 +73,11 @@ def run_dps_step(latents, latents_step, noise_pred, pixel_x0_norm,
         with torch.cuda.amp.autocast():
             vl = torch.utils.checkpoint.checkpoint(sprinter_forward, ctrl_batch, use_reentrant=False)
         variation_latents_list.append(vl)
-        torch.cuda.empty_cache()
+
 
     variation_latents = torch.cat(variation_latents_list, dim=0)
-    mmd_squared = compute_mmd(variation_latents, all_latents)
+    torch.cuda.empty_cache()
+    mmd_squared = compute_mmd(variation_latents, torch.tensor(all_latents, device=variation_latents.device))
     mmd_loss = torch.sqrt(mmd_squared + 1e-8)
     loss_norm = mmd_loss.detach()
     zeta_i = base_zeta_prime / loss_norm

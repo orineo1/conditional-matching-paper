@@ -22,6 +22,14 @@ def load_models(device):
     architect.vae.to(dtype=torch.float32)
     sprinter.vae.to(dtype=torch.float32)
 
+    # Monkey-patch sprinter to allow gradients through __call__
+    original_call = StableDiffusionXLControlNetPipeline.__call__
+    StableDiffusionXLControlNetPipeline.__call__ = lambda self, *args, **kwargs: (
+        original_call.__wrapped__(self, *args, **kwargs)
+        if hasattr(original_call, '__wrapped__')
+        else original_call(self, *args, **kwargs)
+    )
+
     return architect, sprinter
 
 def freeze_module(module):

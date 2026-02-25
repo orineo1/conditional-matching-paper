@@ -16,14 +16,24 @@ def latent_to_pil(sample, vae, image_processor):
     sample = sample / vae.config.scaling_factor
     pix = vae.decode(sample.to(vae.dtype)).sample
     return image_processor.postprocess(pix, output_type="pil")[0]
-
-def build_base_image(device):
+def build_portrait_image(device):
     from PIL import Image, ImageDraw
-    img = Image.new('RGB', (512, 512), color='black')
+    img  = Image.new('RGB', (512, 512), color='black')
     draw = ImageDraw.Draw(img)
-    draw.ellipse((150, 45, 362, 257), fill='white')
-    draw.rectangle((234, 241, 278, 262), fill='white')
-    draw.polygon([(244,262),(268,262),(274,475),(238,475)], fill='white')
+
+    offset = 140  # shift everything down so head isn't clipped at top
+
+    # Head
+    draw.ellipse((181, 20  + offset, 331, 190  + offset), fill='white')
+    # Neck
+    draw.rectangle((231, 180 + offset, 281, 245 + offset), fill='white')
+    # Shoulders
+    draw.polygon([
+        (30,  370 + offset),
+        (482, 370 + offset),
+        (380, 245 + offset),
+        (132, 245 + offset),
+    ], fill='white')
 
     transform = T.Compose([T.ToTensor()])
     tensor = transform(img).unsqueeze(0).to(device).to(torch.float32)

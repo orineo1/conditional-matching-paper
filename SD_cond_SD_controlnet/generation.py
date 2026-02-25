@@ -127,7 +127,7 @@ def run_dps_step(latents, latents_step, noise_pred, pixel_x0_norm,
 def run_dps_step_clip(latents, latents_step, noise_pred, pixel_x0_norm,
                       sprinter, all_clip_embeddings, num_variations,
                       variation_batch_size, base_zeta_prime,
-                      clip_model, clip_processor, vae, vae_scaling_factor):
+                      clip_model, clip_processor, vae, vae_scaling_factor,conditional_prompt):
     """
     DPS step — gradient flows through sprinter (ControlNet+UNet).
     pixel_x0_norm is used as control image for sprinter (NOT detached).
@@ -148,7 +148,7 @@ def run_dps_step_clip(latents, latents_step, noise_pred, pixel_x0_norm,
         # grad flows through sprinter (ControlNet + UNet) with checkpointing
         def sprinter_forward(ctrl):
             return sprinter(
-                prompt=[""] * ctrl.shape[0],
+                prompt=[conditional_prompt] * ctrl.shape[0],
                 image=ctrl,
                 num_inference_steps=2, guidance_scale=0.0,
                 controlnet_conditioning_scale=1.0,

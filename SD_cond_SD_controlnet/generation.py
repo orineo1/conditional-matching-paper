@@ -128,11 +128,18 @@ def run_dps_step_clip(latents, latents_step, noise_pred, pixel_x0_norm,
                       sprinter, all_clip_embeddings, num_variations,
                       variation_batch_size, base_zeta_prime,
                       clip_model, clip_processor, vae, vae_scaling_factor, conditional_prompt):
+    """
+    DPS step — gradient flows through sprinter (ControlNet+UNet) + VAE + CLIP.
+    All three are inside a single checkpoint block to save memory.
+    Chain: latents_step → pred_x0 → pixel_x0 → sprinter → VAE decode → CLIP → MMD
+    """
+    from clip_utils import encode_images_clip
+
     variation_clip_list = []
 
     for start_idx in range(0, num_variations, variation_batch_size):
         end_idx = min(start_idx + variation_batch_size, num_variations)
-        bs = end_idx - start_idx
+        bs      = end_idx - start_idx
 
         ctrl_batch = pixel_x0_norm[0].unsqueeze(0).repeat(bs, 1, 1, 1)
 
@@ -146,24 +153,26 @@ def run_dps_step_clip(latents, latents_step, noise_pred, pixel_x0_norm,
                 output_type="latent", return_dict=True,
             ).images
 
-            # VAE decode
-            var_pixels = vae.decode(
-                (var_latents.float() / vae_scaling_factor).to(vae.dtype)
-            ).sample
+            # VAE decode — force float32 to prevent fp16 overflow
+            with torch.amp.autocast('cuda', enabled=False):
+                var_pixels = vae.decode(
+                    var_latents.float() / vae_scaling_factor
+                ).sample
             var_pixels = torch.clamp((var_pixels.float() + 1.0) / 2.0, 0.0, 1.0)
 
             # CLIP encode
             return encode_images_clip(var_pixels, clip_model, clip_processor)
 
-        with torch.cuda.amp.autocast():
+        with torch.amp.autocast('cuda'):
             var_clip = torch.utils.checkpoint.checkpoint(
                 sprinter_vae_clip_forward, ctrl_batch, use_reentrant=False
             )
         variation_clip_list.append(var_clip)
 
-    variation_clip_embs = torch.cat(variation_clip_list, dim=0)
+    variation_clip_embs = torch.cat(variation_clip_list, dim=0)  # [num_variations, 768], grad attached
     torch.cuda.empty_cache()
 
+    # MMD between variation embeddings and fixed target (y is detached inside compute_mmd)
     mmd_squared = compute_mmd(variation_clip_embs, all_clip_embeddings.detach())
     mmd_loss    = torch.sqrt(mmd_squared + 1e-8)
     loss_norm   = mmd_loss.detach()

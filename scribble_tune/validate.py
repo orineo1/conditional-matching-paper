@@ -53,9 +53,6 @@ def generate_comparison(sprinter_base, sprinter_lora, condition_image, device, s
 
 def check_gradient_flow(sprinter, condition_image, device):
     """Verify gradients flow through U-Net + LoRA via actual backward pass."""
-    sprinter.unet.enable_gradient_checkpointing()
-    sprinter.controlnet.enable_gradient_checkpointing()
-
     # Prepare condition image as tensor
     cond_np = np.array(condition_image.resize((512, 512))).astype(np.float32) / 255.0
     cond_tensor = torch.from_numpy(cond_np).permute(2, 0, 1).unsqueeze(0).to(device)
@@ -74,7 +71,7 @@ def check_gradient_flow(sprinter, condition_image, device):
         encoder_hidden_states=prompt_embeds[0],
         controlnet_cond=cond_tensor,
         conditioning_scale=0.5,
-        added_cond_kwargs={"text_embeds": prompt_embeds[2], "time_ids": torch.zeros(1, 6, device=device, dtype=torch.float16)},
+        added_cond_kwargs={"text_embeds": prompt_embeds[2], "time_ids": torch.tensor([[512, 512, 0, 0, 512, 512]], device=device, dtype=torch.float16)},
         return_dict=False,
     )
 
@@ -83,20 +80,38 @@ def check_gradient_flow(sprinter, condition_image, device):
         encoder_hidden_states=prompt_embeds[0],
         down_block_additional_residuals=down_block_res,
         mid_block_additional_residual=mid_block_res,
-        added_cond_kwargs={"text_embeds": prompt_embeds[2], "time_ids": torch.zeros(1, 6, device=device, dtype=torch.float16)},
+        added_cond_kwargs={"text_embeds": prompt_embeds[2], "time_ids": torch.tensor([[512, 512, 0, 0, 512, 512]], device=device, dtype=torch.float16)},
     ).sample
 
     # Compute scalar loss and backward
     loss = noise_pred.sum()
     loss.backward()
 
+    passed = True
+
     # Check that the input latent received gradients
     if latent.grad is not None and latent.grad.abs().sum() > 0:
-        print("Gradient flow check PASSED: gradients flow through LoRA U-Net to input latents")
-        return True
+        print("  Latent grad check PASSED")
     else:
-        print("Gradient flow check FAILED: no gradients on input latents")
-        return False
+        print("  Latent grad check FAILED: no gradients on input latents")
+        passed = False
+
+    # Check that LoRA parameters specifically received gradients
+    lora_grads = 0
+    for name, param in sprinter.unet.named_parameters():
+        if "lora_" in name and param.grad is not None and param.grad.abs().sum() > 0:
+            lora_grads += 1
+    if lora_grads > 0:
+        print(f"  LoRA grad check PASSED: {lora_grads} LoRA params have nonzero grads")
+    else:
+        print("  LoRA grad check FAILED: no LoRA params have nonzero grads")
+        passed = False
+
+    if passed:
+        print("Gradient flow check PASSED")
+    else:
+        print("Gradient flow check FAILED")
+    return passed
 
 
 def main():

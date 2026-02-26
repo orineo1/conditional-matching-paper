@@ -134,7 +134,7 @@ def main():
 
     # Compute total training steps from epochs (use len(dataloader) which accounts for drop_last)
     num_epochs = cfg["num_epochs"]
-    steps_per_epoch = len(dataloader) // cfg["gradient_accumulation_steps"]
+    steps_per_epoch = math.ceil(len(dataloader) / cfg["gradient_accumulation_steps"])
     max_train_steps = num_epochs * steps_per_epoch
     print(f"Dataset: {len(dataset)} images, {steps_per_epoch} steps/epoch, {max_train_steps} total steps ({num_epochs} epochs)")
 
@@ -211,8 +211,15 @@ def main():
                     added_cond_kwargs=added_cond_kwargs,
                 ).sample
 
-                # MSE loss (predict noise)
-                loss = F.mse_loss(noise_pred.float(), noise.float(), reduction="mean")
+                # Compute target based on prediction_type
+                if noise_scheduler.config.prediction_type == "epsilon":
+                    target = noise
+                elif noise_scheduler.config.prediction_type == "v_prediction":
+                    target = noise_scheduler.get_velocity(latents, noise, timesteps)
+                else:
+                    raise ValueError(f"Unknown prediction type: {noise_scheduler.config.prediction_type}")
+
+                loss = F.mse_loss(noise_pred.float(), target.float(), reduction="mean")
 
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:

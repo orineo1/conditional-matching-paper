@@ -1,0 +1,28 @@
+model_name: "stabilityai/sdxl-turbo"
+data_dir: "./scribble_tune/data/quickdraw_512"
+output_dir: "./scribble_tune/output"
+resolution: 512
+lora_rank: 4
+lora_alpha: 4
+learning_rate: 1.0e-4
+lr_scheduler: "cosine"
+train_batch_size: 4
+gradient_accumulation_steps: 4
+max_train_steps: 5000
+mixed_precision: "fp16"
+checkpointing_steps: 1000
+seed: 42
+caption: "a simple hand-drawn scribble"
+
+# QuickDraw data preparation
+categories:
+  - face
+  - cat
+  - dog
+  - bicycle
+  - house
+  - tree
+  - guitar
+  - fish
+samples_per_category: 2000  # except face which uses all available
+face_max_samples: 150000

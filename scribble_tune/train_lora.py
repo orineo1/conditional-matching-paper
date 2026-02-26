@@ -11,7 +11,7 @@ import torch.nn.functional as F
 import yaml
 from accelerate import Accelerator
 from accelerate.utils import set_seed
-from diffusers import AutoencoderKL, EulerAncestralDiscreteScheduler, UNet2DConditionModel
+from diffusers import AutoencoderKL, DDPMScheduler, UNet2DConditionModel
 from diffusers.optimization import get_scheduler
 from peft import LoraConfig, get_peft_model
 from PIL import Image
@@ -92,7 +92,7 @@ def main():
 
     # Load models
     model_name = cfg["model_name"]
-    noise_scheduler = EulerAncestralDiscreteScheduler.from_pretrained(model_name, subfolder="scheduler")
+    noise_scheduler = DDPMScheduler.from_pretrained(model_name, subfolder="scheduler")
     vae = AutoencoderKL.from_pretrained(model_name, subfolder="vae", torch_dtype=torch.float32)
     unet = UNet2DConditionModel.from_pretrained(model_name, subfolder="unet", torch_dtype=torch.float16)
     tokenizer_1 = CLIPTokenizer.from_pretrained(model_name, subfolder="tokenizer")
@@ -132,9 +132,9 @@ def main():
     trainable_params = [p for p in unet.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(trainable_params, lr=cfg["learning_rate"], weight_decay=1e-2)
 
-    # Compute total training steps from epochs
+    # Compute total training steps from epochs (use len(dataloader) which accounts for drop_last)
     num_epochs = cfg["num_epochs"]
-    steps_per_epoch = math.ceil(len(dataset) / (cfg["train_batch_size"] * cfg["gradient_accumulation_steps"]))
+    steps_per_epoch = len(dataloader) // cfg["gradient_accumulation_steps"]
     max_train_steps = num_epochs * steps_per_epoch
     print(f"Dataset: {len(dataset)} images, {steps_per_epoch} steps/epoch, {max_train_steps} total steps ({num_epochs} epochs)")
 

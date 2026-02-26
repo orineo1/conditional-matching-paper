@@ -3,6 +3,7 @@
 import argparse
 from pathlib import Path
 
+import numpy as np
 import torch
 import yaml
 from diffusers import ControlNetModel, StableDiffusionXLControlNetPipeline
@@ -21,7 +22,7 @@ def load_sprinter(device, lora_path=None):
     ).to(device)
 
     if lora_path:
-        sprinter.load_lora_weights(lora_path, weight_name="pytorch_lora_weights.safetensors")
+        sprinter.load_lora_weights(lora_path)
         print(f"Loaded LoRA weights from {lora_path}")
 
     return sprinter
@@ -51,41 +52,50 @@ def generate_comparison(sprinter_base, sprinter_lora, condition_image, device, s
 
 
 def check_gradient_flow(sprinter, condition_image, device):
-    """Verify gradients flow through U-Net + LoRA (needed for DPS loop)."""
+    """Verify gradients flow through U-Net + LoRA via actual backward pass."""
     sprinter.unet.enable_gradient_checkpointing()
     sprinter.controlnet.enable_gradient_checkpointing()
 
-    # Create a dummy latent that requires grad
+    # Prepare condition image as tensor
+    cond_np = np.array(condition_image.resize((512, 512))).astype(np.float32) / 255.0
+    cond_tensor = torch.from_numpy(cond_np).permute(2, 0, 1).unsqueeze(0).to(device)
+
+    # Create a latent that requires grad (simulates DPS loop)
     latent = torch.randn(1, 4, 64, 64, dtype=torch.float16, device=device, requires_grad=True)
 
-    # Run a single denoising step manually
-    from diffusers import EulerAncestralDiscreteScheduler
-    scheduler = EulerAncestralDiscreteScheduler.from_pretrained(
-        "stabilityai/sdxl-turbo", subfolder="scheduler"
+    # Encode prompt
+    prompt_embeds = sprinter.encode_prompt("a simple hand-drawn scribble", device=device, num_images_per_prompt=1)
+
+    # Manual forward through ControlNet + UNet
+    t = torch.tensor([500], device=device, dtype=torch.long)
+
+    down_block_res, mid_block_res = sprinter.controlnet(
+        latent, t,
+        encoder_hidden_states=prompt_embeds[0],
+        controlnet_cond=cond_tensor,
+        conditioning_scale=0.5,
+        added_cond_kwargs={"text_embeds": prompt_embeds[2], "time_ids": torch.zeros(1, 6, device=device, dtype=torch.float16)},
+        return_dict=False,
     )
 
-    # Encode the condition image for ControlNet
-    condition_tensor = torch.from_numpy(
-        __import__("numpy").array(condition_image.resize((512, 512)))
-    ).float().permute(2, 0, 1).unsqueeze(0).to(device) / 255.0
+    noise_pred = sprinter.unet(
+        latent, t,
+        encoder_hidden_states=prompt_embeds[0],
+        down_block_additional_residuals=down_block_res,
+        mid_block_additional_residual=mid_block_res,
+        added_cond_kwargs={"text_embeds": prompt_embeds[2], "time_ids": torch.zeros(1, 6, device=device, dtype=torch.float16)},
+    ).sample
 
-    # Simple forward pass to check gradient flow
-    print("Running forward pass to check gradient flow...")
-    try:
-        # We just need to verify the pipeline doesn't block gradients
-        out = sprinter(
-            prompt="test",
-            image=condition_image.resize((512, 512)),
-            num_inference_steps=2,
-            guidance_scale=0.0,
-            controlnet_conditioning_scale=0.5,
-            output_type="latent",
-        )
-        print("Forward pass succeeded (no-grad mode)")
-        print("Gradient flow check: LoRA layers are compatible with DPS pipeline")
+    # Compute scalar loss and backward
+    loss = noise_pred.sum()
+    loss.backward()
+
+    # Check that the input latent received gradients
+    if latent.grad is not None and latent.grad.abs().sum() > 0:
+        print("Gradient flow check PASSED: gradients flow through LoRA U-Net to input latents")
         return True
-    except Exception as e:
-        print(f"Gradient flow check failed: {e}")
+    else:
+        print("Gradient flow check FAILED: no gradients on input latents")
         return False
 
 

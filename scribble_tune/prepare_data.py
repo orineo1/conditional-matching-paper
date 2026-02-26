@@ -7,7 +7,7 @@ from pathlib import Path
 
 import yaml
 from PIL import Image, ImageDraw
-from quickdraw import QuickDrawData
+from quickdraw import QuickDrawData, QuickDrawDataGroup
 
 
 def render_strokes(strokes, size=512):
@@ -39,20 +39,13 @@ def download_and_render(category, max_samples, output_dir, size=512):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    qd = QuickDrawData()
-    group = qd.get_drawing_group(category)
-
-    # The quickdraw library returns a generator; collect and sample
+    # QuickDrawDataGroup with max_drawings controls how many are loaded
+    group = QuickDrawDataGroup(category, max_drawings=max_samples, recognized=True)
     drawings = list(group.drawings)
-    if max_samples and len(drawings) > max_samples:
-        drawings = random.sample(drawings, max_samples)
 
     total = len(drawings)
     rendered = []
     for i, drawing in enumerate(drawings):
-        if not drawing.recognized:
-            continue
-
         img = render_strokes(drawing.strokes, size=size)
         fname = f"{category}_{i:06d}.png"
         img.save(output_dir / fname)
@@ -77,17 +70,21 @@ def main():
 
     output_dir = Path(args.output_dir or cfg["data_dir"])
     size = cfg["resolution"]
-    categories = cfg["categories"]
     samples_per_cat = cfg["samples_per_category"]
-    face_max = cfg["face_max_samples"]
 
     random.seed(cfg["seed"])
 
+    # Resolve categories: "all" fetches all 345 QuickDraw categories
+    categories = cfg["categories"]
+    if categories == "all":
+        qd = QuickDrawData()
+        categories = sorted(qd.drawing_names)
+        print(f"Using all {len(categories)} QuickDraw categories")
+
     all_files = []
-    for cat in categories:
-        max_samples = face_max if cat == "face" else samples_per_cat
-        print(f"Processing category: {cat} (max {max_samples})")
-        files = download_and_render(cat, max_samples, output_dir, size=size)
+    for i, cat in enumerate(categories):
+        print(f"[{i+1}/{len(categories)}] Processing: {cat} (max {samples_per_cat})")
+        files = download_and_render(cat, samples_per_cat, output_dir, size=size)
         all_files.extend(files)
 
     # Write metadata.jsonl

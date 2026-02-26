@@ -2,7 +2,7 @@
 #SBATCH --job-name=scribble-lora
 #SBATCH --output=scribble_tune/output/train_%j.log
 #SBATCH --error=scribble_tune/output/train_%j.err
-#SBATCH --time=04:00:00
+#SBATCH --time=12:00:00
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G

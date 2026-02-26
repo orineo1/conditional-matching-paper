@@ -2,7 +2,7 @@ import torch
 import numpy as np
 import gc
 from metrics import compute_mmd
-
+from clip_utils import encode_images_clip
 
 def generate_and_store(pipe, prompt, sobel_cond_pil, num_samples, batch_size=2):
     original_vae_dtype = pipe.vae.dtype
@@ -127,27 +127,18 @@ def run_dps_step(latents, latents_step, noise_pred, pixel_x0_norm,
 def run_dps_step_clip(latents, latents_step, noise_pred, pixel_x0_norm,
                       sprinter, all_clip_embeddings, num_variations,
                       variation_batch_size, base_zeta_prime,
-                      clip_model, clip_processor, vae, vae_scaling_factor,conditional_prompt):
-    """
-    DPS step — gradient flows through sprinter (ControlNet+UNet).
-    pixel_x0_norm is used as control image for sprinter (NOT detached).
-    MMD is between variation_clip_embs and fixed target embeddings.
-    Chain: latents_step → pred_x0 → pixel_x0 → sprinter → var_pixels → CLIP → MMD
-    """
-    from clip_utils import encode_images_clip
-
+                      clip_model, clip_processor, vae, vae_scaling_factor, conditional_prompt):
     variation_clip_list = []
 
     for start_idx in range(0, num_variations, variation_batch_size):
-        end_idx    = min(start_idx + variation_batch_size, num_variations)
-        bs         = end_idx - start_idx
+        end_idx = min(start_idx + variation_batch_size, num_variations)
+        bs = end_idx - start_idx
 
-        # pixel_x0_norm is NOT detached — grad flows from latents_step through here
         ctrl_batch = pixel_x0_norm[0].unsqueeze(0).repeat(bs, 1, 1, 1)
 
-        # grad flows through sprinter (ControlNet + UNet) with checkpointing
-        def sprinter_forward(ctrl):
-            return sprinter(
+        def sprinter_vae_clip_forward(ctrl):
+            # sprinter
+            var_latents = sprinter(
                 prompt=[conditional_prompt] * ctrl.shape[0],
                 image=ctrl,
                 num_inference_steps=2, guidance_scale=0.0,
@@ -155,25 +146,24 @@ def run_dps_step_clip(latents, latents_step, noise_pred, pixel_x0_norm,
                 output_type="latent", return_dict=True,
             ).images
 
+            # VAE decode
+            var_pixels = vae.decode(
+                (var_latents.float() / vae_scaling_factor).to(vae.dtype)
+            ).sample
+            var_pixels = torch.clamp((var_pixels.float() + 1.0) / 2.0, 0.0, 1.0)
+
+            # CLIP encode
+            return encode_images_clip(var_pixels, clip_model, clip_processor)
+
         with torch.cuda.amp.autocast():
-            var_latents = torch.utils.checkpoint.checkpoint(
-                sprinter_forward, ctrl_batch, use_reentrant=False
+            var_clip = torch.utils.checkpoint.checkpoint(
+                sprinter_vae_clip_forward, ctrl_batch, use_reentrant=False
             )
-
-        # grad flows through VAE decode
-        var_pixels = vae.decode(
-            (var_latents.float() / vae_scaling_factor).to(vae.dtype)
-        ).sample
-        var_pixels = torch.clamp((var_pixels.float() + 1.0) / 2.0, 0.0, 1.0)
-
-        # grad flows through CLIP
-        var_clip = encode_images_clip(var_pixels, clip_model, clip_processor)
         variation_clip_list.append(var_clip)
 
-    variation_clip_embs = torch.cat(variation_clip_list, dim=0)  # [num_variations, 768], grad attached
+    variation_clip_embs = torch.cat(variation_clip_list, dim=0)
     torch.cuda.empty_cache()
 
-    # MMD between variation embeddings and fixed target (y is detached inside compute_mmd)
     mmd_squared = compute_mmd(variation_clip_embs, all_clip_embeddings.detach())
     mmd_loss    = torch.sqrt(mmd_squared + 1e-8)
     loss_norm   = mmd_loss.detach()

@@ -42,11 +42,12 @@ def download_and_render(category, max_samples, output_dir, size=512):
     qd = QuickDrawData()
     group = qd.get_drawing_group(category)
 
-    # The quickdraw library loads all drawings; we sample from them
-    drawings = group.drawings
+    # The quickdraw library returns a generator; collect and sample
+    drawings = list(group.drawings)
     if max_samples and len(drawings) > max_samples:
         drawings = random.sample(drawings, max_samples)
 
+    total = len(drawings)
     rendered = []
     for i, drawing in enumerate(drawings):
         if not drawing.recognized:
@@ -58,7 +59,7 @@ def download_and_render(category, max_samples, output_dir, size=512):
         rendered.append(fname)
 
         if (i + 1) % 1000 == 0:
-            print(f"  {category}: rendered {i + 1}/{len(drawings)}")
+            print(f"  {category}: rendered {i + 1}/{total}")
 
     print(f"  {category}: {len(rendered)} images saved")
     return rendered

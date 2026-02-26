@@ -132,11 +132,17 @@ def main():
     trainable_params = [p for p in unet.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(trainable_params, lr=cfg["learning_rate"], weight_decay=1e-2)
 
+    # Compute total training steps from epochs
+    num_epochs = cfg["num_epochs"]
+    steps_per_epoch = math.ceil(len(dataset) / (cfg["train_batch_size"] * cfg["gradient_accumulation_steps"]))
+    max_train_steps = num_epochs * steps_per_epoch
+    print(f"Dataset: {len(dataset)} images, {steps_per_epoch} steps/epoch, {max_train_steps} total steps ({num_epochs} epochs)")
+
     lr_scheduler = get_scheduler(
         cfg["lr_scheduler"],
         optimizer=optimizer,
-        num_warmup_steps=int(0.05 * cfg["max_train_steps"]),
-        num_training_steps=cfg["max_train_steps"],
+        num_warmup_steps=int(0.05 * max_train_steps),
+        num_training_steps=max_train_steps,
     )
 
     # Prepare with accelerator
@@ -161,9 +167,12 @@ def main():
     # Training loop
     accelerator.init_trackers("scribble_lora")
     global_step = 0
+    max_grad_norm = cfg.get("max_grad_norm", 1.0)
     unet.train()
 
-    while global_step < cfg["max_train_steps"]:
+    for epoch in range(num_epochs):
+        epoch_loss = 0.0
+        epoch_steps = 0
         for batch in dataloader:
             with accelerator.accumulate(unet):
                 pixel_values = batch["pixel_values"].to(dtype=torch.float32)
@@ -206,23 +215,29 @@ def main():
                 loss = F.mse_loss(noise_pred.float(), noise.float(), reduction="mean")
 
                 accelerator.backward(loss)
+                if accelerator.sync_gradients:
+                    accelerator.clip_grad_norm_(trainable_params, max_grad_norm)
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad()
 
             global_step += 1
+            epoch_loss += loss.detach().item()
+            epoch_steps += 1
+
             if global_step % 100 == 0:
-                accelerator.log({"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}, step=global_step)
+                accelerator.log({"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0], "epoch": epoch}, step=global_step)
                 if accelerator.is_main_process:
-                    print(f"Step {global_step}/{cfg['max_train_steps']} | Loss: {loss.item():.4f}")
+                    print(f"Epoch {epoch+1}/{num_epochs} | Step {global_step}/{max_train_steps} | Loss: {loss.item():.4f}")
 
             if global_step % cfg["checkpointing_steps"] == 0 and accelerator.is_main_process:
                 save_dir = Path(cfg["output_dir"]) / f"checkpoint-{global_step}"
                 accelerator.unwrap_model(unet).save_pretrained(save_dir)
                 print(f"Saved checkpoint to {save_dir}")
 
-            if global_step >= cfg["max_train_steps"]:
-                break
+        if accelerator.is_main_process:
+            avg_loss = epoch_loss / max(epoch_steps, 1)
+            print(f"Epoch {epoch+1}/{num_epochs} complete | Avg loss: {avg_loss:.4f}")
 
     # Save final LoRA weights
     if accelerator.is_main_process:

@@ -15,14 +15,6 @@ seed: 42
 caption: "a simple hand-drawn scribble"
 
 # QuickDraw data preparation
-categories:
-  - face
-  - cat
-  - dog
-  - bicycle
-  - house
-  - tree
-  - guitar
-  - fish
-samples_per_category: 2000  # except face which uses all available
-face_max_samples: 150000
+# categories: "all" uses all 345 QuickDraw categories; or provide a list to subset
+categories: "all"
+samples_per_category: 500  # per category; 345 categories x 500 = ~172K images

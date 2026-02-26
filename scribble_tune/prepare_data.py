@@ -23,10 +23,10 @@ def render_strokes(strokes, size=512):
     offset = 10
 
     for stroke in strokes:
-        xs, ys = stroke
+        # quickdraw library returns strokes as lists of (x, y) tuples
         points = [
             (x * scale + offset, y * scale + offset)
-            for x, y in zip(xs, ys)
+            for x, y in stroke
         ]
         if len(points) >= 2:
             draw.line(points, fill="black", width=max(2, size // 256))

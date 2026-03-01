@@ -160,6 +160,12 @@ def main():
             cfg["caption"], accelerator.device,
         )
 
+    # Offload text encoders — no longer needed, frees ~3-4GB VRAM
+    text_encoder_1.to("cpu")
+    text_encoder_2.to("cpu")
+    del text_encoder_1, text_encoder_2
+    torch.cuda.empty_cache()
+
     # SDXL add_time_ids: (original_size, crop_coords, target_size)
     res = cfg["resolution"]
     add_time_ids = torch.tensor([[res, res, 0, 0, res, res]], dtype=torch.float16).to(accelerator.device)

@@ -1,10 +1,11 @@
-"""Validate LoRA fine-tuned sprinter: compare before/after, check gradient flow."""
+"""Validate LoRA fine-tuned sprinter: compare before/after, check gradient flow, log to wandb."""
 
 import argparse
 from pathlib import Path
 
 import numpy as np
 import torch
+import wandb
 import yaml
 from diffusers import ControlNetModel, StableDiffusionXLControlNetPipeline
 from PIL import Image
@@ -23,7 +24,7 @@ def load_sprinter(device, lora_path=None):
 
     if lora_path:
         sprinter.load_lora_weights(lora_path)
-        print(f"Loaded LoRA weights from {lora_path}")
+        print(f"Loaded LoRA weights from {lora_path}", flush=True)
 
     return sprinter
 
@@ -53,25 +54,22 @@ def generate_comparison(sprinter_base, sprinter_lora, condition_image, device, s
 
 def check_gradient_flow(sprinter, condition_image, device):
     """Verify gradients flow through U-Net + LoRA via actual backward pass."""
-    # Prepare condition image as tensor
     cond_np = np.array(condition_image.resize((512, 512))).astype(np.float32) / 255.0
     cond_tensor = torch.from_numpy(cond_np).permute(2, 0, 1).unsqueeze(0).to(device)
 
-    # Create a latent that requires grad (simulates DPS loop)
     latent = torch.randn(1, 4, 64, 64, dtype=torch.float16, device=device, requires_grad=True)
 
-    # Encode prompt
     prompt_embeds = sprinter.encode_prompt("a simple hand-drawn scribble", device=device, num_images_per_prompt=1)
 
-    # Manual forward through ControlNet + UNet
     t = torch.tensor([500], device=device, dtype=torch.long)
+    time_ids = torch.tensor([[512, 512, 0, 0, 512, 512]], device=device, dtype=torch.float16)
 
     down_block_res, mid_block_res = sprinter.controlnet(
         latent, t,
         encoder_hidden_states=prompt_embeds[0],
         controlnet_cond=cond_tensor,
         conditioning_scale=0.5,
-        added_cond_kwargs={"text_embeds": prompt_embeds[2], "time_ids": torch.tensor([[512, 512, 0, 0, 512, 512]], device=device, dtype=torch.float16)},
+        added_cond_kwargs={"text_embeds": prompt_embeds[2], "time_ids": time_ids},
         return_dict=False,
     )
 
@@ -80,90 +78,124 @@ def check_gradient_flow(sprinter, condition_image, device):
         encoder_hidden_states=prompt_embeds[0],
         down_block_additional_residuals=down_block_res,
         mid_block_additional_residual=mid_block_res,
-        added_cond_kwargs={"text_embeds": prompt_embeds[2], "time_ids": torch.tensor([[512, 512, 0, 0, 512, 512]], device=device, dtype=torch.float16)},
+        added_cond_kwargs={"text_embeds": prompt_embeds[2], "time_ids": time_ids},
     ).sample
 
-    # Compute scalar loss and backward
     loss = noise_pred.sum()
     loss.backward()
 
-    passed = True
+    results = {}
 
-    # Check that the input latent received gradients
     if latent.grad is not None and latent.grad.abs().sum() > 0:
-        print("  Latent grad check PASSED")
+        print("  Latent grad check PASSED", flush=True)
+        results["latent_grad_check"] = True
     else:
-        print("  Latent grad check FAILED: no gradients on input latents")
-        passed = False
+        print("  Latent grad check FAILED: no gradients on input latents", flush=True)
+        results["latent_grad_check"] = False
 
-    # Check that LoRA parameters specifically received gradients
     lora_grads = 0
     for name, param in sprinter.unet.named_parameters():
         if "lora_" in name and param.grad is not None and param.grad.abs().sum() > 0:
             lora_grads += 1
-    if lora_grads > 0:
-        print(f"  LoRA grad check PASSED: {lora_grads} LoRA params have nonzero grads")
-    else:
-        print("  LoRA grad check FAILED: no LoRA params have nonzero grads")
-        passed = False
 
-    if passed:
-        print("Gradient flow check PASSED")
+    if lora_grads > 0:
+        print(f"  LoRA grad check PASSED: {lora_grads} LoRA params have nonzero grads", flush=True)
+        results["lora_grad_check"] = True
+        results["lora_params_with_grad"] = lora_grads
     else:
-        print("Gradient flow check FAILED")
-    return passed
+        print("  LoRA grad check FAILED: no LoRA params have nonzero grads", flush=True)
+        results["lora_grad_check"] = False
+        results["lora_params_with_grad"] = 0
+
+    passed = results["latent_grad_check"] and results["lora_grad_check"]
+    results["passed"] = passed
+    print(f"Gradient flow check {'PASSED' if passed else 'FAILED'}", flush=True)
+    return results
 
 
 def main():
     parser = argparse.ArgumentParser(description="Validate LoRA sprinter")
     parser.add_argument("--config", type=str, default="scribble_tune/config.yaml")
-    parser.add_argument("--condition_image", type=str, required=True,
-                        help="Path to a scribble/edge image for conditioning")
+    parser.add_argument("--checkpoint", type=str, default=None,
+                        help="Path to specific checkpoint dir (default: output_dir from config)")
+    parser.add_argument("--condition_image", type=str, default=None,
+                        help="Path to a scribble image. If not given, picks one from training data.")
     parser.add_argument("--output_dir", type=str, default="scribble_tune/output/validation")
+    parser.add_argument("--wandb_project", type=str, default="conditional-flow")
+    parser.add_argument("--wandb_entity", type=str, default=None)
     args = parser.parse_args()
 
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    lora_path = cfg["output_dir"]
+    lora_path = args.checkpoint or cfg["output_dir"]
+    checkpoint_name = Path(lora_path).name
 
-    condition_image = Image.open(args.condition_image).convert("RGB")
+    # Init wandb — creates project if it doesn't exist
+    run = wandb.init(
+        project=args.wandb_project,
+        entity=args.wandb_entity,
+        name=f"validate-{checkpoint_name}",
+        config={
+            "checkpoint": lora_path,
+            "lora_rank": cfg["lora_rank"],
+            "lora_alpha": cfg["lora_alpha"],
+            "resolution": cfg["resolution"],
+            "num_epochs": cfg["num_epochs"],
+            "train_batch_size": cfg["train_batch_size"],
+            "learning_rate": cfg["learning_rate"],
+        },
+        job_type="validation",
+    )
 
-    print("Loading base sprinter (no LoRA)...")
+    # Pick a condition image
+    if args.condition_image:
+        condition_image = Image.open(args.condition_image).convert("RGB")
+    else:
+        data_dir = Path(cfg["data_dir"])
+        sample_images = sorted(data_dir.glob("*.png"))[:1]
+        if not sample_images:
+            raise FileNotFoundError(f"No PNGs found in {data_dir}")
+        condition_image = Image.open(sample_images[0]).convert("RGB")
+        print(f"Using condition image: {sample_images[0]}", flush=True)
+
+    print("Loading base sprinter (no LoRA)...", flush=True)
     sprinter_base = load_sprinter(device)
 
-    print("Loading LoRA sprinter...")
+    print(f"Loading LoRA sprinter from {lora_path}...", flush=True)
     sprinter_lora = load_sprinter(device, lora_path=lora_path)
 
     # Side-by-side comparison
-    print("\nGenerating comparison images...")
-    out_base, out_lora = generate_comparison(
-        sprinter_base, sprinter_lora, condition_image, device
-    )
-
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    out_base.save(output_dir / "base_output.png")
-    out_lora.save(output_dir / "lora_output.png")
-    condition_image.save(output_dir / "condition.png")
-    print(f"Saved comparison images to {output_dir}")
+    print("\nGenerating comparison images...", flush=True)
+    wandb_images = []
 
-    # Multi-seed comparison
-    print("\nGenerating multi-seed comparison...")
-    for seed in [42, 123, 456]:
+    for seed in [42, 123, 456, 789, 1234]:
         base, lora = generate_comparison(
             sprinter_base, sprinter_lora, condition_image, device, seed=seed
         )
         base.save(output_dir / f"base_seed{seed}.png")
         lora.save(output_dir / f"lora_seed{seed}.png")
 
-    # Gradient flow check (with LoRA sprinter only)
-    print("\nChecking gradient flow...")
-    check_gradient_flow(sprinter_lora, condition_image, device)
+        wandb_images.append(wandb.Image(condition_image, caption=f"Condition (seed {seed})"))
+        wandb_images.append(wandb.Image(base, caption=f"Base (seed {seed})"))
+        wandb_images.append(wandb.Image(lora, caption=f"LoRA (seed {seed})"))
+        print(f"  Seed {seed} done", flush=True)
 
-    print("\nValidation complete.")
+    condition_image.save(output_dir / "condition.png")
+    wandb.log({"comparisons": wandb_images})
+    print(f"Saved comparison images to {output_dir}", flush=True)
+
+    # Gradient flow check
+    print("\nChecking gradient flow...", flush=True)
+    grad_results = check_gradient_flow(sprinter_lora, condition_image, device)
+    wandb.log(grad_results)
+
+    wandb.finish()
+    print("\nValidation complete. Results logged to wandb.", flush=True)
 
 
 if __name__ == "__main__":

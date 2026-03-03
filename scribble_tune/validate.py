@@ -191,6 +191,10 @@ def main():
     wandb.log({"comparisons": wandb_images})
     print(f"Saved comparison images to {output_dir}", flush=True)
 
+    # Free base sprinter before gradient check (needs backward pass memory)
+    del sprinter_base
+    torch.cuda.empty_cache()
+
     # Gradient flow check
     print("\nChecking gradient flow...", flush=True)
     grad_results = check_gradient_flow(sprinter_lora, condition_image, device)

@@ -20,6 +20,7 @@ echo "Running LoRA validation on $(hostname) with GPU: $CUDA_VISIBLE_DEVICES"
 python scribble_tune/validate.py \
     --config scribble_tune/config.yaml \
     --checkpoint scribble_tune/output/checkpoint-50000 \
-    --wandb_project conditional-flow
+    --wandb_project conditional-flow \
+    --wandb_entity conditional-matching
 
 echo "Validation complete."

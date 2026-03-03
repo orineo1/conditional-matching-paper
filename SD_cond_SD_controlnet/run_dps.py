@@ -47,7 +47,7 @@ def parse_args():
     p.add_argument("--wandb_project", type=str, default="conditional-flow")
     p.add_argument("--wandb_entity", type=str, default="conditional-matching")
     p.add_argument("--n_steps", type=int, default=30)
-    p.add_argument("--num_variations", type=int, default=20)
+    p.add_argument("--num_variations", type=int, default=10)
     p.add_argument("--base_zeta", type=float, default=0.2)
     p.add_argument("--guidance_scale", type=float, default=7.5)
     p.add_argument("--controlnet_scale", type=float, default=0.5)
@@ -99,9 +99,9 @@ def main():
     sobel_cond_pil.save(os.path.join(args.output_dir, "sobel_conditioning.png"))
 
     # ── 3. Generate targets ────────────────────────────────────────────────────
-    N = args.num_variations
-    n_total = N // 2
-    print(f"Generating {N} target images ({n_total} man + {n_total} woman)...", flush=True)
+    N_TARGETS = 20  # always 20 targets for good distribution coverage
+    n_total = N_TARGETS // 2
+    print(f"Generating {N_TARGETS} target images ({n_total} man + {n_total} woman)...", flush=True)
 
     with torch.no_grad():
         man_images, man_latents = generate_and_store_cs(
@@ -147,12 +147,21 @@ def main():
     plt.close(fig)
     del _pca, _coords
 
+    # Free target images from GPU/CPU, keep only CLIP embeddings
+    del man_images, woman_images, man_clip_embs, woman_clip_embs
+    del man_latents, woman_latents
+
+    # Move CLIP to CPU — it'll be moved back per-step inside run_dps_step_clip
+    clip_model.to("cpu")
+    gc.collect(); torch.cuda.empty_cache()
+    print("CLIP model offloaded to CPU to save VRAM.", flush=True)
+
     # ── 5. Initial scribble ────────────────────────────────────────────────────
     prompt = "rough pencil scribble outline, loose sketch, minimal line art"
     negative_prompt = "detailed, realistic, photograph, complex, colored, shading"
     height, width = 512, 512
     n_steps = args.n_steps
-    num_variations = N
+    num_variations = args.num_variations
     variation_batch_size = 1
     base_zeta_prime = args.base_zeta
     guidance_scale = args.guidance_scale
@@ -238,7 +247,8 @@ def main():
             vae_decode_checkpoint, pred_x0_scaled, use_reentrant=False)
         pixel_x0_norm = torch.clamp((pixel_x0 + 1.0) / 2.0, 0.0, 1.0)
 
-        # D. CLIP-MMD + gradient
+        # D. CLIP-MMD + gradient (move CLIP to GPU for this step)
+        clip_model.to(device)
         grad, mmd_loss, zeta_i, loss_norm, vl_clip_flat = run_dps_step_clip(
             latents=latents,
             latents_step=latents_step,
@@ -254,6 +264,7 @@ def main():
             vae=sprinter.vae,
             vae_scaling_factor=sprinter.vae.config.scaling_factor,
         )
+        clip_model.to("cpu"); torch.cuda.empty_cache()
 
         grad_norm = grad.norm().item()
         zeta_val = zeta_i.item() if isinstance(zeta_i, torch.Tensor) else zeta_i
@@ -302,7 +313,7 @@ def main():
             }
 
         step_save_path = os.path.join(steps_dir, f"step_{i:03d}.png")
-        visualize_step(sd, architect, sprinter, target_clip_np, save_path=step_save_path)
+        visualize_step(sd, architect, sprinter, target_clip_np, num_cond=2, save_path=step_save_path)
         wandb.log({"step_visualization": wandb.Image(step_save_path)})
 
         # F. Scheduler step

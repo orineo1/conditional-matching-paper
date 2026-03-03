@@ -7,7 +7,8 @@ import numpy as np
 import torch
 import wandb
 import yaml
-from diffusers import ControlNetModel, StableDiffusionXLControlNetPipeline
+from diffusers import ControlNetModel, StableDiffusionXLControlNetPipeline, UNet2DConditionModel
+from peft import PeftModel, LoraConfig
 from PIL import Image
 
 
@@ -23,7 +24,8 @@ def load_sprinter(device, lora_path=None):
     ).to(device)
 
     if lora_path:
-        sprinter.load_lora_weights(lora_path)
+        # Checkpoint was saved with peft's save_pretrained(), so load with peft
+        sprinter.unet = PeftModel.from_pretrained(sprinter.unet, lora_path)
         print(f"Loaded LoRA weights from {lora_path}", flush=True)
 
     return sprinter
@@ -55,7 +57,7 @@ def generate_comparison(sprinter_base, sprinter_lora, condition_image, device, s
 def check_gradient_flow(sprinter, condition_image, device):
     """Verify gradients flow through U-Net + LoRA via actual backward pass."""
     cond_np = np.array(condition_image.resize((512, 512))).astype(np.float32) / 255.0
-    cond_tensor = torch.from_numpy(cond_np).permute(2, 0, 1).unsqueeze(0).to(device)
+    cond_tensor = torch.from_numpy(cond_np).permute(2, 0, 1).unsqueeze(0).to(device, dtype=torch.float16)
 
     latent = torch.randn(1, 4, 64, 64, dtype=torch.float16, device=device, requires_grad=True)
 
@@ -122,7 +124,7 @@ def main():
                         help="Path to a scribble image. If not given, picks one from training data.")
     parser.add_argument("--output_dir", type=str, default="scribble_tune/output/validation")
     parser.add_argument("--wandb_project", type=str, default="conditional-flow")
-    parser.add_argument("--wandb_entity", type=str, default=None)
+    parser.add_argument("--wandb_entity", type=str, default="conditional-matching")
     args = parser.parse_args()
 
     with open(args.config) as f:

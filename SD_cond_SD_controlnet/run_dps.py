@@ -235,11 +235,11 @@ def main():
         #    scheduler.step() internally which advances the counter)
         saved_step_index = architect.scheduler.step_index
         pred_x0 = compute_pred_x0(architect.scheduler, noise_pred, t, latents_step)
-        architect.scheduler.step_index = saved_step_index
+        architect.scheduler._step_index = saved_step_index
         with torch.no_grad():
             pred_x0_regular = compute_pred_x0(
                 architect.scheduler, noise_pred_regular, t, latents_step_regular)
-            architect.scheduler.step_index = saved_step_index
+            architect.scheduler._step_index = saved_step_index
 
         # C. Decode pred_x0 -> pixel space (keep grad)
         pred_x0_scaled = pred_x0 / architect.vae.config.scaling_factor
@@ -326,7 +326,7 @@ def main():
         with torch.no_grad():
             latents_regular = denoise_step(
                 architect.scheduler, noise_pred_regular, t, latents_step_regular)
-        architect.scheduler.step_index = saved_step_index
+        architect.scheduler._step_index = saved_step_index
 
         # Cleanup
         del grad, mmd_loss, loss_norm, zeta_i, correction

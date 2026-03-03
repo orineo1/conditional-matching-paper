@@ -280,38 +280,38 @@ def main():
 
     # ── Log to wandb ──
 
-    # 1. Noise-denoise: per strength, per face: original → noised → base-denoised → LoRA-denoised
+    # 1. Noise-denoise table: each row = one (strength, face) with 4 images side by side
+    nd_table = wandb.Table(columns=["Strength", "Face", "Original", "Noised", "Base Denoised", "LoRA Denoised"])
     for s in strengths:
         base_denoised, noisy_imgs = base_nd_results[s]
         lora_denoised, _ = lora_nd_results[s]
 
-        nd_images = []
         for i in range(len(face_images)):
-            nd_images.append(wandb.Image(face_images[i], caption=f"Original #{i}"))
-            nd_images.append(wandb.Image(noisy_imgs[i], caption=f"Noised #{i}"))
-            nd_images.append(wandb.Image(base_denoised[i], caption=f"Base #{i}"))
-            nd_images.append(wandb.Image(lora_denoised[i], caption=f"LoRA #{i}"))
-
+            nd_table.add_data(
+                s, i,
+                wandb.Image(face_images[i]),
+                wandb.Image(noisy_imgs[i]),
+                wandb.Image(base_denoised[i]),
+                wandb.Image(lora_denoised[i]),
+            )
             # Save locally
             face_images[i].save(output_dir / f"nd_s{s}_orig_{i}.png")
             noisy_imgs[i].save(output_dir / f"nd_s{s}_noisy_{i}.png")
             base_denoised[i].save(output_dir / f"nd_s{s}_base_{i}.png")
             lora_denoised[i].save(output_dir / f"nd_s{s}_lora_{i}.png")
 
-        wandb.log({f"noise_denoise/strength_{s}": nd_images})
-        print(f"Logged noise-denoise at strength={s} ({len(nd_images)} images)", flush=True)
+    wandb.log({"noise_denoise": nd_table})
+    print(f"Logged noise-denoise table ({len(strengths)} strengths x {len(face_images)} faces)", flush=True)
 
-    # 2. Pure generation: base vs LoRA
-    gen_images = []
+    # 2. Pure generation table: each row = one seed with base vs LoRA
+    gen_table = wandb.Table(columns=["Seed", "Base", "LoRA"])
     for (seed, base_img), (_, lora_img) in zip(base_gen, lora_gen):
         base_img.save(output_dir / f"gen_base_seed{seed}.png")
         lora_img.save(output_dir / f"gen_lora_seed{seed}.png")
+        gen_table.add_data(seed, wandb.Image(base_img), wandb.Image(lora_img))
 
-        gen_images.append(wandb.Image(base_img, caption=f"Base (seed {seed})"))
-        gen_images.append(wandb.Image(lora_img, caption=f"LoRA (seed {seed})"))
-
-    wandb.log({"generation": gen_images})
-    print(f"Logged {len(gen_images)} generation images", flush=True)
+    wandb.log({"generation": gen_table})
+    print(f"Logged generation table ({len(seeds)} seeds)", flush=True)
 
     # ── Phase 3: Gradient flow check ──
     print("\nChecking gradient flow...", flush=True)

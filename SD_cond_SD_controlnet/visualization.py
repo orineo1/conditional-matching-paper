@@ -4,14 +4,18 @@ import torch
 from sklearn.decomposition import PCA
 from image_utils import latent_to_pil
 
-def plot_row(images, title, count=5):
+def plot_row(images, title, count=5, save_path=None):
     fig, axes = plt.subplots(1, count, figsize=(4*count, 4))
     fig.suptitle(title, fontsize=14, fontweight='bold')
     for i in range(min(count, len(images))):
         axes[i].imshow(images[i]); axes[i].axis('off')
-    plt.tight_layout(); plt.show()
+    plt.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=100, bbox_inches='tight'); plt.close(fig)
+    else:
+        plt.show()
 
-def visualize_step(sd, architect, sprinter, target_clip_np, num_cond=4):
+def visualize_step(sd, architect, sprinter, target_clip_np, num_cond=4, save_path=None):
     i = sd['step']
     with torch.no_grad():
         img_xt_reg  = latent_to_pil(sd['latents_step_regular_cpu'].to(architect.device), architect.vae, architect.image_processor)
@@ -81,4 +85,7 @@ def visualize_step(sd, architect, sprinter, target_clip_np, num_cond=4):
     axes[1, 6].axis("on")   # re-enable axis only for PCA plot
 
     plt.tight_layout()
-    plt.show()
+    if save_path:
+        fig.savefig(save_path, dpi=100, bbox_inches='tight'); plt.close(fig)
+    else:
+        plt.show()

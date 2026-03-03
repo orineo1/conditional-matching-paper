@@ -54,7 +54,7 @@ def download_and_render(category, max_samples, output_dir, size=512):
         if (i + 1) % 1000 == 0:
             print(f"  {category}: rendered {i + 1}/{total}")
 
-    print(f"  {category}: {len(rendered)} images saved")
+    print(f"  {category}: {len(rendered)} images saved", flush=True)
     return rendered
 
 
@@ -83,9 +83,10 @@ def main():
 
     all_files = []
     for i, cat in enumerate(categories):
-        print(f"[{i+1}/{len(categories)}] Processing: {cat} (max {samples_per_cat})")
+        print(f"[{i+1}/{len(categories)}] Processing: {cat} (max {samples_per_cat})", flush=True)
         files = download_and_render(cat, samples_per_cat, output_dir, size=size)
         all_files.extend(files)
+        print(f"  -> {len(files)} images saved", flush=True)
 
     # Write metadata.jsonl
     caption = cfg["caption"]

@@ -1,4 +1,4 @@
-"""Validate LoRA fine-tuned SDXL Turbo: noise-then-denoise comparison + pure generation comparison + gradient flow check."""
+"""Validate LoRA fine-tuned SDXL Turbo: noise-then-denoise at multiple strengths + pure generation comparison + gradient flow check."""
 
 import argparse
 from pathlib import Path
@@ -52,10 +52,27 @@ def pil_to_tensor(images, device):
     return torch.stack(tensors).to(device=device, dtype=torch.float32)
 
 
-def noise_denoise_comparison(pipe, face_images, device, noise_strength=500, seed=42):
-    """Noise face scribbles to a midpoint, then denoise. Returns (original, noised_viz, denoised) triplets."""
+def decode_latents(pipe, latents, vae_dtype):
+    """Decode latents to PIL images via VAE (float32 for stability)."""
+    with torch.no_grad():
+        pipe.vae.to(torch.float32)
+        decoded = pipe.vae.decode(latents.to(torch.float32) / pipe.vae.config.scaling_factor).sample
+        pipe.vae.to(vae_dtype)
+    decoded = (decoded / 2 + 0.5).clamp(0, 1)
+    images = []
+    for i in range(decoded.shape[0]):
+        arr = (decoded[i].permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
+        images.append(Image.fromarray(arr))
+    return images
+
+
+def noise_denoise(pipe, face_images, device, strength, seed=42, num_inference_steps=10):
+    """Add noise at given strength, then denoise. Returns list of denoised PIL images.
+
+    strength: fraction of the diffusion process to noise (0.1 = 10%, 0.5 = 50%).
+    Uses img2img-style scheduling: strength controls both noise level and number of denoise steps.
+    """
     if not face_images:
-        print("  No face images to process", flush=True)
         return []
 
     # Encode face images to latents (float32 for VAE stability)
@@ -71,28 +88,36 @@ def noise_denoise_comparison(pipe, face_images, device, noise_strength=500, seed
     generator = torch.Generator(device=device).manual_seed(seed)
     noise = torch.randn(original_latents.shape, generator=generator, device=device, dtype=torch.float16)
 
-    # Add noise at midpoint timestep
+    # Set up scheduler timesteps — img2img style
+    pipe.scheduler.set_timesteps(num_inference_steps, device=device)
+    all_timesteps = pipe.scheduler.timesteps
+
+    # Determine how many steps to skip (front of schedule = most noisy)
+    init_timestep = min(int(num_inference_steps * strength), num_inference_steps)
+    t_start = max(num_inference_steps - init_timestep, 0)
+    denoise_timesteps = all_timesteps[t_start:]
+    noise_timestep = denoise_timesteps[0]  # the timestep we noise to
+
+    print(f"  strength={strength}: noise at t={noise_timestep.item():.0f}, "
+          f"denoise {len(denoise_timesteps)} steps {[t.item() for t in denoise_timesteps]}", flush=True)
+
+    # Add noise at the chosen timestep
     noisy_latents = pipe.scheduler.add_noise(
         original_latents.to(torch.float16),
         noise,
-        torch.tensor([noise_strength], device=device),
+        torch.tensor([noise_timestep], device=device),
     )
 
-    # Get text embeddings for "a simple hand-drawn scribble"
+    # Get text embeddings
     prompt_embeds = pipe.encode_prompt("a simple hand-drawn scribble", device=device, num_images_per_prompt=1)
     time_ids = torch.tensor([[512, 512, 0, 0, 512, 512]], device=device, dtype=torch.float16)
     time_ids = time_ids.expand(len(face_images), -1)
 
-    # Set up scheduler and find timesteps >= noise_strength
-    pipe.scheduler.set_timesteps(4, device=device)
-    all_timesteps = pipe.scheduler.timesteps
-    filtered_timesteps = [t for t in all_timesteps if t >= noise_strength]
-    print(f"  Scheduler timesteps: {all_timesteps.tolist()}, using: {[t.item() for t in filtered_timesteps]}", flush=True)
-
-    # Denoise from midpoint
+    # Denoise
     latents = noisy_latents.clone()
     with torch.no_grad():
-        for t in filtered_timesteps:
+        for t in denoise_timesteps:
+            latents = pipe.scheduler.scale_model_input(latents, t)
             noise_pred = pipe.unet(
                 latents, t,
                 encoder_hidden_states=prompt_embeds[0].expand(len(face_images), -1, -1),
@@ -103,32 +128,11 @@ def noise_denoise_comparison(pipe, face_images, device, noise_strength=500, seed
             ).sample
             latents = pipe.scheduler.step(noise_pred, t, latents).prev_sample
 
-    # Decode denoised latents back to images
-    with torch.no_grad():
-        pipe.vae.to(torch.float32)
-        decoded = pipe.vae.decode(latents.to(torch.float32) / pipe.vae.config.scaling_factor).sample
-        pipe.vae.to(vae_dtype)
+    # Decode
+    denoised_images = decode_latents(pipe, latents, vae_dtype)
+    noisy_images = decode_latents(pipe, noisy_latents, vae_dtype)
 
-    # Convert to PIL
-    decoded = (decoded / 2 + 0.5).clamp(0, 1)
-    denoised_images = []
-    for i in range(decoded.shape[0]):
-        arr = (decoded[i].permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
-        denoised_images.append(Image.fromarray(arr))
-
-    # Also decode noisy latents for visualization
-    with torch.no_grad():
-        pipe.vae.to(torch.float32)
-        noisy_decoded = pipe.vae.decode(noisy_latents.to(torch.float32) / pipe.vae.config.scaling_factor).sample
-        pipe.vae.to(vae_dtype)
-
-    noisy_decoded = (noisy_decoded / 2 + 0.5).clamp(0, 1)
-    noisy_images = []
-    for i in range(noisy_decoded.shape[0]):
-        arr = (noisy_decoded[i].permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
-        noisy_images.append(Image.fromarray(arr))
-
-    return list(zip(face_images, noisy_images, denoised_images))
+    return denoised_images, noisy_images
 
 
 def generate_images(pipe, device, seeds):
@@ -206,8 +210,6 @@ def main():
                         help="Path to quickdraw_512 data dir (default: data_dir from config)")
     parser.add_argument("--wandb_project", type=str, default="conditional-flow")
     parser.add_argument("--wandb_entity", type=str, default="conditional-matching")
-    parser.add_argument("--noise_strength", type=int, default=500,
-                        help="Timestep for noise injection (default: 500, ~50%% corruption)")
     args = parser.parse_args()
 
     with open(args.config) as f:
@@ -222,6 +224,7 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     seeds = [42, 123, 456, 789, 1234]
+    strengths = [0.1, 0.2, 0.3, 0.4, 0.5]
 
     # Init wandb
     run = wandb.init(
@@ -236,7 +239,7 @@ def main():
             "num_epochs": cfg["num_epochs"],
             "train_batch_size": cfg["train_batch_size"],
             "learning_rate": cfg["learning_rate"],
-            "noise_strength": args.noise_strength,
+            "strengths": strengths,
         },
         job_type="validation",
     )
@@ -249,9 +252,11 @@ def main():
     print("\nLoading base SDXL Turbo (no LoRA)...", flush=True)
     pipe_base = load_pipeline(device)
 
-    print("\nNoise-denoise comparison (base)...", flush=True)
-    base_triplets = noise_denoise_comparison(pipe_base, face_images, device,
-                                              noise_strength=args.noise_strength, seed=42)
+    base_nd_results = {}
+    for s in strengths:
+        print(f"\nNoise-denoise (base, strength={s})...", flush=True)
+        denoised, noisy = noise_denoise(pipe_base, face_images, device, strength=s, seed=42)
+        base_nd_results[s] = (denoised, noisy)
 
     print("\nGenerating comparison images (base)...", flush=True)
     base_gen = generate_images(pipe_base, device, seeds)
@@ -264,31 +269,37 @@ def main():
     print(f"\nLoading LoRA pipeline from {lora_path}...", flush=True)
     pipe_lora = load_pipeline(device, lora_path=lora_path)
 
-    print("\nNoise-denoise comparison (LoRA)...", flush=True)
-    lora_triplets = noise_denoise_comparison(pipe_lora, face_images, device,
-                                              noise_strength=args.noise_strength, seed=42)
+    lora_nd_results = {}
+    for s in strengths:
+        print(f"\nNoise-denoise (LoRA, strength={s})...", flush=True)
+        denoised, noisy = noise_denoise(pipe_lora, face_images, device, strength=s, seed=42)
+        lora_nd_results[s] = (denoised, noisy)
 
     print("\nGenerating comparison images (LoRA)...", flush=True)
     lora_gen = generate_images(pipe_lora, device, seeds)
 
     # ── Log to wandb ──
 
-    # 1. Noise-denoise: original → base-denoised → LoRA-denoised
-    if base_triplets and lora_triplets:
+    # 1. Noise-denoise: per strength, per face: original → noised → base-denoised → LoRA-denoised
+    for s in strengths:
+        base_denoised, noisy_imgs = base_nd_results[s]
+        lora_denoised, _ = lora_nd_results[s]
+
         nd_images = []
-        for i, ((orig, noised, base_dn), (_, _, lora_dn)) in enumerate(zip(base_triplets, lora_triplets)):
-            orig.save(output_dir / f"nd_original_{i}.png")
-            noised.save(output_dir / f"nd_noised_{i}.png")
-            base_dn.save(output_dir / f"nd_base_denoised_{i}.png")
-            lora_dn.save(output_dir / f"nd_lora_denoised_{i}.png")
+        for i in range(len(face_images)):
+            nd_images.append(wandb.Image(face_images[i], caption=f"Original #{i}"))
+            nd_images.append(wandb.Image(noisy_imgs[i], caption=f"Noised #{i}"))
+            nd_images.append(wandb.Image(base_denoised[i], caption=f"Base #{i}"))
+            nd_images.append(wandb.Image(lora_denoised[i], caption=f"LoRA #{i}"))
 
-            nd_images.append(wandb.Image(orig, caption=f"Original #{i}"))
-            nd_images.append(wandb.Image(noised, caption=f"Noised (t={args.noise_strength}) #{i}"))
-            nd_images.append(wandb.Image(base_dn, caption=f"Base denoised #{i}"))
-            nd_images.append(wandb.Image(lora_dn, caption=f"LoRA denoised #{i}"))
+            # Save locally
+            face_images[i].save(output_dir / f"nd_s{s}_orig_{i}.png")
+            noisy_imgs[i].save(output_dir / f"nd_s{s}_noisy_{i}.png")
+            base_denoised[i].save(output_dir / f"nd_s{s}_base_{i}.png")
+            lora_denoised[i].save(output_dir / f"nd_s{s}_lora_{i}.png")
 
-        wandb.log({"noise_denoise": nd_images})
-        print(f"Logged {len(nd_images)} noise-denoise images to wandb", flush=True)
+        wandb.log({f"noise_denoise/strength_{s}": nd_images})
+        print(f"Logged noise-denoise at strength={s} ({len(nd_images)} images)", flush=True)
 
     # 2. Pure generation: base vs LoRA
     gen_images = []
@@ -300,7 +311,7 @@ def main():
         gen_images.append(wandb.Image(lora_img, caption=f"LoRA (seed {seed})"))
 
     wandb.log({"generation": gen_images})
-    print(f"Logged {len(gen_images)} generation images to wandb", flush=True)
+    print(f"Logged {len(gen_images)} generation images", flush=True)
 
     # ── Phase 3: Gradient flow check ──
     print("\nChecking gradient flow...", flush=True)

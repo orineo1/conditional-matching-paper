@@ -15,7 +15,9 @@ conda activate /sci/labs/orzuk/shaulytolk/conditional-matching-paper/scribble_en
 
 echo "Starting DPS pipeline on $(hostname) with GPU: $CUDA_VISIBLE_DEVICES"
 echo "Job ID: $SLURM_JOB_ID"
-nvidia-smi
+
+# Reduce CUDA memory fragmentation
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # Install plotting deps if missing
 pip install -q matplotlib scikit-learn
@@ -27,7 +29,7 @@ python SD_cond_SD_controlnet/run_dps.py \
     --lora_path scribble_tune/output/checkpoint-50000 \
     --output_dir SD_cond_SD_controlnet/output/dps_lora_${SLURM_JOB_ID} \
     --n_steps 30 \
-    --num_variations 20 \
+    --num_variations 10 \
     --base_zeta 0.2 \
     --guidance_scale 7.5 \
     --controlnet_scale 0.5 \

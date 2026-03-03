@@ -4,8 +4,9 @@ from diffusers import (
     StableDiffusionXLControlNetPipeline,
     ControlNetModel,
 )
+from peft import PeftModel
 
-def load_models(device):
+def load_models(device, architect_lora_path=None):
     controlnet = ControlNetModel.from_pretrained(
         "xinsir/controlnet-scribble-sdxl-1.0", torch_dtype=torch.float16
     ).to(device)
@@ -18,6 +19,10 @@ def load_models(device):
     architect = StableDiffusionXLPipeline.from_pretrained(
         "stabilityai/sdxl-turbo", torch_dtype=torch.float16, variant="fp16"
     ).to(device)
+
+    if architect_lora_path:
+        architect.unet = PeftModel.from_pretrained(architect.unet, architect_lora_path)
+        print(f"Loaded architect LoRA from {architect_lora_path}")
 
     architect.vae.to(dtype=torch.float32)
     sprinter.vae.to(dtype=torch.float32)

@@ -9,7 +9,7 @@ import wandb
 import yaml
 from diffusers import StableDiffusionXLPipeline
 from peft import PeftModel
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 from torchvision import transforms
 
 
@@ -50,6 +50,36 @@ def pil_to_tensor(images, device):
     ])
     tensors = [transform(img) for img in images]
     return torch.stack(tensors).to(device=device, dtype=torch.float32)
+
+
+def make_grid(images_2d, col_labels=None, row_labels=None, cell_size=256, padding=4, label_height=32):
+    """Build a grid image from a 2D list of PIL images (rows x cols) with optional labels."""
+    n_rows = len(images_2d)
+    n_cols = len(images_2d[0])
+    left_margin = 80 if row_labels else 0
+    top_margin = label_height if col_labels else 0
+
+    grid_w = left_margin + n_cols * (cell_size + padding) - padding
+    grid_h = top_margin + n_rows * (cell_size + padding) - padding
+    grid = Image.new("RGB", (grid_w, grid_h), "white")
+    draw = ImageDraw.Draw(grid)
+
+    # Column headers
+    if col_labels:
+        for j, label in enumerate(col_labels):
+            x = left_margin + j * (cell_size + padding) + cell_size // 2
+            draw.text((x, 2), label, fill="black", anchor="mt")
+
+    # Row labels + images
+    for i, row in enumerate(images_2d):
+        y = top_margin + i * (cell_size + padding)
+        if row_labels:
+            draw.text((4, y + cell_size // 2), row_labels[i], fill="black", anchor="lm")
+        for j, img in enumerate(row):
+            x = left_margin + j * (cell_size + padding)
+            grid.paste(img.resize((cell_size, cell_size)), (x, y))
+
+    return grid
 
 
 def decode_latents(pipe, latents, vae_dtype):
@@ -231,6 +261,7 @@ def main():
         project=args.wandb_project,
         entity=args.wandb_entity,
         name=f"validate-{checkpoint_name}",
+        settings=wandb.Settings(init_timeout=300),
         config={
             "checkpoint": lora_path,
             "lora_rank": cfg["lora_rank"],
@@ -280,38 +311,43 @@ def main():
 
     # ── Log to wandb ──
 
-    # 1. Noise-denoise table: each row = one (strength, face) with 4 images side by side
-    nd_table = wandb.Table(columns=["Strength", "Face", "Original", "Noised", "Base Denoised", "LoRA Denoised"])
+    # 1. Noise-denoise: one grid image per strength level
+    #    Rows = faces, Cols = Original | Noised | Base Denoised | LoRA Denoised
+    col_labels = ["Original", "Noised", "Base", "LoRA"]
+    nd_grids = []
     for s in strengths:
         base_denoised, noisy_imgs = base_nd_results[s]
         lora_denoised, _ = lora_nd_results[s]
 
+        rows = []
         for i in range(len(face_images)):
-            nd_table.add_data(
-                s, i,
-                wandb.Image(face_images[i]),
-                wandb.Image(noisy_imgs[i]),
-                wandb.Image(base_denoised[i]),
-                wandb.Image(lora_denoised[i]),
-            )
-            # Save locally
+            rows.append([face_images[i], noisy_imgs[i], base_denoised[i], lora_denoised[i]])
+            # Save individual images locally
             face_images[i].save(output_dir / f"nd_s{s}_orig_{i}.png")
             noisy_imgs[i].save(output_dir / f"nd_s{s}_noisy_{i}.png")
             base_denoised[i].save(output_dir / f"nd_s{s}_base_{i}.png")
             lora_denoised[i].save(output_dir / f"nd_s{s}_lora_{i}.png")
 
-    wandb.log({"noise_denoise": nd_table})
-    print(f"Logged noise-denoise table ({len(strengths)} strengths x {len(face_images)} faces)", flush=True)
+        grid = make_grid(rows, col_labels=col_labels, row_labels=[f"#{i}" for i in range(len(face_images))])
+        grid.save(output_dir / f"nd_grid_s{s}.png")
+        nd_grids.append(wandb.Image(grid, caption=f"strength={s}"))
 
-    # 2. Pure generation table: each row = one seed with base vs LoRA
-    gen_table = wandb.Table(columns=["Seed", "Base", "LoRA"])
+    wandb.log({"noise_denoise": nd_grids})
+    print(f"Logged {len(nd_grids)} noise-denoise grid images", flush=True)
+
+    # 2. Pure generation: one grid — rows = seeds, cols = Base | LoRA
+    gen_rows = []
+    row_labels = []
     for (seed, base_img), (_, lora_img) in zip(base_gen, lora_gen):
         base_img.save(output_dir / f"gen_base_seed{seed}.png")
         lora_img.save(output_dir / f"gen_lora_seed{seed}.png")
-        gen_table.add_data(seed, wandb.Image(base_img), wandb.Image(lora_img))
+        gen_rows.append([base_img, lora_img])
+        row_labels.append(f"s={seed}")
 
-    wandb.log({"generation": gen_table})
-    print(f"Logged generation table ({len(seeds)} seeds)", flush=True)
+    gen_grid = make_grid(gen_rows, col_labels=["Base", "LoRA"], row_labels=row_labels)
+    gen_grid.save(output_dir / "gen_grid.png")
+    wandb.log({"generation": wandb.Image(gen_grid, caption="Base vs LoRA generation")})
+    print("Logged generation grid image", flush=True)
 
     # ── Phase 3: Gradient flow check ──
     print("\nChecking gradient flow...", flush=True)

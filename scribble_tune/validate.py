@@ -36,7 +36,7 @@ def load_face_images(data_dir, num_images=5, size=512):
     """Load face scribble PNGs from the quickdraw data directory."""
     data_dir = Path(data_dir)
     images = []
-    for i in range(num_images):
+    for i in range(500, 500 + num_images):
         path = data_dir / f"face_{i:06d}.png"
         if path.exists():
             img = Image.open(path).convert("RGB").resize((size, size))

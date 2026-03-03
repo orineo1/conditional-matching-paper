@@ -12,6 +12,11 @@ from peft import PeftModel
 from PIL import Image, ImageDraw, ImageFont
 from torchvision import transforms
 
+# Match the actual DPS pipeline prompt/CFG
+PROMPT = "rough pencil scribble outline, loose sketch, minimal line art"
+NEGATIVE_PROMPT = "detailed, realistic, photograph, complex, colored, shading"
+GUIDANCE_SCALE = 7.5
+
 
 def load_pipeline(device, lora_path=None):
     """Load SDXL Turbo pipeline, optionally with LoRA weights."""
@@ -138,24 +143,43 @@ def noise_denoise(pipe, face_images, device, strength, seed=42, num_inference_st
         torch.tensor([noise_timestep], device=device),
     )
 
-    # Get text embeddings
-    prompt_embeds = pipe.encode_prompt("a simple hand-drawn scribble", device=device, num_images_per_prompt=1)
+    # Get text embeddings (conditional + unconditional for CFG)
+    (prompt_embeds, negative_prompt_embeds,
+     pooled_prompt_embeds, negative_pooled_prompt_embeds) = pipe.encode_prompt(
+        prompt=PROMPT, negative_prompt=NEGATIVE_PROMPT,
+        device=device, num_images_per_prompt=1,
+        do_classifier_free_guidance=True,
+    )
     time_ids = torch.tensor([[512, 512, 0, 0, 512, 512]], device=device, dtype=torch.float16)
-    time_ids = time_ids.expand(len(face_images), -1)
 
-    # Denoise
+    bs = len(face_images)
+
+    # Denoise with classifier-free guidance
     latents = noisy_latents.clone()
     with torch.no_grad():
         for t in denoise_timesteps:
-            latents = pipe.scheduler.scale_model_input(latents, t)
+            latent_input = pipe.scheduler.scale_model_input(latents, t)
+            # Duplicate for CFG: [unconditional, conditional]
+            latent_input = torch.cat([latent_input, latent_input])
+            encoder_hs = torch.cat([
+                negative_prompt_embeds.expand(bs, -1, -1),
+                prompt_embeds.expand(bs, -1, -1),
+            ])
+            added_kwargs = {
+                "text_embeds": torch.cat([
+                    negative_pooled_prompt_embeds.expand(bs, -1),
+                    pooled_prompt_embeds.expand(bs, -1),
+                ]),
+                "time_ids": torch.cat([time_ids.expand(bs, -1)] * 2),
+            }
             noise_pred = pipe.unet(
-                latents, t,
-                encoder_hidden_states=prompt_embeds[0].expand(len(face_images), -1, -1),
-                added_cond_kwargs={
-                    "text_embeds": prompt_embeds[2].expand(len(face_images), -1),
-                    "time_ids": time_ids,
-                },
+                latent_input, t,
+                encoder_hidden_states=encoder_hs,
+                added_cond_kwargs=added_kwargs,
             ).sample
+            # CFG: uncond + scale * (cond - uncond)
+            noise_pred_uncond, noise_pred_cond = noise_pred.chunk(2)
+            noise_pred = noise_pred_uncond + GUIDANCE_SCALE * (noise_pred_cond - noise_pred_uncond)
             latents = pipe.scheduler.step(noise_pred, t, latents).prev_sample
 
     # Decode
@@ -167,15 +191,15 @@ def noise_denoise(pipe, face_images, device, strength, seed=42, num_inference_st
 
 def generate_images(pipe, device, seeds):
     """Generate scribble images for a list of seeds. Returns list of (seed, image)."""
-    prompt = "a simple hand-drawn scribble"
     results = []
     for seed in seeds:
         generator = torch.Generator(device=device).manual_seed(seed)
         with torch.no_grad():
             img = pipe(
-                prompt=prompt,
+                prompt=PROMPT,
+                negative_prompt=NEGATIVE_PROMPT,
                 num_inference_steps=4,
-                guidance_scale=0.0,
+                guidance_scale=GUIDANCE_SCALE,
                 output_type="pil",
                 generator=generator,
             ).images[0]
@@ -187,7 +211,7 @@ def check_gradient_flow(pipe, device):
     """Verify gradients flow through U-Net + LoRA via actual backward pass."""
     latent = torch.randn(1, 4, 64, 64, dtype=torch.float16, device=device, requires_grad=True)
 
-    prompt_embeds = pipe.encode_prompt("a simple hand-drawn scribble", device=device, num_images_per_prompt=1)
+    prompt_embeds = pipe.encode_prompt(PROMPT, device=device, num_images_per_prompt=1)
 
     t = torch.tensor([500], device=device, dtype=torch.long)
     time_ids = torch.tensor([[512, 512, 0, 0, 512, 512]], device=device, dtype=torch.float16)

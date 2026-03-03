@@ -320,13 +320,15 @@ def main():
         visualize_step(sd, architect, sprinter, target_clip_np, num_cond=2, save_path=step_save_path)
         wandb.log({"step_visualization": wandb.Image(step_save_path)})
 
-        # F. Scheduler step (only one call should advance step_index)
-        latents = denoise_step(architect.scheduler, noise_pred, t, latents_step, correction=correction)
+        # F. Scheduler step (save/restore so the regular path reuses the same step_index)
         saved_step_index = architect.scheduler.step_index
+        latents = denoise_step(architect.scheduler, noise_pred, t, latents_step, correction=correction)
+        post_step_index = architect.scheduler.step_index
+        architect.scheduler._step_index = saved_step_index
         with torch.no_grad():
             latents_regular = denoise_step(
                 architect.scheduler, noise_pred_regular, t, latents_step_regular)
-        architect.scheduler._step_index = saved_step_index
+        architect.scheduler._step_index = post_step_index
 
         # Cleanup
         del grad, mmd_loss, loss_norm, zeta_i, correction

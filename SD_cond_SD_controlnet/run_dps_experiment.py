@@ -551,7 +551,7 @@ def main():
         print(f"  Composite saved: {composite_path}", flush=True)
 
         # Free per-face data
-        del strength_results, face_tensor, scribble_tensor, scribble_latent
+        del strength_results, scribble_tensor, scribble_latent
         gc.collect(); torch.cuda.empty_cache()
 
     # ── 8. Final summary ───────────────────────────────────────────────────────

@@ -77,6 +77,21 @@ def compute_pred_x0(scheduler, noise_pred, t, latents_in):
     return (latents_in - (1 - alpha)**0.5 * noise_pred) / alpha**0.5
 
 
+def compute_pred_x0_direct(scheduler, noise_pred, t, latents_in):
+    """Compute pred_x0 without calling scheduler.step() (avoids step_index side effects).
+
+    Uses the diffusion formula directly:
+        x0 = (x_t - sqrt(1-alpha) * noise_pred) / sqrt(alpha)
+    """
+    if hasattr(scheduler, 'alphas_cumprod'):
+        alpha = scheduler.alphas_cumprod[t.long().cpu()].to(latents_in.device)
+    else:
+        # Euler-type schedulers: compute alpha from sigma
+        sigma = scheduler.sigmas[scheduler.step_index]
+        alpha = (1 / (sigma**2 + 1)).to(latents_in.device)
+    return (latents_in - (1 - alpha)**0.5 * noise_pred) / alpha**0.5
+
+
 def denoise_step(scheduler, noise_pred, t, latents_in, correction=None):
     x_t_minus_1 = scheduler.step(noise_pred, t, latents_in, return_dict=True).prev_sample
     if correction is not None:

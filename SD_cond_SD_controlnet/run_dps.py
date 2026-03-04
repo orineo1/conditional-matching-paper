@@ -7,6 +7,7 @@ on the architect. Logs to wandb and saves outputs to disk.
 """
 
 import argparse
+import copy
 import gc
 import json
 import os
@@ -27,7 +28,7 @@ if script_dir not in sys.path:
 
 from clip_utils import encode_images_clip, load_clip_model
 from generation import (
-    compute_pred_x0,
+    compute_pred_x0_direct,
     denoise_step,
     generate_and_store_cs,
     predict_noise_cfg,
@@ -193,6 +194,10 @@ def main():
     architect.scheduler.set_timesteps(n_steps, device=device)
     timesteps = architect.scheduler.timesteps
 
+    # Separate scheduler for the regular (no-guidance) path so each path
+    # has its own step_index state — prevents scheduler corruption.
+    scheduler_regular = copy.deepcopy(architect.scheduler)
+
     latents = architect.prepare_latents(
         1, architect.unet.config.in_channels,
         height, width, prompt_embeds.dtype, device, None,
@@ -227,19 +232,15 @@ def main():
         )
         with torch.no_grad():
             noise_pred_regular = predict_noise_cfg(
-                architect.unet, architect.scheduler,
+                architect.unet, scheduler_regular,
                 latents_step_regular, t, cfg_encoder_states, added_cond_kwargs, guidance_scale,
             )
 
-        # B. pred_x0 (save/restore scheduler step_index — compute_pred_x0 calls
-        #    scheduler.step() internally which advances the counter)
-        saved_step_index = architect.scheduler.step_index
-        pred_x0 = compute_pred_x0(architect.scheduler, noise_pred, t, latents_step)
-        architect.scheduler._step_index = saved_step_index
+        # B. pred_x0 — pure formula, NO scheduler.step() side effects
+        pred_x0 = compute_pred_x0_direct(architect.scheduler, noise_pred, t, latents_step)
         with torch.no_grad():
-            pred_x0_regular = compute_pred_x0(
-                architect.scheduler, noise_pred_regular, t, latents_step_regular)
-            architect.scheduler._step_index = saved_step_index
+            pred_x0_regular = compute_pred_x0_direct(
+                scheduler_regular, noise_pred_regular, t, latents_step_regular)
 
         # C. Decode pred_x0 -> pixel space (keep grad)
         pred_x0_scaled = pred_x0 / architect.vae.config.scaling_factor
@@ -320,15 +321,11 @@ def main():
         visualize_step(sd, architect, sprinter, target_clip_np, num_cond=2, save_path=step_save_path)
         wandb.log({"step_visualization": wandb.Image(step_save_path)})
 
-        # F. Scheduler step (save/restore so the regular path reuses the same step_index)
-        saved_step_index = architect.scheduler.step_index
+        # F. Scheduler step — each path uses its own scheduler (no state sharing)
         latents = denoise_step(architect.scheduler, noise_pred, t, latents_step, correction=correction)
-        post_step_index = architect.scheduler.step_index
-        architect.scheduler._step_index = saved_step_index
         with torch.no_grad():
             latents_regular = denoise_step(
-                architect.scheduler, noise_pred_regular, t, latents_step_regular)
-        architect.scheduler._step_index = post_step_index
+                scheduler_regular, noise_pred_regular, t, latents_step_regular)
 
         # Cleanup
         del grad, mmd_loss, loss_norm, zeta_i, correction

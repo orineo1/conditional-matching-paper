@@ -438,6 +438,8 @@ def main():
             noise = torch.randn_like(scribble_latent)
             t_start = timesteps_partial[0]
             noised_latent = architect.scheduler.add_noise(scribble_latent, noise, t_start.unsqueeze(0))
+            # Cast to UNet dtype (fp16) — VAE encode produces float32
+            noised_latent = noised_latent.to(prompt_embeds.dtype)
 
             # Save noised image for visualization
             with torch.no_grad():

@@ -64,6 +64,8 @@ def parse_args():
     p.add_argument("--prompt", type=str, default="rough pencil scribble outline, loose sketch, minimal line art",
                    help="Architect prompt for denoising (use '' for unconditional)")
     p.add_argument("--negative_prompt", type=str, default="detailed, realistic, photograph, complex, colored, shading")
+    p.add_argument("--n_targets", type=int, default=20,
+                   help="Total target images (split evenly male/female)")
     p.add_argument("--edge_method", type=str, default="hed_scribble",
                    choices=["sobel", "hed_scribble"],
                    help="Edge extraction method: sobel (detailed) or hed_scribble (simple)")
@@ -350,7 +352,7 @@ def main():
         sobel_cond_pil = T.ToPILImage()(sobel_cond_tensor.squeeze(0).cpu())
 
     # ── 3. Generate target distribution ────────────────────────────────────────
-    N_TARGETS = 20
+    N_TARGETS = args.n_targets
     n_half = N_TARGETS // 2
     print(f"Generating {N_TARGETS} target images ({n_half} man + {n_half} woman)...", flush=True)
 

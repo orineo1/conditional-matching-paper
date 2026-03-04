@@ -437,7 +437,7 @@ def main():
             # Add noise at t_start
             noise = torch.randn_like(scribble_latent)
             t_start = timesteps_partial[0]
-            noised_latent = architect.scheduler.add_noise(scribble_latent, noise, t_start)
+            noised_latent = architect.scheduler.add_noise(scribble_latent, noise, t_start.unsqueeze(0))
 
             # Save noised image for visualization
             with torch.no_grad():

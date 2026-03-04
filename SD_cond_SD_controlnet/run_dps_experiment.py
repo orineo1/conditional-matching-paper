@@ -61,6 +61,9 @@ def parse_args():
     p.add_argument("--guidance_scale", type=float, default=7.5)
     p.add_argument("--controlnet_scale", type=float, default=0.5)
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--prompt", type=str, default="rough pencil scribble outline, loose sketch, minimal line art",
+                   help="Architect prompt for denoising (use '' for unconditional)")
+    p.add_argument("--negative_prompt", type=str, default="detailed, realistic, photograph, complex, colored, shading")
     return p.parse_args()
 
 
@@ -381,8 +384,9 @@ def main():
             print(f"  Source face {face_idx} generated.", flush=True)
 
     # ── 6. Prepare DPS components ──────────────────────────────────────────────
-    prompt = "rough pencil scribble outline, loose sketch, minimal line art"
-    negative_prompt = "detailed, realistic, photograph, complex, colored, shading"
+    prompt = args.prompt if args.prompt else ""
+    negative_prompt = args.negative_prompt if args.negative_prompt else ""
+    print(f"  Architect prompt: '{prompt}'", flush=True)
     height, width = 512, 512
     n_steps = args.n_steps
 

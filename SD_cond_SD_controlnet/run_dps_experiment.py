@@ -64,7 +64,17 @@ def parse_args():
     p.add_argument("--prompt", type=str, default="rough pencil scribble outline, loose sketch, minimal line art",
                    help="Architect prompt for denoising (use '' for unconditional)")
     p.add_argument("--negative_prompt", type=str, default="detailed, realistic, photograph, complex, colored, shading")
+    p.add_argument("--edge_method", type=str, default="hed_scribble",
+                   choices=["sobel", "hed_scribble"],
+                   help="Edge extraction method: sobel (detailed) or hed_scribble (simple)")
     return p.parse_args()
+
+
+def extract_scribble_hed(pil_image):
+    """Extract a simple scribble from a PIL image using HED in scribble mode."""
+    from controlnet_aux import HEDdetector
+    hed = HEDdetector.from_pretrained("lllyasviel/Annotators")
+    return hed(pil_image, scribble=True)
 
 
 def pil_images_to_tensor(pil_list, device):
@@ -414,12 +424,17 @@ def main():
         print(f"FACE {face_idx+1}/{args.n_faces}", flush=True)
         print(f"{'='*70}", flush=True)
 
-        # Extract scribble via Sobel
-        face_tensor = pil_to_tensor(face_pil, device)
-        with torch.no_grad():
-            scribble_tensor = sobel_proxy(face_tensor, device)
+        # Extract scribble
+        if args.edge_method == "hed_scribble":
+            scribble_pil = extract_scribble_hed(face_pil)
+            scribble_tensor = pil_to_tensor(scribble_pil, device)
+        else:
+            face_tensor = pil_to_tensor(face_pil, device)
+            with torch.no_grad():
+                scribble_tensor = sobel_proxy(face_tensor, device)
             scribble_pil = T.ToPILImage()(scribble_tensor.squeeze(0).cpu())
         scribble_pil.save(os.path.join(args.output_dir, f"scribble_{face_idx}.png"))
+        print(f"  Scribble extracted via {args.edge_method}", flush=True)
 
         # Encode scribble to latent
         with torch.no_grad():

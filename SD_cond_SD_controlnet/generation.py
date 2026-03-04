@@ -123,7 +123,7 @@ def run_dps_step(latents, latents_step, noise_pred, pixel_x0_norm,
     variation_latents = torch.cat(variation_latents_list, dim=0)
     torch.cuda.empty_cache()
     mmd_squared = compute_mmd(variation_latents, torch.tensor(all_latents, device=variation_latents.device))
-    mmd_loss = torch.sqrt(mmd_squared + 1e-8)
+    mmd_loss = torch.sqrt(mmd_squared.abs() + 1e-8)
     loss_norm = mmd_loss.detach()
     zeta_i = base_zeta_prime / loss_norm
 
@@ -182,7 +182,8 @@ def run_dps_step_clip(latents, latents_step, noise_pred, pixel_x0_norm,
 
     # ── D. MMD + gradient ─────────────────────────────────────────────────────
     mmd_squared = compute_mmd(current_clip_emb, full_target)
-    mmd_loss    = torch.sqrt(mmd_squared + 1e-8)
+    # Use abs() so sqrt is safe for slightly negative unbiased estimates
+    mmd_loss    = torch.sqrt(mmd_squared.abs() + 1e-8)
     loss_norm   = mmd_loss.detach()
     zeta_i      = base_zeta_prime / loss_norm
 

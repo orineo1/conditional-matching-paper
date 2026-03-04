@@ -42,4 +42,6 @@ def compute_mmd(x, y, bandwidth=None):
     yy_term = (K_yy.sum() - K_yy.trace()) / (m * (m - 1)) if m > 1 else 0.0
     xy_term = 2 * K_xy.sum() / (n * m)
     mmd_sq = xx_term - xy_term + yy_term
-    return torch.clamp(mmd_sq, min=0.0)
+    # Don't clamp — with small n the unbiased estimator can be slightly negative,
+    # and clamp(min=0) kills the gradient (grad=0 when clamped).
+    return mmd_sq

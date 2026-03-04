@@ -36,7 +36,10 @@ def compute_mmd(x, y, bandwidth=None):
     K_yy = rbf_kernel(y, y, bandwidth)
     K_xy = rbf_kernel(x, y, bandwidth)
 
-    mmd_sq = ((K_xx.sum() - K_xx.trace()) / (n * (n - 1))
-              - 2 * K_xy.sum() / (n * m)
-              + (K_yy.sum() - K_yy.trace()) / (m * (m - 1)))
+    # Unbiased estimator terms; skip self-kernel term when n=1 or m=1
+    # (0 off-diagonal elements → 0/0 division)
+    xx_term = (K_xx.sum() - K_xx.trace()) / (n * (n - 1)) if n > 1 else 0.0
+    yy_term = (K_yy.sum() - K_yy.trace()) / (m * (m - 1)) if m > 1 else 0.0
+    xy_term = 2 * K_xy.sum() / (n * m)
+    mmd_sq = xx_term - xy_term + yy_term
     return torch.clamp(mmd_sq, min=0.0)

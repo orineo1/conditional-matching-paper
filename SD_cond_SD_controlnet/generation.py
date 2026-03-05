@@ -140,59 +140,51 @@ def run_dps_step_clip(latents, latents_step, noise_pred, pixel_x0_norm,
                       clip_model, clip_processor, vae, vae_scaling_factor):
     """
     DPS step using CLIP embeddings + MMD guidance.
-    current pred_x0 is encoded through CLIP (grad flows),
-    variations are encoded detached and concatenated with the pre-computed
-    target embeddings to form the reference distribution.
+    Gradient flows through N variation CLIP embeddings (via sprinter → VAE → CLIP),
+    not through a single pred_x0. MMD between variations (grad) and targets (detached).
     """
     from clip_utils import encode_images_clip
 
-    # ── A. Encode current pred_x0 through CLIP — carries the gradient ─────────
-    current_clip_emb = encode_images_clip(pixel_x0_norm, clip_model, clip_processor)
-    # shape: [1, 768]
-
-    # ── B. Generate variations — fully detached reference distribution ─────────
+    # ── A. Generate variations WITH gradient (checkpointed for memory) ────────
     variation_clip_list = []
-    with torch.no_grad():
-        for start_idx in range(0, num_variations, variation_batch_size):
-            end_idx    = min(start_idx + variation_batch_size, num_variations)
-            bs         = end_idx - start_idx
-            ctrl_batch = pixel_x0_norm[0].unsqueeze(0).repeat(bs, 1, 1, 1).detach()
+    for start_idx in range(0, num_variations, variation_batch_size):
+        end_idx = min(start_idx + variation_batch_size, num_variations)
+        bs = end_idx - start_idx
+        ctrl_batch = pixel_x0_norm[0].unsqueeze(0).repeat(bs, 1, 1, 1)
 
+        def sprinter_vae_clip_forward(ctrl):
             var_latents = sprinter(
-                prompt=["a superrealistic professional photograph of"] * bs,
-                image=ctrl_batch,
-                num_inference_steps=2, guidance_scale=0.0,
+                prompt=["a superrealistic professional photograph of"] * ctrl.shape[0],
+                image=ctrl, num_inference_steps=2, guidance_scale=0.0,
                 controlnet_conditioning_scale=0.8,
                 output_type="latent", return_dict=True,
             ).images
-
             var_pixels = vae.decode(
                 (var_latents.float() / vae_scaling_factor).to(vae.dtype)
             ).sample
             var_pixels = torch.clamp((var_pixels.float() + 1.0) / 2.0, 0.0, 1.0)
+            # CLIP encode
+            return encode_images_clip(var_pixels, clip_model, clip_processor)
 
-            var_clip = encode_images_clip(var_pixels, clip_model, clip_processor)
-            variation_clip_list.append(var_clip)
+        with torch.cuda.amp.autocast():
+            var_clip = torch.utils.checkpoint.checkpoint(
+                sprinter_vae_clip_forward, ctrl_batch, use_reentrant=False)
+        variation_clip_list.append(var_clip)
 
-    variation_clip_embs = torch.cat(variation_clip_list, dim=0).detach()  # [num_variations, 768]
+    variation_clip_embs = torch.cat(variation_clip_list, dim=0)  # [num_variations, 768], grad attached
     torch.cuda.empty_cache()
 
-    # ── C. Build full reference set: variations + pre-computed target ──────────
-    full_target = torch.cat([variation_clip_embs, all_clip_embeddings], dim=0).detach()
-
-    # ── D. MMD + gradient ─────────────────────────────────────────────────────
-    mmd_squared = compute_mmd(current_clip_emb, full_target)
-    # Use abs() so sqrt is safe for slightly negative unbiased estimates
+    # ── B. MMD between variation embeddings and fixed target ──────────────────
+    mmd_squared = compute_mmd(variation_clip_embs, all_clip_embeddings.detach())
     mmd_loss    = torch.sqrt(mmd_squared.abs() + 1e-8)
     loss_norm   = mmd_loss.detach()
     zeta_i      = base_zeta_prime / loss_norm
 
-    # ── E. Gradient ───────────────────────────────────────────────────────────
     grad = torch.autograd.grad(
         mmd_loss, latents_step, retain_graph=False, create_graph=False
     )[0]
 
-    vl_clip_flat = variation_clip_embs.cpu().numpy()
+    vl_clip_flat = variation_clip_embs.detach().cpu().numpy()
     del variation_clip_list, variation_clip_embs
 
     return grad, mmd_loss, zeta_i, loss_norm, vl_clip_flat

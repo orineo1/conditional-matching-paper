@@ -50,7 +50,7 @@ def parse_args():
     p = argparse.ArgumentParser(description="DPS Experiment: Scribble-from-Portrait")
     p.add_argument("--output_dir", type=str, default="SD_cond_SD_controlnet/output/experiment")
     p.add_argument("--lora_path", type=str, default=None)
-    p.add_argument("--wandb_project", type=str, default="conditional-flow")
+    p.add_argument("--wandb_project", type=str, default="combined_conditional_flow")
     p.add_argument("--wandb_entity", type=str, default="conditional-matching")
     p.add_argument("--n_faces", type=int, default=3)
     p.add_argument("--strengths", type=str, default="0.25,0.5,0.75")

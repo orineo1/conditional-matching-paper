@@ -10,6 +10,7 @@ from peft import PeftModel
 from huggingface_hub import hf_hub_download
 
 
+
 def _resolve_lora_path(lora_path: str) -> str:
     """
     If lora_path starts with 'hf://', download it from HuggingFace Hub.
@@ -19,30 +20,31 @@ def _resolve_lora_path(lora_path: str) -> str:
     if not lora_path.startswith("hf://"):
         return lora_path
 
-    # Parse hf://repo_id/filename  ->  repo_id, filename
     without_prefix = lora_path[len("hf://"):]
-    # repo_id is first two parts (owner/repo), rest is the filename path
     parts = without_prefix.split("/")
     repo_id = "/".join(parts[:2])
     filename = "/".join(parts[2:])
 
-    print(f"Downloading LoRA from HuggingFace: repo={repo_id}, file={filename}")
     local_path = hf_hub_download(repo_id=repo_id, filename=filename)
-    print(f"Downloaded to: {local_path}")
 
-    # If it's a zip, extract it next to the downloaded file
     if local_path.endswith(".zip"):
         extract_dir = local_path.replace(".zip", "")
         if not os.path.exists(extract_dir):
-            print(f"Extracting zip to: {extract_dir}")
             with zipfile.ZipFile(local_path, 'r') as zf:
                 zf.extractall(extract_dir)
-        else:
-            print(f"Already extracted: {extract_dir}")
-        return extract_dir
+
+        if os.path.exists(os.path.join(extract_dir, "adapter_config.json")):
+            return extract_dir
+
+        for sub in os.listdir(extract_dir):
+            sub_path = os.path.join(extract_dir, sub)
+            if os.path.isdir(sub_path):
+                if os.path.exists(os.path.join(sub_path, "adapter_config.json")):
+                    return sub_path
+
+        raise FileNotFoundError(f"adapter_config.json not found inside {extract_dir}")
 
     return local_path
-
 
 def load_models(device, architect_lora_path=None):
     controlnet = ControlNetModel.from_pretrained(

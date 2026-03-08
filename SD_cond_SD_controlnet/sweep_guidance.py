@@ -65,6 +65,10 @@ def parse_args():
                    choices=["sobel", "hed_scribble"])
     p.add_argument("--wandb_project", type=str, default="combined_conditional_flow")
     p.add_argument("--wandb_entity", type=str, default="conditional-matching")
+    p.add_argument("--sprinter_every", type=int, default=3,
+                   help="Generate sprinter photos every N denoising steps (0=disabled)")
+    p.add_argument("--sprinter_count", type=int, default=5,
+                   help="Number of sprinter photos to generate per snapshot")
     p.add_argument("--lora_only", action="store_true",
                    help="Only run WITH LoRA (skip no-LoRA rows)")
     p.add_argument("--no_lora_only", action="store_true",
@@ -95,19 +99,44 @@ def encode_to_latent(vae, image_tensor):
     return latent_dist.sample().float() * vae.config.scaling_factor
 
 
+def generate_sprinter_photos(sprinter, scribble_pil, num_photos, batch_size=5):
+    """Generate portrait photos from a scribble via sprinter (no grad)."""
+    all_images = []
+    original_vae_dtype = sprinter.vae.dtype
+    sprinter.vae.to(dtype=torch.float16)
+    with torch.no_grad():
+        for start in range(0, num_photos, batch_size):
+            bs = min(batch_size, num_photos - start)
+            result = sprinter(
+                prompt=["a superrealistic professional photograph of a person, studio lighting"] * bs,
+                image=[scribble_pil] * bs,
+                num_inference_steps=2, guidance_scale=0.0,
+                controlnet_conditioning_scale=0.8,
+                output_type="pil", return_dict=True,
+            )
+            all_images.extend(result.images)
+    sprinter.vae.to(dtype=original_vae_dtype)
+    return all_images
+
+
 def partial_denoise_loop_with_snapshots(
     architect, scheduler, latents, timesteps_partial,
     cfg_encoder_states, added_cond_kwargs, guidance_scale,
     dps_guidance=False, sprinter=None, clip_model=None,
     clip_processor=None, all_clip_embeddings=None,
     num_variations=20, base_zeta_prime=0.2, device="cuda",
+    sprinter_every=0, sprinter_count=5,
 ):
     """Run denoising from a partial timestep schedule, capturing pred_x0 PIL at every step.
 
-    Returns: (final_latents, list_of_pred_x0_pil_images, list_of_step_metrics)
+    If sprinter_every > 0, also generates sprinter photos from pred_x0 every N steps.
+
+    Returns: (final_latents, list_of_pred_x0_pil_images, list_of_step_metrics,
+              dict of {step_idx: list_of_sprinter_pil_images})
     """
     step_images = []
     step_metrics = []
+    sprinter_snapshots = {}  # step_idx -> list of PIL images
     variation_batch_size = 1
 
     for i, t in enumerate(timesteps_partial):
@@ -140,6 +169,12 @@ def partial_denoise_loop_with_snapshots(
         with torch.no_grad():
             pil_img = latent_to_pil(pred_x0.detach(), architect.vae, architect.image_processor)
         step_images.append(pil_img)
+
+        # Sprinter photos from pred_x0 scribble at interval
+        if sprinter_every > 0 and sprinter is not None and i % sprinter_every == 0:
+            print(f"    Generating {sprinter_count} sprinter photos at step {i+1}...", flush=True)
+            sprinter_photos = generate_sprinter_photos(sprinter, pil_img, sprinter_count)
+            sprinter_snapshots[i] = sprinter_photos
 
         correction = None
         if dps_guidance:
@@ -206,21 +241,35 @@ def partial_denoise_loop_with_snapshots(
             del correction
         gc.collect(); torch.cuda.empty_cache()
 
-    return latents, step_images, step_metrics
+    return latents, step_images, step_metrics, sprinter_snapshots
 
 
-def build_composite(all_rows, zetas, n_steps, source_face_pil=None,
-                    scribble_pil=None, cell_size=128):
-    """Build composite image: 8 rows × n_steps columns.
+def build_composite_per_zeta(zeta, rows_for_zeta, n_steps, sprinter_every,
+                             source_face_pil=None, scribble_pil=None, cell_size=128):
+    """Build composite for one zeta value.
 
-    all_rows: list of (label_str, list_of_pil_images) tuples, length 8.
+    rows_for_zeta: list of (label, step_images, sprinter_snapshots) tuples (1 or 2 rows).
+
+    Layout per row:
+      - pred_x0 row: label + N step images
+      - sprinter row(s): below, showing 5 photos at each snapshot step
+
+    Returns a PIL image.
     """
-    label_width = 180
+    label_width = 200
     header_height = 20
+    photo_size = cell_size  # same size for sprinter photos
     info_height = cell_size + 10 if source_face_pil else 0
 
+    # Count rows: for each entry, 1 pred_x0 row + 1 sprinter row (if snapshots exist)
+    total_row_count = 0
+    for _, _, sprinter_snaps in rows_for_zeta:
+        total_row_count += 1  # pred_x0 row
+        if sprinter_snaps:
+            total_row_count += 1  # sprinter photos row
+
     total_w = label_width + n_steps * cell_size
-    total_h = info_height + header_height + len(all_rows) * cell_size
+    total_h = info_height + header_height + total_row_count * cell_size
 
     composite = Image.new("RGB", (total_w, total_h), "white")
     draw = ImageDraw.Draw(composite)
@@ -232,38 +281,56 @@ def build_composite(all_rows, zetas, n_steps, source_face_pil=None,
         font = ImageFont.load_default()
         font_small = font
 
-    y_start = 0
+    y_cursor = 0
 
     # Source face + scribble thumbnails
     if source_face_pil and scribble_pil:
-        thumb_size = cell_size
-        composite.paste(source_face_pil.resize((thumb_size, thumb_size), Image.LANCZOS),
-                        (4, 4))
-        composite.paste(scribble_pil.resize((thumb_size, thumb_size), Image.LANCZOS),
-                        (4 + thumb_size + 4, 4))
-        draw.text((4, thumb_size + 6), "Source / Scribble", fill="gray", font=font_small)
-        y_start = info_height
+        composite.paste(source_face_pil.resize((cell_size, cell_size), Image.LANCZOS), (4, 4))
+        composite.paste(scribble_pil.resize((cell_size, cell_size), Image.LANCZOS),
+                        (4 + cell_size + 4, 4))
+        draw.text((4, cell_size + 6), "Source / Scribble", fill="gray", font=font_small)
+        y_cursor = info_height
 
     # Step number header
     for col in range(n_steps):
         x = label_width + col * cell_size + cell_size // 2
-        draw.text((x, y_start + 2), str(col + 1), fill="black", font=font_small, anchor="mt")
-
-    y_start += header_height
+        draw.text((x, y_cursor + 2), str(col + 1), fill="black", font=font_small, anchor="mt")
+    y_cursor += header_height
 
     # Rows
-    for row_idx, (label, images) in enumerate(all_rows):
-        y_offset = y_start + row_idx * cell_size
-
-        # Row label
-        draw.text((4, y_offset + cell_size // 2), label, fill="black", font=font, anchor="lm")
-
-        # Cells
-        for col, img in enumerate(images):
+    for label, step_images, sprinter_snaps in rows_for_zeta:
+        # pred_x0 row
+        draw.text((4, y_cursor + cell_size // 2), label, fill="black", font=font, anchor="lm")
+        for col, img in enumerate(step_images):
             if col >= n_steps:
                 break
             thumb = img.resize((cell_size, cell_size), Image.LANCZOS)
-            composite.paste(thumb, (label_width + col * cell_size, y_offset))
+            composite.paste(thumb, (label_width + col * cell_size, y_cursor))
+        y_cursor += cell_size
+
+        # Sprinter photos row
+        if sprinter_snaps:
+            sprinter_label = f"  sprinter photos"
+            draw.text((4, y_cursor + cell_size // 2), sprinter_label,
+                      fill="gray", font=font_small, anchor="lm")
+
+            for step_idx, photos in sorted(sprinter_snaps.items()):
+                col = step_idx  # step_idx maps to column
+                if col >= n_steps:
+                    break
+                # Tile photos horizontally within the cell's column span
+                n_photos = len(photos)
+                tile_w = cell_size // n_photos
+                for p_idx, photo in enumerate(photos):
+                    thumb = photo.resize((tile_w, cell_size), Image.LANCZOS)
+                    x = label_width + col * cell_size + p_idx * tile_w
+                    composite.paste(thumb, (x, y_cursor))
+
+                # Draw step number above the photos
+                draw.text((label_width + col * cell_size + cell_size // 2, y_cursor + 2),
+                          f"s{step_idx+1}", fill="yellow", font=font_small, anchor="mt")
+
+            y_cursor += cell_size
 
     return composite
 
@@ -287,18 +354,19 @@ def run_sweep_for_zetas(architect, sprinter, clip_model, clip_processor,
         scheduler._step_index = start_step
 
         if zeta == 0:
-            # No DPS guidance
-            _, step_images, _ = partial_denoise_loop_with_snapshots(
+            # No DPS guidance — still need sprinter for snapshot photos
+            _, step_images, _, sprinter_snaps = partial_denoise_loop_with_snapshots(
                 architect, scheduler,
                 noised_latent.detach().clone(), timesteps_partial,
                 cfg_encoder_states, added_cond_kwargs, args.guidance_scale,
-                dps_guidance=False, device=device,
+                dps_guidance=False, sprinter=sprinter, device=device,
+                sprinter_every=args.sprinter_every, sprinter_count=args.sprinter_count,
             )
         else:
             # DPS guidance
             sprinter.vae.to(dtype=torch.float32)
 
-            _, step_images, step_metrics = partial_denoise_loop_with_snapshots(
+            _, step_images, step_metrics, sprinter_snaps = partial_denoise_loop_with_snapshots(
                 architect, scheduler,
                 noised_latent.detach().clone(), timesteps_partial,
                 cfg_encoder_states, added_cond_kwargs, args.guidance_scale,
@@ -306,9 +374,10 @@ def run_sweep_for_zetas(architect, sprinter, clip_model, clip_processor,
                 clip_processor=clip_processor, all_clip_embeddings=all_clip_embeddings,
                 num_variations=args.num_variations, base_zeta_prime=zeta,
                 device=device,
+                sprinter_every=args.sprinter_every, sprinter_count=args.sprinter_count,
             )
 
-        rows.append((label, step_images))
+        rows.append((label, step_images, sprinter_snaps))
 
         del scheduler
         gc.collect(); torch.cuda.empty_cache()
@@ -501,31 +570,31 @@ def main():
             added_cond_kwargs, args, "LoRA", device,
         )
 
-    # ── 9. Build composite ────────────────────────────────────────────────────
-    print("\nBuilding composite image...", flush=True)
-
-    all_rows = []
-    if rows_no_lora and rows_lora:
-        # Interleave: No LoRA ζ=0, LoRA ζ=0, No LoRA ζ=0.2, LoRA ζ=0.2, ...
-        for z_idx in range(len(zetas)):
-            all_rows.append(rows_no_lora[z_idx])
-            all_rows.append(rows_lora[z_idx])
-    elif rows_no_lora:
-        all_rows = rows_no_lora
-    elif rows_lora:
-        all_rows = rows_lora
-
+    # ── 9. Build per-zeta composite images ──────────────────────────────────
+    print("\nBuilding composite images...", flush=True)
     n_actual_steps = len(timesteps_partial)
-    composite = build_composite(
-        all_rows, zetas, n_actual_steps,
-        source_face_pil=face_pil, scribble_pil=scribble_pil,
-    )
 
-    out_path = os.path.join(args.output_dir, "sweep_guidance.png")
-    composite.save(out_path)
-    print(f"Saved composite to {out_path}", flush=True)
+    for z_idx, zeta in enumerate(zetas):
+        # Collect rows for this zeta value
+        rows_for_zeta = []
+        if rows_no_lora:
+            rows_for_zeta.append(rows_no_lora[z_idx])
+        if rows_lora:
+            rows_for_zeta.append(rows_lora[z_idx])
 
-    wandb.log({"sweep_guidance": wandb.Image(composite, caption="DPS Guidance Sweep")})
+        composite = build_composite_per_zeta(
+            zeta, rows_for_zeta, n_actual_steps,
+            sprinter_every=args.sprinter_every,
+            source_face_pil=face_pil, scribble_pil=scribble_pil,
+        )
+
+        zeta_str = str(zeta).replace(".", "_")
+        out_path = os.path.join(args.output_dir, f"sweep_zeta_{zeta_str}.png")
+        composite.save(out_path)
+        print(f"Saved: {out_path}", flush=True)
+        wandb.log({f"sweep_zeta_{zeta}": wandb.Image(composite,
+                   caption=f"DPS Sweep zeta={zeta}")})
+
     wandb.finish()
     print("Done.", flush=True)
 

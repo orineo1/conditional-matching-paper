@@ -108,7 +108,7 @@ def generate_sprinter_photos(sprinter, scribble_pil, num_photos, batch_size=5):
         for start in range(0, num_photos, batch_size):
             bs = min(batch_size, num_photos - start)
             result = sprinter(
-                prompt=["a superrealistic professional photograph of a person, studio lighting"] * bs,
+                prompt=["a superrealistic professional photograph"] * bs,
                 image=[scribble_pil] * bs,
                 num_inference_steps=2, guidance_scale=0.0,
                 controlnet_conditioning_scale=0.8,
@@ -245,94 +245,123 @@ def partial_denoise_loop_with_snapshots(
 
 
 def build_composite_per_zeta(zeta, rows_for_zeta, n_steps, sprinter_every,
-                             source_face_pil=None, scribble_pil=None, cell_size=128):
-    """Build composite for one zeta value.
+                             source_face_pil=None, scribble_pil=None, cell_size=200):
+    """Build composite for one zeta value, split into two pages (first/second half of steps).
 
-    rows_for_zeta: list of (label, step_images, sprinter_snapshots) tuples (1 or 2 rows).
+    rows_for_zeta: list of (label, step_images, sprinter_snapshots) tuples.
 
-    Layout per row:
-      - pred_x0 row: label + N step images
-      - sprinter row(s): below, showing 5 photos at each snapshot step
-
-    Returns a PIL image.
+    Returns a list of PIL images (2 pages: first half + second half of steps).
+    Each page layout:
+      - Header: step numbers
+      - Per row: pred_x0 images for those steps
+      - Per row: sprinter photos below (at snapshot steps)
     """
-    label_width = 200
-    header_height = 20
-    photo_size = cell_size  # same size for sprinter photos
-    info_height = cell_size + 10 if source_face_pil else 0
+    mid = (n_steps + 1) // 2  # split point
+    pages = []
 
-    # Count rows: for each entry, 1 pred_x0 row + 1 sprinter row (if snapshots exist)
-    total_row_count = 0
-    for _, _, sprinter_snaps in rows_for_zeta:
-        total_row_count += 1  # pred_x0 row
-        if sprinter_snaps:
-            total_row_count += 1  # sprinter photos row
+    for page_idx, (col_start, col_end) in enumerate([(0, mid), (mid, n_steps)]):
+        n_cols = col_end - col_start
+        if n_cols == 0:
+            continue
 
-    total_w = label_width + n_steps * cell_size
-    total_h = info_height + header_height + total_row_count * cell_size
+        label_width = 220
+        header_height = 30
+        sprinter_photo_h = cell_size  # height for sprinter photo row
 
-    composite = Image.new("RGB", (total_w, total_h), "white")
-    draw = ImageDraw.Draw(composite)
+        # Count content rows
+        total_row_count = 0
+        for _, _, sprinter_snaps in rows_for_zeta:
+            total_row_count += 1  # pred_x0 row
+            # Check if any sprinter snapshots fall in this page's step range
+            if sprinter_snaps:
+                has_snaps = any(col_start <= s < col_end for s in sprinter_snaps)
+                if has_snaps:
+                    total_row_count += 1  # sprinter photos row
 
-    try:
-        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 11)
-        font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 9)
-    except (OSError, IOError):
-        font = ImageFont.load_default()
-        font_small = font
+        # Add space for source face/scribble on first page
+        info_height = 0
+        if page_idx == 0 and source_face_pil and scribble_pil:
+            info_height = cell_size + 20
 
-    y_cursor = 0
+        total_w = label_width + n_cols * cell_size
+        total_h = info_height + header_height + total_row_count * cell_size
 
-    # Source face + scribble thumbnails
-    if source_face_pil and scribble_pil:
-        composite.paste(source_face_pil.resize((cell_size, cell_size), Image.LANCZOS), (4, 4))
-        composite.paste(scribble_pil.resize((cell_size, cell_size), Image.LANCZOS),
-                        (4 + cell_size + 4, 4))
-        draw.text((4, cell_size + 6), "Source / Scribble", fill="gray", font=font_small)
-        y_cursor = info_height
+        composite = Image.new("RGB", (total_w, total_h), "white")
+        draw = ImageDraw.Draw(composite)
 
-    # Step number header
-    for col in range(n_steps):
-        x = label_width + col * cell_size + cell_size // 2
-        draw.text((x, y_cursor + 2), str(col + 1), fill="black", font=font_small, anchor="mt")
-    y_cursor += header_height
+        try:
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 14)
+            font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 11)
+            font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 16)
+        except (OSError, IOError):
+            font = ImageFont.load_default()
+            font_small = font
+            font_title = font
 
-    # Rows
-    for label, step_images, sprinter_snaps in rows_for_zeta:
-        # pred_x0 row
-        draw.text((4, y_cursor + cell_size // 2), label, fill="black", font=font, anchor="lm")
-        for col, img in enumerate(step_images):
-            if col >= n_steps:
-                break
-            thumb = img.resize((cell_size, cell_size), Image.LANCZOS)
-            composite.paste(thumb, (label_width + col * cell_size, y_cursor))
-        y_cursor += cell_size
+        y_cursor = 0
 
-        # Sprinter photos row
-        if sprinter_snaps:
-            sprinter_label = f"  sprinter photos"
-            draw.text((4, y_cursor + cell_size // 2), sprinter_label,
-                      fill="gray", font=font_small, anchor="lm")
+        # Source face + scribble (first page only)
+        if page_idx == 0 and source_face_pil and scribble_pil:
+            thumb_s = cell_size
+            composite.paste(source_face_pil.resize((thumb_s, thumb_s), Image.LANCZOS), (4, 4))
+            composite.paste(scribble_pil.resize((thumb_s, thumb_s), Image.LANCZOS),
+                            (4 + thumb_s + 8, 4))
+            draw.text((4 + 2 * thumb_s + 16, thumb_s // 2),
+                      f"\u03b6 = {zeta}   |   Steps {col_start+1}\u2013{col_end}",
+                      fill="black", font=font_title, anchor="lm")
+            draw.text((4, thumb_s + 4), "Source Face / Scribble", fill="gray", font=font_small)
+            y_cursor = info_height
+        else:
+            # Title for second page
+            draw.text((4, 4), f"\u03b6 = {zeta}   |   Steps {col_start+1}\u2013{col_end}",
+                      fill="black", font=font_title)
+            y_cursor = 24
 
-            for step_idx, photos in sorted(sprinter_snaps.items()):
-                col = step_idx  # step_idx maps to column
-                if col >= n_steps:
-                    break
-                # Tile photos horizontally within the cell's column span
-                n_photos = len(photos)
-                tile_w = cell_size // n_photos
-                for p_idx, photo in enumerate(photos):
-                    thumb = photo.resize((tile_w, cell_size), Image.LANCZOS)
-                    x = label_width + col * cell_size + p_idx * tile_w
-                    composite.paste(thumb, (x, y_cursor))
+        # Step number header
+        for col in range(n_cols):
+            step_num = col_start + col + 1
+            x = label_width + col * cell_size + cell_size // 2
+            draw.text((x, y_cursor + 4), str(step_num), fill="black", font=font_small, anchor="mt")
+        y_cursor += header_height
 
-                # Draw step number above the photos
-                draw.text((label_width + col * cell_size + cell_size // 2, y_cursor + 2),
-                          f"s{step_idx+1}", fill="yellow", font=font_small, anchor="mt")
-
+        # Rows
+        for label, step_images, sprinter_snaps in rows_for_zeta:
+            # pred_x0 row
+            draw.text((4, y_cursor + cell_size // 2), label, fill="black", font=font, anchor="lm")
+            for col in range(n_cols):
+                img_idx = col_start + col
+                if img_idx < len(step_images):
+                    thumb = step_images[img_idx].resize((cell_size, cell_size), Image.LANCZOS)
+                    composite.paste(thumb, (label_width + col * cell_size, y_cursor))
             y_cursor += cell_size
 
-    return composite
+            # Sprinter photos row (only if snapshots exist in this range)
+            if sprinter_snaps:
+                snaps_in_range = {s: p for s, p in sprinter_snaps.items()
+                                  if col_start <= s < col_end}
+                if snaps_in_range:
+                    draw.text((4, y_cursor + sprinter_photo_h // 2),
+                              "  \u2192 sprinter", fill="gray", font=font_small, anchor="lm")
+
+                    for step_idx, photos in sorted(snaps_in_range.items()):
+                        col = step_idx - col_start
+                        # Show photos side by side, each gets equal width
+                        n_photos = len(photos)
+                        photo_w = cell_size // n_photos
+                        for p_idx, photo in enumerate(photos):
+                            thumb = photo.resize((photo_w, sprinter_photo_h), Image.LANCZOS)
+                            x = label_width + col * cell_size + p_idx * photo_w
+                            composite.paste(thumb, (x, y_cursor))
+
+                        # Step label
+                        draw.text((label_width + col * cell_size + cell_size // 2, y_cursor + 2),
+                                  f"step {step_idx+1}", fill="yellow", font=font_small, anchor="mt")
+
+                    y_cursor += sprinter_photo_h
+
+        pages.append(composite)
+
+    return pages
 
 
 def run_sweep_for_zetas(architect, sprinter, clip_model, clip_processor,
@@ -582,18 +611,20 @@ def main():
         if rows_lora:
             rows_for_zeta.append(rows_lora[z_idx])
 
-        composite = build_composite_per_zeta(
+        pages = build_composite_per_zeta(
             zeta, rows_for_zeta, n_actual_steps,
             sprinter_every=args.sprinter_every,
             source_face_pil=face_pil, scribble_pil=scribble_pil,
         )
 
         zeta_str = str(zeta).replace(".", "_")
-        out_path = os.path.join(args.output_dir, f"sweep_zeta_{zeta_str}.png")
-        composite.save(out_path)
-        print(f"Saved: {out_path}", flush=True)
-        wandb.log({f"sweep_zeta_{zeta}": wandb.Image(composite,
-                   caption=f"DPS Sweep zeta={zeta}")})
+        for p_idx, page in enumerate(pages):
+            suffix = "a" if p_idx == 0 else "b"
+            out_path = os.path.join(args.output_dir, f"sweep_zeta_{zeta_str}_{suffix}.png")
+            page.save(out_path)
+            print(f"Saved: {out_path}", flush=True)
+            wandb.log({f"sweep_zeta_{zeta}_{suffix}": wandb.Image(page,
+                       caption=f"DPS Sweep zeta={zeta} part {suffix}")})
 
     wandb.finish()
     print("Done.", flush=True)

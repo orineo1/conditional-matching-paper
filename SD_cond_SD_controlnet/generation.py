@@ -163,12 +163,12 @@ def run_dps_step_clip(latents, latents_step, noise_pred, pixel_x0_norm,
                 (var_latents.float() / vae_scaling_factor).to(vae.dtype)
             ).sample
             var_pixels = torch.clamp((var_pixels.float() + 1.0) / 2.0, 0.0, 1.0)
-            # CLIP encode
-            return encode_images_clip(var_pixels, clip_model, clip_processor)
+            # CLIP encode — disable autocast to prevent fp16 overflow in CLIP ViT
+            with torch.cuda.amp.autocast(enabled=False):
+                return encode_images_clip(var_pixels.float(), clip_model, clip_processor)
 
-        with torch.cuda.amp.autocast():
-            var_clip = torch.utils.checkpoint.checkpoint(
-                sprinter_vae_clip_forward, ctrl_batch, use_reentrant=False)
+        var_clip = torch.utils.checkpoint.checkpoint(
+            sprinter_vae_clip_forward, ctrl_batch, use_reentrant=False)
         variation_clip_list.append(var_clip)
 
     variation_clip_embs = torch.cat(variation_clip_list, dim=0)  # [num_variations, 768], grad attached

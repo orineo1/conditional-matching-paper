@@ -174,6 +174,12 @@ def run_dps_step_clip(latents, latents_step, noise_pred, pixel_x0_norm,
     variation_clip_embs = torch.cat(variation_clip_list, dim=0)  # [num_variations, 768], grad attached
     torch.cuda.empty_cache()
 
+    # DEBUG: check variation CLIP embeddings
+    print(f"      var_clip_embs: shape={variation_clip_embs.shape} "
+          f"nan={torch.isnan(variation_clip_embs).sum().item()} "
+          f"range=[{variation_clip_embs.min().item():.4f}, {variation_clip_embs.max().item():.4f}] "
+          f"grad_fn={variation_clip_embs.grad_fn}", flush=True)
+
     # ── B. MMD between variation embeddings and fixed target ──────────────────
     mmd_squared = compute_mmd(variation_clip_embs, all_clip_embeddings.detach())
     mmd_loss    = torch.sqrt(mmd_squared.abs() + 1e-8)

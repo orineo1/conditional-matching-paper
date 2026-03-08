@@ -149,6 +149,11 @@ def partial_denoise_loop_with_snapshots(
                 vae_decode_checkpoint, pred_x0_scaled, use_reentrant=False)
             pixel_x0_norm = torch.clamp((pixel_x0 + 1.0) / 2.0, 0.0, 1.0)
 
+            # DEBUG: check for NaN before CLIP-MMD
+            print(f"      pred_x0 range: [{pred_x0.min().item():.4f}, {pred_x0.max().item():.4f}] nan={torch.isnan(pred_x0).sum().item()}", flush=True)
+            print(f"      pixel_x0_norm range: [{pixel_x0_norm.min().item():.4f}, {pixel_x0_norm.max().item():.4f}] nan={torch.isnan(pixel_x0_norm).sum().item()}", flush=True)
+            print(f"      all_clip_embeddings device={all_clip_embeddings.device} nan={torch.isnan(all_clip_embeddings).sum().item()}", flush=True)
+
             # CLIP-MMD guidance
             clip_model.to(device)
             grad, mmd_loss, zeta_i, loss_norm, vl_clip_flat = run_dps_step_clip(
@@ -264,6 +269,10 @@ def run_sweep_for_zetas(architect, sprinter, clip_model, clip_processor,
                         timesteps_partial, start_step, cfg_encoder_states,
                         added_cond_kwargs, args, lora_label, device):
     """Run denoising for each zeta value, return list of (label, step_images) tuples."""
+    # DEBUG: verify LoRA state matches label
+    from peft import PeftModel
+    has_lora = isinstance(architect.unet, PeftModel)
+    print(f"  DEBUG: lora_label='{lora_label}', UNet is PeftModel={has_lora}", flush=True)
     rows = []
 
     for zeta in zetas:
@@ -360,7 +369,10 @@ def main():
         woman_clip = encode_images_clip(pil_images_to_tensor(woman_images, device),
                                          clip_model, clip_processor)
     all_clip_embeddings = torch.cat([man_clip, woman_clip], dim=0)
-    print(f"Target CLIP embeddings: {all_clip_embeddings.shape}", flush=True)
+    print(f"Target CLIP embeddings: {all_clip_embeddings.shape} "
+          f"nan={torch.isnan(all_clip_embeddings).sum().item()} "
+          f"range=[{all_clip_embeddings.min().item():.4f}, {all_clip_embeddings.max().item():.4f}]",
+          flush=True)
 
     del man_images, woman_images, man_clip, woman_clip
     clip_model.to("cpu")

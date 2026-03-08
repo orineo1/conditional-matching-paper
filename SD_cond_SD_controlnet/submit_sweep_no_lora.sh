@@ -26,10 +26,12 @@ python SD_cond_SD_controlnet/sweep_guidance.py \
     --seed 42 \
     --n_steps 30 \
     --zetas "0,0.2,1.0,5.0" \
-    --strength 0.5 \
+    --strength 1.0 \
     --guidance_scale 7.5 \
     --n_targets 20 \
     --num_variations 20 \
-    --edge_method hed_scribble
+    --edge_method hed_scribble \
+    --sprinter_every 3 \
+    --sprinter_count 5
 
 echo "Sweep (no LoRA) complete."

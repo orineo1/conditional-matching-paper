@@ -65,6 +65,10 @@ def parse_args():
                    choices=["sobel", "hed_scribble"])
     p.add_argument("--wandb_project", type=str, default="combined_conditional_flow")
     p.add_argument("--wandb_entity", type=str, default="conditional-matching")
+    p.add_argument("--lora_only", action="store_true",
+                   help="Only run WITH LoRA (skip no-LoRA rows)")
+    p.add_argument("--no_lora_only", action="store_true",
+                   help="Only run WITHOUT LoRA (skip LoRA rows)")
     return p.parse_args()
 
 
@@ -334,9 +338,10 @@ def main():
         config=vars(args),
     )
 
-    # ── 1. Load models (no LoRA first) ─────────────────────────────────────────
-    print("Loading models (no LoRA)...", flush=True)
-    architect, sprinter = load_models(device, architect_lora_path=None)
+    # ── 1. Load models ───────────────────────────────────────────────────────
+    initial_lora = args.lora_path if args.lora_only else None
+    print(f"Loading models (lora_path={initial_lora})...", flush=True)
+    architect, sprinter = load_models(device, architect_lora_path=initial_lora)
     clip_model, clip_processor = load_clip_model(device)
     setup_gradient_checkpointing(architect, sprinter)
     print("Models loaded.", flush=True)
@@ -440,68 +445,75 @@ def main():
     # Cast noised latent to UNet dtype
     noised_latent = noised_latent.to(prompt_embeds.dtype)
 
-    # ── 8. Sweep zetas WITHOUT LoRA ────────────────────────────────────────────
-    print("\n" + "=" * 70, flush=True)
-    print("SWEEP: No LoRA", flush=True)
-    print("=" * 70, flush=True)
+    # ── 8. Sweep zetas ───────────────────────────────────────────────────────
+    rows_no_lora = None
+    rows_lora = None
 
-    rows_no_lora = run_sweep_for_zetas(
-        architect, sprinter, clip_model, clip_processor,
-        all_clip_embeddings, zetas, noised_latent,
-        timesteps_partial, start_step, cfg_encoder_states,
-        added_cond_kwargs, args, "No LoRA", device,
-    )
+    if not args.lora_only:
+        print("\n" + "=" * 70, flush=True)
+        print("SWEEP: No LoRA", flush=True)
+        print("=" * 70, flush=True)
 
-    # ── 9. Reload architect WITH LoRA ──────────────────────────────────────────
-    print("\nReloading architect with LoRA...", flush=True)
-    del architect
-    gc.collect(); torch.cuda.empty_cache()
-
-    # Re-load full models with LoRA
-    architect, sprinter_new = load_models(device, architect_lora_path=args.lora_path)
-    setup_gradient_checkpointing(architect, sprinter_new)
-    # Keep existing sprinter (already loaded, same weights)
-    del sprinter_new
-    gc.collect(); torch.cuda.empty_cache()
-
-    # Re-encode prompts with new architect
-    with torch.no_grad():
-        (prompt_embeds, negative_prompt_embeds,
-         pooled_prompt_embeds, negative_pooled_prompt_embeds,
-        ) = architect.encode_prompt(
-            prompt=prompt, negative_prompt=negative_prompt,
-            device=device, do_classifier_free_guidance=True, num_images_per_prompt=1,
+        rows_no_lora = run_sweep_for_zetas(
+            architect, sprinter, clip_model, clip_processor,
+            all_clip_embeddings, zetas, noised_latent,
+            timesteps_partial, start_step, cfg_encoder_states,
+            added_cond_kwargs, args, "No LoRA", device,
         )
 
-    added_cond_kwargs = {
-        "text_embeds": torch.cat([negative_pooled_prompt_embeds, pooled_prompt_embeds], dim=0),
-        "time_ids": add_time_ids.repeat(2, 1),
-    }
-    cfg_encoder_states = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
+    if not args.no_lora_only:
+        if not args.lora_only:
+            # Need to reload architect with LoRA
+            print("\nReloading architect with LoRA...", flush=True)
+            del architect
+            gc.collect(); torch.cuda.empty_cache()
 
-    # Re-setup scheduler for LoRA architect
-    architect.scheduler.set_timesteps(n_steps, device=device)
+            architect, sprinter_new = load_models(device, architect_lora_path=args.lora_path)
+            setup_gradient_checkpointing(architect, sprinter_new)
+            del sprinter_new
+            gc.collect(); torch.cuda.empty_cache()
 
-    # ── 10. Sweep zetas WITH LoRA ──────────────────────────────────────────────
-    print("\n" + "=" * 70, flush=True)
-    print("SWEEP: With LoRA", flush=True)
-    print("=" * 70, flush=True)
+            # Re-encode prompts with new architect
+            with torch.no_grad():
+                (prompt_embeds, negative_prompt_embeds,
+                 pooled_prompt_embeds, negative_pooled_prompt_embeds,
+                ) = architect.encode_prompt(
+                    prompt=prompt, negative_prompt=negative_prompt,
+                    device=device, do_classifier_free_guidance=True, num_images_per_prompt=1,
+                )
 
-    rows_lora = run_sweep_for_zetas(
-        architect, sprinter, clip_model, clip_processor,
-        all_clip_embeddings, zetas, noised_latent,
-        timesteps_partial, start_step, cfg_encoder_states,
-        added_cond_kwargs, args, "LoRA", device,
-    )
+            added_cond_kwargs = {
+                "text_embeds": torch.cat([negative_pooled_prompt_embeds, pooled_prompt_embeds], dim=0),
+                "time_ids": add_time_ids.repeat(2, 1),
+            }
+            cfg_encoder_states = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
 
-    # ── 11. Build composite ───────────────────────────────────────────────────
+            architect.scheduler.set_timesteps(n_steps, device=device)
+
+        print("\n" + "=" * 70, flush=True)
+        print("SWEEP: With LoRA", flush=True)
+        print("=" * 70, flush=True)
+
+        rows_lora = run_sweep_for_zetas(
+            architect, sprinter, clip_model, clip_processor,
+            all_clip_embeddings, zetas, noised_latent,
+            timesteps_partial, start_step, cfg_encoder_states,
+            added_cond_kwargs, args, "LoRA", device,
+        )
+
+    # ── 9. Build composite ────────────────────────────────────────────────────
     print("\nBuilding composite image...", flush=True)
 
-    # Interleave: No LoRA ζ=0, LoRA ζ=0, No LoRA ζ=0.2, LoRA ζ=0.2, ...
     all_rows = []
-    for z_idx in range(len(zetas)):
-        all_rows.append(rows_no_lora[z_idx])
-        all_rows.append(rows_lora[z_idx])
+    if rows_no_lora and rows_lora:
+        # Interleave: No LoRA ζ=0, LoRA ζ=0, No LoRA ζ=0.2, LoRA ζ=0.2, ...
+        for z_idx in range(len(zetas)):
+            all_rows.append(rows_no_lora[z_idx])
+            all_rows.append(rows_lora[z_idx])
+    elif rows_no_lora:
+        all_rows = rows_no_lora
+    elif rows_lora:
+        all_rows = rows_lora
 
     n_actual_steps = len(timesteps_partial)
     composite = build_composite(

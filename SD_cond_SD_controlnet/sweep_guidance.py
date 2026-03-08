@@ -340,24 +340,25 @@ def build_composite_per_zeta(zeta, rows_for_zeta, n_steps, sprinter_every,
                 snaps_in_range = {s: p for s, p in sprinter_snaps.items()
                                   if col_start <= s < col_end}
                 if snaps_in_range:
-                    draw.text((4, y_cursor + sprinter_photo_h // 2),
+                    draw.text((4, y_cursor + cell_size // 2),
                               "  \u2192 sprinter", fill="gray", font=font_small, anchor="lm")
 
                     for step_idx, photos in sorted(snaps_in_range.items()):
                         col = step_idx - col_start
-                        # Show photos side by side, each gets equal width
-                        n_photos = len(photos)
-                        photo_w = cell_size // n_photos
+                        # Spread photos across adjacent columns (square aspect ratio)
                         for p_idx, photo in enumerate(photos):
-                            thumb = photo.resize((photo_w, sprinter_photo_h), Image.LANCZOS)
-                            x = label_width + col * cell_size + p_idx * photo_w
+                            target_col = col + p_idx
+                            if target_col >= n_cols:
+                                break
+                            thumb = photo.resize((cell_size, cell_size), Image.LANCZOS)
+                            x = label_width + target_col * cell_size
                             composite.paste(thumb, (x, y_cursor))
 
-                        # Step label
-                        draw.text((label_width + col * cell_size + cell_size // 2, y_cursor + 2),
-                                  f"step {step_idx+1}", fill="yellow", font=font_small, anchor="mt")
+                        # Step label on first photo
+                        draw.text((label_width + col * cell_size + 4, y_cursor + 4),
+                                  f"step {step_idx+1}", fill="yellow", font=font_small)
 
-                    y_cursor += sprinter_photo_h
+                    y_cursor += cell_size
 
         pages.append(composite)
 

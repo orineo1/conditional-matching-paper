@@ -20,11 +20,15 @@ nvidia-smi
 # Create output directory
 mkdir -p finetune_scribble/output
 
-# Launch multi-GPU training with accelerate
+# Launch multi-GPU training with DeepSpeed ZeRO-2 (shards optimizer states + gradients)
 accelerate launch \
     --multi_gpu \
     --num_processes=4 \
     --mixed_precision fp16 \
+    --use_deepspeed \
+    --zero_stage 2 \
+    --gradient_accumulation_steps 1 \
+    --gradient_clipping 1.0 \
     finetune_scribble/train_full.py \
     --config finetune_scribble/config.yaml
 

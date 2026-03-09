@@ -22,10 +22,9 @@ mkdir -p finetune_scribble/output
 
 # Launch multi-GPU training with DeepSpeed ZeRO-2 (shards optimizer states + gradients)
 accelerate launch \
-    --multi_gpu \
+    --use_deepspeed \
     --num_processes=4 \
     --mixed_precision fp16 \
-    --use_deepspeed \
     --zero_stage 2 \
     --gradient_accumulation_steps 1 \
     --gradient_clipping 1.0 \

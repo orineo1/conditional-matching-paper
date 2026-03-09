@@ -407,6 +407,24 @@ def run_sweep_for_zetas(architect, sprinter, clip_model, clip_processor,
                 sprinter_every=args.sprinter_every, sprinter_count=args.sprinter_count,
             )
 
+        # Save individual images to folder
+        lora_tag = "lora" if has_lora else "no_lora"
+        zeta_str = str(zeta).replace(".", "_")
+        img_dir = os.path.join(args.output_dir, f"{lora_tag}_zeta_{zeta_str}")
+        os.makedirs(img_dir, exist_ok=True)
+
+        for s_idx, img in enumerate(step_images):
+            img.save(os.path.join(img_dir, f"pred_x0_step_{s_idx+1:02d}.png"))
+
+        if sprinter_snaps:
+            for s_idx, photos in sorted(sprinter_snaps.items()):
+                for p_idx, photo in enumerate(photos):
+                    photo.save(os.path.join(img_dir, f"sprinter_step_{s_idx+1:02d}_img{p_idx+1}.png"))
+
+        print(f"  Saved {len(step_images)} pred_x0 + "
+              f"{sum(len(p) for p in sprinter_snaps.values())} sprinter images to {img_dir}",
+              flush=True)
+
         rows.append((label, step_images, sprinter_snaps))
 
         del scheduler

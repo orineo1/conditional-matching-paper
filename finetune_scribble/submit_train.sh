@@ -20,6 +20,14 @@ nvidia-smi
 # Create output directory
 mkdir -p finetune_scribble/output
 
+# Set CUDA_HOME for DeepSpeed (try conda env first, then system)
+if [ -d "$CONDA_PREFIX/lib/python3.12/site-packages/nvidia/cuda_runtime" ]; then
+    export CUDA_HOME="$CONDA_PREFIX"
+elif [ -d "/usr/local/cuda" ]; then
+    export CUDA_HOME="/usr/local/cuda"
+fi
+export DS_BUILD_OPS=0  # skip JIT compilation, use pre-built ops only
+
 # Launch multi-GPU training with DeepSpeed ZeRO-2 (shards optimizer states + gradients)
 accelerate launch \
     --use_deepspeed \

@@ -4,7 +4,7 @@ output_dir: "./finetune_scribble/output"
 resolution: 512
 learning_rate: 1.0e-6
 lr_scheduler: "cosine"
-train_batch_size: 4
+train_batch_size: 16
 gradient_accumulation_steps: 1
 num_epochs: 3
 mixed_precision: "fp16"

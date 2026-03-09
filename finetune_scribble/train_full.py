@@ -112,12 +112,9 @@ def main():
     text_encoder_1.requires_grad_(False)
     text_encoder_2.requires_grad_(False)
 
-    # Full U-Net is trainable
+    # Full U-Net is trainable (keep fp16 — DeepSpeed maintains fp32 master weights internally)
     unet.requires_grad_(True)
     unet.enable_gradient_checkpointing()
-
-    # Cast U-Net to float32 for training stability
-    unet = unet.float()
 
     trainable_params = list(unet.parameters())
     total_params = sum(p.numel() for p in trainable_params)
@@ -199,20 +196,20 @@ def main():
 
                 # Add noise to latents
                 noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
-                noisy_latents = noisy_latents.to(dtype=torch.float32)
+                noisy_latents = noisy_latents.to(dtype=torch.float16)
 
                 # Expand time_ids to batch size
-                batch_time_ids = add_time_ids.to(dtype=torch.float32).expand(bsz, -1)
+                batch_time_ids = add_time_ids.expand(bsz, -1)
 
                 added_cond_kwargs = {
-                    "text_embeds": pooled_prompt_embeds.to(dtype=torch.float32),
+                    "text_embeds": pooled_prompt_embeds,
                     "time_ids": batch_time_ids,
                 }
 
                 # Predict noise
                 noise_pred = unet(
                     noisy_latents, timesteps,
-                    encoder_hidden_states=prompt_embeds.to(dtype=torch.float32),
+                    encoder_hidden_states=prompt_embeds,
                     added_cond_kwargs=added_cond_kwargs,
                 ).sample
 

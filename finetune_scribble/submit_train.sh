@@ -20,22 +20,15 @@ nvidia-smi
 # Create output directory
 mkdir -p finetune_scribble/output
 
-# Set CUDA_HOME for DeepSpeed (try conda env first, then system)
-if [ -d "$CONDA_PREFIX/lib/python3.12/site-packages/nvidia/cuda_runtime" ]; then
-    export CUDA_HOME="$CONDA_PREFIX"
-elif [ -d "/usr/local/cuda" ]; then
-    export CUDA_HOME="/usr/local/cuda"
-fi
-export DS_BUILD_OPS=0  # skip JIT compilation, use pre-built ops only
-
-# Launch multi-GPU training with DeepSpeed ZeRO-2 (shards optimizer states + gradients)
+# Launch multi-GPU training with FSDP (shards model + optimizer + gradients across GPUs)
 accelerate launch \
-    --use_deepspeed \
+    --use_fsdp \
     --num_processes=4 \
     --mixed_precision fp16 \
-    --zero_stage 2 \
-    --gradient_accumulation_steps 1 \
-    --gradient_clipping 1.0 \
+    --fsdp_sharding_strategy FULL_SHARD \
+    --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP \
+    --fsdp_backward_prefetch BACKWARD_PRE \
+    --fsdp_state_dict_type FULL_STATE_DICT \
     finetune_scribble/train_full.py \
     --config finetune_scribble/config.yaml
 

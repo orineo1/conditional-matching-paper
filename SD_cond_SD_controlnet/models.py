@@ -5,6 +5,7 @@ from diffusers import (
     StableDiffusionXLPipeline,
     StableDiffusionXLControlNetPipeline,
     ControlNetModel,
+    UNet2DConditionModel,
 )
 from peft import PeftModel
 from huggingface_hub import hf_hub_download
@@ -46,7 +47,7 @@ def _resolve_lora_path(lora_path: str) -> str:
 
     return local_path
 
-def load_models(device, architect_lora_path=None):
+def load_models(device, architect_lora_path=None, architect_unet_path=None):
     controlnet = ControlNetModel.from_pretrained(
         "xinsir/controlnet-scribble-sdxl-1.0", torch_dtype=torch.float16
     ).to(device)
@@ -60,7 +61,12 @@ def load_models(device, architect_lora_path=None):
         "stabilityai/sdxl-turbo", torch_dtype=torch.float16, variant="fp16"
     ).to(device)
 
-    if architect_lora_path:
+    if architect_unet_path:
+        architect.unet = UNet2DConditionModel.from_pretrained(
+            architect_unet_path, torch_dtype=torch.float16,
+        ).to(device)
+        print(f"Loaded fine-tuned architect U-Net from {architect_unet_path}")
+    elif architect_lora_path:
         resolved_path = _resolve_lora_path(architect_lora_path)
         architect.unet = PeftModel.from_pretrained(architect.unet, resolved_path)
         print(f"Loaded architect LoRA from {resolved_path}")

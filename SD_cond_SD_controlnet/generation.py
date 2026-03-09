@@ -138,14 +138,8 @@ def run_dps_step_clip(latents, latents_step, noise_pred, pixel_x0_norm,
                       sprinter, all_clip_embeddings, num_variations,
                       variation_batch_size, base_zeta_prime,
                       clip_model, clip_processor, vae, vae_scaling_factor):
-    """
-    DPS step using CLIP embeddings + MMD guidance.
-    Gradient flows through N variation CLIP embeddings (via sprinter → VAE → CLIP),
-    not through a single pred_x0. MMD between variations (grad) and targets (detached).
-    """
     from clip_utils import encode_images_clip
 
-    # ── A. Generate variations WITH gradient (checkpointed for memory) ────────
     variation_clip_list = []
     for start_idx in range(0, num_variations, variation_batch_size):
         end_idx = min(start_idx + variation_batch_size, num_variations)
@@ -171,7 +165,7 @@ def run_dps_step_clip(latents, latents_step, noise_pred, pixel_x0_norm,
             sprinter_vae_clip_forward, ctrl_batch, use_reentrant=False)
         variation_clip_list.append(var_clip)
 
-    variation_clip_embs = torch.cat(variation_clip_list, dim=0)  # [num_variations, 768], grad attached
+    variation_clip_embs = torch.cat(variation_clip_list, dim=0)
     torch.cuda.empty_cache()
 
     # DEBUG: check variation CLIP embeddings

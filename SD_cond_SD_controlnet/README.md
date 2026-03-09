@@ -72,6 +72,40 @@ This tests whether DPS guidance can steer a recognizable scribble toward the tar
 
 All target the `salmon` partition (L40S 48GB GPU), 2-hour time limit.
 
+## Files Edited by Ori Meidler (07/03/2026)
+
+### `generation.py` — AMP compatibility fix
+- `run_dps_step_clip()`: replaced deprecated `torch.cuda.amp.autocast` with
+  `torch.amp.autocast('cuda', enabled=False)`. Disabling autocast around VAE
+  decode prevents fp16/fp32 dtype mismatches that caused silent gradient corruption.
+
+### `models.py` — HuggingFace Hub LoRA loading
+- Added `_resolve_lora_path()`: transparently resolves `hf://<repo_id>/<file>`
+  paths by downloading from HuggingFace Hub via `hf_hub_download`, extracting
+  zip archives, and locating `adapter_config.json`. Local paths pass through
+  unchanged.
+- `load_models()` now calls `_resolve_lora_path()` before loading LoRA weights,
+  so `architect_lora_path` can be either a local path or an `hf://` URL.
+
+### `main.ipynb` — SDEdit-style init + HED scribbles
+- **HED scribble conditioning**: replaced Sobel edge detection with
+  `controlnet_aux.HEDdetector` in scribble mode for cleaner, sparser outlines
+  that better match the ControlNet's training distribution.
+- **SDEdit-style init**: instead of starting from pure Gaussian noise, the
+  notebook now VAE-encodes the HED scribble, adds noise at `start_step=15`
+  (halfway through the 30-step schedule), and runs DPS only from that point.
+  This preserves the scribble's structural content while still allowing
+  CLIP-MMD guidance to steer the generation.
+- **Stronger guidance**: `base_zeta_prime` increased from 0.2 → 1.0;
+  `guidance_scale` set to 0.0 (unconditional architect denoising).
+- **Scheduler fix**: added `scheduler_regular = copy.deepcopy(architect.scheduler)`
+  so the guided and unguided paths each have independent scheduler state,
+  preventing step-index corruption.
+- **`compute_pred_x0_direct`**: switched from `compute_pred_x0` (which calls
+  `scheduler.step()` internally) to `compute_pred_x0_direct` for both paths.
+- **HuggingFace auth**: notebook now reads `HF` and `GITHUB` tokens from Colab
+  secrets and logs in automatically; falls back to manual input if absent.
+
 ## Gradient Flow Path
 
 ```

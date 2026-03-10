@@ -239,24 +239,21 @@ def main():
                 if accelerator.is_main_process:
                     print(f"Epoch {epoch+1}/{num_epochs} | Step {global_step}/{max_train_steps} | Loss: {loss.item():.4f}")
 
-            if global_step % cfg["checkpointing_steps"] == 0 and accelerator.is_main_process:
+            if global_step % cfg["checkpointing_steps"] == 0:
                 save_dir = Path(cfg["output_dir"]) / f"checkpoint-{global_step}"
-                save_dir.mkdir(parents=True, exist_ok=True)
-                unwrapped = accelerator.unwrap_model(unet)
-                unwrapped.save_pretrained(save_dir)
-                print(f"Saved checkpoint to {save_dir}")
+                accelerator.save_state(save_dir)
+                if accelerator.is_main_process:
+                    print(f"Saved checkpoint to {save_dir}")
 
         if accelerator.is_main_process:
             avg_loss = epoch_loss / max(epoch_steps, 1)
             print(f"Epoch {epoch+1}/{num_epochs} complete | Avg loss: {avg_loss:.4f}")
 
-    # Save final U-Net weights
+    # Save final checkpoint
+    final_dir = Path(cfg["output_dir"]) / "final"
+    accelerator.save_state(final_dir)
     if accelerator.is_main_process:
-        output_dir = Path(cfg["output_dir"])
-        output_dir.mkdir(parents=True, exist_ok=True)
-        unwrapped = accelerator.unwrap_model(unet)
-        unwrapped.save_pretrained(output_dir)
-        print(f"Saved final U-Net weights to {output_dir}")
+        print(f"Saved final checkpoint to {final_dir}")
 
     accelerator.end_training()
 

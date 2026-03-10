@@ -28,7 +28,7 @@ accelerate launch \
     --fsdp_sharding_strategy FULL_SHARD \
     --fsdp_auto_wrap_policy TRANSFORMER_BASED_WRAP \
     --fsdp_backward_prefetch BACKWARD_PRE \
-    --fsdp_state_dict_type FULL_STATE_DICT \
+    --fsdp_state_dict_type SHARDED_STATE_DICT \
     finetune_scribble/train_full.py \
     --config finetune_scribble/config.yaml
 

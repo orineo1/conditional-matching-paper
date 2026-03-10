@@ -13,6 +13,7 @@ from accelerate.utils import set_seed
 from diffusers import AutoencoderKL, DDPMScheduler, UNet2DConditionModel
 from diffusers.optimization import get_scheduler
 from PIL import Image
+from torch.distributed.fsdp import FullStateDictConfig, FullyShardedDataParallel as FSDP, StateDictType
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
 from transformers import CLIPTextModel, CLIPTextModelWithProjection, CLIPTokenizer
@@ -241,9 +242,21 @@ def main():
 
             if global_step % cfg["checkpointing_steps"] == 0:
                 save_dir = Path(cfg["output_dir"]) / f"checkpoint-{global_step}"
+                # Save FSDP state for resume
                 accelerator.save_state(save_dir)
+                # Save merged (unflattened) U-Net for inference
+                full_sd_config = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
+                with FSDP.state_dict_type(unet, StateDictType.FULL_STATE_DICT, full_sd_config):
+                    state_dict = unet.state_dict()
                 if accelerator.is_main_process:
-                    print(f"Saved checkpoint to {save_dir}")
+                    merged_dir = save_dir / "merged"
+                    merged_unet = UNet2DConditionModel.from_config(
+                        UNet2DConditionModel.load_config(cfg["model_name"], subfolder="unet"),
+                    )
+                    merged_unet.load_state_dict(state_dict)
+                    merged_unet.to(torch.float16).save_pretrained(merged_dir)
+                    del merged_unet
+                    print(f"Saved checkpoint to {save_dir} (+ merged)")
 
         if accelerator.is_main_process:
             avg_loss = epoch_loss / max(epoch_steps, 1)
@@ -252,8 +265,18 @@ def main():
     # Save final checkpoint
     final_dir = Path(cfg["output_dir"]) / "final"
     accelerator.save_state(final_dir)
+    full_sd_config = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
+    with FSDP.state_dict_type(unet, StateDictType.FULL_STATE_DICT, full_sd_config):
+        state_dict = unet.state_dict()
     if accelerator.is_main_process:
-        print(f"Saved final checkpoint to {final_dir}")
+        merged_dir = final_dir / "merged"
+        merged_unet = UNet2DConditionModel.from_config(
+            UNet2DConditionModel.load_config(cfg["model_name"], subfolder="unet"),
+        )
+        merged_unet.load_state_dict(state_dict)
+        merged_unet.to(torch.float16).save_pretrained(merged_dir)
+        del merged_unet
+        print(f"Saved final checkpoint to {final_dir} (+ merged)")
 
     accelerator.end_training()
 

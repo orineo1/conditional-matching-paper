@@ -192,7 +192,7 @@ def denoise_with_trajectory(pipe, face_images, device, strength, n_steps, seed=4
 def main():
     parser = argparse.ArgumentParser(description="Compare denoising trajectories: base vs fine-tuned")
     parser.add_argument("--config", type=str, default="finetune_scribble/config.yaml")
-    parser.add_argument("--checkpoint", type=str, default="finetune_scribble/output/checkpoint-5000")
+    parser.add_argument("--checkpoint", type=str, default="finetune_scribble/output/checkpoint-5000/merged")
     parser.add_argument("--strengths", type=str, default="0.5,0.8")
     parser.add_argument("--n_steps", type=int, default=30)
     parser.add_argument("--num_faces", type=int, default=5)

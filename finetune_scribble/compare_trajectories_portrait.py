@@ -1,12 +1,11 @@
-"""Compare denoising trajectories using portrait-derived scribbles (the real task).
+"""Compare denoising trajectories using generated scribble faces as starting point.
 
 Workflow per face:
-  1. Generate a portrait face via sprinter (ControlNet + oval base image)
-  2. Extract HED scribble edges
-  3. Encode scribble → latent → add noise
-  4. Denoise with base SDXL Turbo, capture pred_x0 at every step
-  5. Denoise with fine-tuned U-Net (same noise), capture pred_x0 at every step
-  6. Build composite grids: rows=[base, fine-tuned], columns=steps
+  1. Generate a face scribble using the fine-tuned model (pure generation, 4 steps)
+  2. Encode scribble → latent → add noise
+  3. Denoise with base SDXL Turbo, capture pred_x0 at every step
+  4. Denoise with fine-tuned U-Net (same noise), capture pred_x0 at every step
+  5. Build composite grids: rows=[base, fine-tuned], columns=steps
 """
 
 import argparse
@@ -15,31 +14,17 @@ from pathlib import Path
 
 import numpy as np
 import torch
-import torchvision.transforms as T
 import wandb
-from diffusers import (
-    ControlNetModel,
-    StableDiffusionXLControlNetPipeline,
-    StableDiffusionXLPipeline,
-    UNet2DConditionModel,
-)
+from diffusers import StableDiffusionXLPipeline, UNet2DConditionModel
 from PIL import Image, ImageDraw
 from torchvision import transforms
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "SD_cond_SD_controlnet"))
 from generation import compute_pred_x0_direct
-from image_utils import build_base_image, sobel_proxy
 
-PROMPT = "rough pencil scribble outline, loose sketch, minimal line art"
-NEGATIVE_PROMPT = "detailed, realistic, photograph, complex, colored, shading"
+DENOISE_PROMPT = "rough pencil scribble outline, loose sketch, minimal line art"
+DENOISE_NEGATIVE = "detailed, realistic, photograph, complex, colored, shading"
 GUIDANCE_SCALE = 7.5
-
-
-def extract_scribble_hed(pil_image):
-    """Extract a simple scribble from a PIL image using HED in scribble mode."""
-    from controlnet_aux import HEDdetector
-    hed = HEDdetector.from_pretrained("lllyasviel/Annotators")
-    return hed(pil_image, scribble=True)
 
 
 def pil_to_tensor_batch(images, device):
@@ -93,29 +78,22 @@ def make_grid(images_2d, col_labels=None, row_labels=None, cell_size=128, paddin
     return grid
 
 
-def generate_source_faces(sprinter, base_pil, sobel_cond_pil, n_faces, device):
-    """Generate portrait faces via sprinter + ControlNet, then extract HED scribbles."""
-    faces = []
+def generate_scribble_faces(pipe, num_faces, gen_prompt, gen_negative, gen_guidance, device):
+    """Generate face scribbles using the (fine-tuned) pipeline via pure generation."""
     scribbles = []
-    for i in range(n_faces):
+    for i in range(num_faces):
+        generator = torch.Generator(device=device).manual_seed(i + 100)
         with torch.no_grad():
-            result = sprinter(
-                prompt="a superrealistic portrait photograph of a man, studio lighting",
-                image=sobel_cond_pil,
-                num_inference_steps=2,
-                guidance_scale=0.0,
-                controlnet_conditioning_scale=0.5,
-            )
-            face_pil = result.images[0]
-
-        # Extract HED scribble from face
-        scribble_pil = extract_scribble_hed(face_pil)
-
-        faces.append(face_pil)
-        scribbles.append(scribble_pil)
-        print(f"  Generated face {i} + HED scribble", flush=True)
-
-    return faces, scribbles
+            img = pipe(
+                prompt=gen_prompt,
+                negative_prompt=gen_negative,
+                num_inference_steps=4,
+                guidance_scale=gen_guidance,
+                generator=generator,
+            ).images[0]
+        scribbles.append(img)
+        print(f"  Generated scribble {i} (seed={i + 100})", flush=True)
+    return scribbles
 
 
 def denoise_with_trajectory(pipe, scribble_images, device, strength, n_steps, seed=42):
@@ -153,7 +131,7 @@ def denoise_with_trajectory(pipe, scribble_images, device, strength, n_steps, se
 
     (prompt_embeds, negative_prompt_embeds,
      pooled_prompt_embeds, negative_pooled_prompt_embeds) = pipe.encode_prompt(
-        prompt=PROMPT, negative_prompt=NEGATIVE_PROMPT,
+        prompt=DENOISE_PROMPT, negative_prompt=DENOISE_NEGATIVE,
         device=device, num_images_per_prompt=1,
         do_classifier_free_guidance=True,
     )
@@ -201,8 +179,11 @@ def denoise_with_trajectory(pipe, scribble_images, device, strength, n_steps, se
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Trajectory comparison using portrait-derived scribbles (real task)")
-    parser.add_argument("--checkpoint", type=str, default="finetune_scribble/output/checkpoint-1000/merged")
+        description="Trajectory comparison using generated scribble faces")
+    parser.add_argument("--checkpoint", type=str, default="finetune_scribble/output/checkpoint-2000/merged")
+    parser.add_argument("--gen_prompt", type=str, default="simple hand-drawn scribble of a male face")
+    parser.add_argument("--gen_negative", type=str, default="detailed, realistic, photograph, shading")
+    parser.add_argument("--gen_guidance", type=float, default=7.5)
     parser.add_argument("--strengths", type=str, default="0.5,0.8")
     parser.add_argument("--n_steps", type=int, default=30)
     parser.add_argument("--num_faces", type=int, default=3)
@@ -214,75 +195,58 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     strengths = [float(s) for s in args.strengths.split(",")]
     output_dir = Path(args.output_dir)
-    checkpoint_name = Path(args.checkpoint).parent.name  # e.g. "checkpoint-1000"
+    checkpoint_name = Path(args.checkpoint).parent.name
 
-    run = wandb.init(
-        project=args.wandb_project,
-        entity=args.wandb_entity,
+    wandb.init(
+        project=args.wandb_project, entity=args.wandb_entity,
         name=f"portrait-trajectory-{checkpoint_name}",
         settings=wandb.Settings(init_timeout=300),
         config={
             "checkpoint": args.checkpoint,
+            "gen_prompt": args.gen_prompt,
             "strengths": strengths,
             "n_steps": args.n_steps,
             "num_faces": args.num_faces,
-            "source": "portrait_sobel",
+            "source": "generated_scribble",
         },
         job_type="portrait_trajectory",
     )
 
-    # --- Load sprinter (ControlNet pipeline) for face generation ---
-    print("\nLoading sprinter (SDXL Turbo + ControlNet-Scribble)...", flush=True)
-    controlnet = ControlNetModel.from_pretrained(
-        "xinsir/controlnet-scribble-sdxl-1.0",
-        torch_dtype=torch.float16,
-    )
-    sprinter = StableDiffusionXLControlNetPipeline.from_pretrained(
-        "stabilityai/sdxl-turbo",
-        controlnet=controlnet,
-        torch_dtype=torch.float16, variant="fp16",
-    ).to(device)
-    print("Sprinter loaded", flush=True)
-
-    # --- Generate source faces from oval base image ---
-    print("\nBuilding oval base image...", flush=True)
-    base_pil, base_tensor = build_base_image(device)
-    with torch.no_grad():
-        sobel_cond_tensor = sobel_proxy(base_tensor, device)
-        sobel_cond_pil = T.ToPILImage()(sobel_cond_tensor.squeeze(0).cpu())
-
-    print(f"\nGenerating {args.num_faces} source faces + Sobel scribbles...", flush=True)
-    faces, scribbles = generate_source_faces(sprinter, base_pil, sobel_cond_pil, args.num_faces, device)
-
-    # Free sprinter
-    del sprinter, controlnet
-    torch.cuda.empty_cache()
-    print("Freed sprinter", flush=True)
-
-    # Save source faces and scribbles
-    output_dir.mkdir(parents=True, exist_ok=True)
-    for i, (face, scribble) in enumerate(zip(faces, scribbles)):
-        face.save(output_dir / f"source_face_{i}.png")
-        scribble.save(output_dir / f"source_scribble_{i}.png")
-
-    # --- Load architect (base) ---
-    print("\nLoading base SDXL Turbo (architect)...", flush=True)
+    # --- Load pipeline with fine-tuned U-Net to generate starting scribbles ---
+    print(f"\nLoading fine-tuned pipeline from {args.checkpoint}...", flush=True)
     pipe = StableDiffusionXLPipeline.from_pretrained(
         "stabilityai/sdxl-turbo",
         torch_dtype=torch.float16, variant="fp16",
     ).to(device)
+    ft_unet = UNet2DConditionModel.from_pretrained(
+        args.checkpoint, torch_dtype=torch.float16,
+    ).to(device)
+    base_unet = pipe.unet  # keep reference to base
+
+    # Generate scribbles using fine-tuned model
+    pipe.unet = ft_unet
+    print(f"\nGenerating {args.num_faces} scribble faces with fine-tuned model...", flush=True)
+    print(f"  prompt: '{args.gen_prompt}'", flush=True)
+    scribbles = generate_scribble_faces(
+        pipe, args.num_faces, args.gen_prompt, args.gen_negative, args.gen_guidance, device)
+
+    # Save scribbles
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for i, scribble in enumerate(scribbles):
+        scribble.save(output_dir / f"source_scribble_{i}.png")
+
+    # --- Base trajectories ---
+    pipe.unet = base_unet
+    print("\nSwitched to base U-Net", flush=True)
 
     base_trajectories = {}
     for s in strengths:
         print(f"\nBase trajectory, strength={s}:", flush=True)
         base_trajectories[s] = denoise_with_trajectory(pipe, scribbles, device, s, args.n_steps)
 
-    # --- Swap to fine-tuned U-Net ---
-    print(f"\nSwapping to fine-tuned U-Net from {args.checkpoint}...", flush=True)
-    pipe.unet = UNet2DConditionModel.from_pretrained(
-        args.checkpoint, torch_dtype=torch.float16,
-    ).to(device)
-    print("Fine-tuned U-Net loaded", flush=True)
+    # --- Fine-tuned trajectories ---
+    pipe.unet = ft_unet
+    print("\nSwitched to fine-tuned U-Net", flush=True)
 
     ft_trajectories = {}
     for s in strengths:
@@ -296,9 +260,6 @@ def main():
     for face_i in range(len(scribbles)):
         face_dir = output_dir / f"face_{face_i}"
         face_dir.mkdir(parents=True, exist_ok=True)
-
-        # Save source face + scribble
-        faces[face_i].save(face_dir / "portrait.png")
         scribbles[face_i].save(face_dir / "scribble.png")
 
         for s in strengths:
@@ -311,8 +272,8 @@ def main():
             for step_j, img in enumerate(ft_steps):
                 img.save(face_dir / f"ft_s{s}_step_{step_j + 1:02d}.png")
 
-            # Composite with portrait + scribble as first columns
-            max_cols = 14  # leave room for portrait+scribble columns
+            # Composite with scribble as first column
+            max_cols = 15
             page_idx = 0
             for page_start in range(0, n_active, max_cols):
                 page_end = min(page_start + max_cols, n_active)
@@ -320,11 +281,10 @@ def main():
                 ft_page = ft_steps[page_start:page_end]
 
                 if page_start == 0:
-                    # First page: include portrait and scribble as first 2 columns
-                    col_labels = ["Portrait", "Scribble"] + [f"t{j+1}" for j in range(page_start, page_end)]
+                    col_labels = ["Input"] + [f"t{j+1}" for j in range(page_start, page_end)]
                     grid = make_grid(
-                        [[faces[face_i], scribbles[face_i]] + base_page,
-                         [faces[face_i], scribbles[face_i]] + ft_page],
+                        [[scribbles[face_i]] + base_page,
+                         [scribbles[face_i]] + ft_page],
                         col_labels=col_labels,
                         row_labels=["Base", "FT"],
                     )

@@ -17,6 +17,6 @@ echo "Portrait trajectory comparison on $(hostname)"
 echo "Job ID: $SLURM_JOB_ID"
 
 python finetune_scribble/compare_trajectories_portrait.py \
-    --checkpoint finetune_scribble/output/checkpoint-1000/merged
+    --checkpoint finetune_scribble/output/checkpoint-2000/merged
 
 echo "Portrait trajectory comparison complete."

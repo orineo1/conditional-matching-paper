@@ -22,9 +22,9 @@ from torchvision import transforms
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "SD_cond_SD_controlnet"))
 from generation import compute_pred_x0_direct
 
-DENOISE_PROMPT = ""
-DENOISE_NEGATIVE = ""
-GUIDANCE_SCALE = 0.0
+DENOISE_PROMPT = "rough pencil scribble outline, loose sketch, minimal line art"
+DENOISE_NEGATIVE = "detailed, realistic, photograph, complex, colored, shading"
+GUIDANCE_SCALE = 7.5
 
 
 def pil_to_tensor_batch(images, device):
@@ -212,21 +212,15 @@ def main():
         job_type="portrait_trajectory",
     )
 
-    # --- Load pipeline and generate starting scribbles with fine-tuned model ---
-    print("\nLoading SDXL Turbo...", flush=True)
+    # --- Load base pipeline and generate starting scribbles ---
+    print("\nLoading base SDXL Turbo...", flush=True)
     pipe = StableDiffusionXLPipeline.from_pretrained(
         "stabilityai/sdxl-turbo",
         torch_dtype=torch.float16, variant="fp16",
     ).to(device)
-    base_unet = pipe.unet  # keep reference to base
+    base_unet = pipe.unet
 
-    # Swap to fine-tuned for scribble generation
-    ft_unet = UNet2DConditionModel.from_pretrained(
-        args.checkpoint, torch_dtype=torch.float16,
-    ).to(device)
-    pipe.unet = ft_unet
-
-    print(f"\nGenerating {args.num_faces} scribble faces with fine-tuned model...", flush=True)
+    print(f"\nGenerating {args.num_faces} scribble faces with base model...", flush=True)
     print(f"  prompt: '{args.gen_prompt}'", flush=True)
     scribbles = generate_scribble_faces(
         pipe, args.num_faces, args.gen_prompt, args.gen_negative, args.gen_guidance, device)
@@ -246,6 +240,9 @@ def main():
         base_trajectories[s] = denoise_with_trajectory(pipe, scribbles, device, s, args.n_steps)
 
     # --- Fine-tuned trajectories ---
+    ft_unet = UNet2DConditionModel.from_pretrained(
+        args.checkpoint, torch_dtype=torch.float16,
+    ).to(device)
     pipe.unet = ft_unet
     print("\nSwitched to fine-tuned U-Net", flush=True)
 

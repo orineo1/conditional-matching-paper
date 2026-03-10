@@ -2,7 +2,7 @@
 
 Workflow per face:
   1. Generate a portrait face via sprinter (ControlNet + oval base image)
-  2. Extract Sobel edges → scribble
+  2. Extract HED scribble edges
   3. Encode scribble → latent → add noise
   4. Denoise with base SDXL Turbo, capture pred_x0 at every step
   5. Denoise with fine-tuned U-Net (same noise), capture pred_x0 at every step
@@ -15,10 +15,8 @@ from pathlib import Path
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 import torchvision.transforms as T
 import wandb
-import yaml
 from diffusers import (
     ControlNetModel,
     StableDiffusionXLControlNetPipeline,
@@ -30,33 +28,18 @@ from torchvision import transforms
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "SD_cond_SD_controlnet"))
 from generation import compute_pred_x0_direct
+from image_utils import build_base_image, sobel_proxy
 
 PROMPT = "rough pencil scribble outline, loose sketch, minimal line art"
 NEGATIVE_PROMPT = "detailed, realistic, photograph, complex, colored, shading"
 GUIDANCE_SCALE = 7.5
 
 
-def build_base_image(device):
-    """Build the oval base image used as ControlNet conditioning for portrait generation."""
-    img = Image.new("RGB", (512, 512), color="black")
-    draw = ImageDraw.Draw(img)
-    draw.ellipse((150, 45, 362, 257), fill="white")
-    draw.rectangle((234, 241, 278, 262), fill="white")
-    draw.polygon([(244, 262), (268, 262), (274, 475), (238, 475)], fill="white")
-    tensor = T.ToTensor()(img).unsqueeze(0).to(device, dtype=torch.float32)
-    return img, tensor
-
-
-def sobel_proxy(img_tensor, device):
-    """Extract Sobel edges from image tensor."""
-    gray = img_tensor.mean(dim=1, keepdim=True)
-    kx = torch.tensor([[-1., 0., 1.], [-2., 0., 2.], [-1., 0., 1.]], device=device).view(1, 1, 3, 3)
-    ky = torch.tensor([[-1., -2., -1.], [0., 0., 0.], [1., 2., 1.]], device=device).view(1, 1, 3, 3)
-    grad_x = F.conv2d(gray, kx, padding=1)
-    grad_y = F.conv2d(gray, ky, padding=1)
-    edge_mag = torch.sqrt(grad_x**2 + grad_y**2 + 1e-6)
-    edge_mag = (edge_mag - edge_mag.min()) / (edge_mag.max() - edge_mag.min() + 1e-8)
-    return edge_mag.repeat(1, 3, 1, 1)
+def extract_scribble_hed(pil_image):
+    """Extract a simple scribble from a PIL image using HED in scribble mode."""
+    from controlnet_aux import HEDdetector
+    hed = HEDdetector.from_pretrained("lllyasviel/Annotators")
+    return hed(pil_image, scribble=True)
 
 
 def pil_to_tensor_batch(images, device):
@@ -111,7 +94,7 @@ def make_grid(images_2d, col_labels=None, row_labels=None, cell_size=128, paddin
 
 
 def generate_source_faces(sprinter, base_pil, sobel_cond_pil, n_faces, device):
-    """Generate portrait faces via sprinter + ControlNet, then extract Sobel scribbles."""
+    """Generate portrait faces via sprinter + ControlNet, then extract HED scribbles."""
     faces = []
     scribbles = []
     for i in range(n_faces):
@@ -125,15 +108,12 @@ def generate_source_faces(sprinter, base_pil, sobel_cond_pil, n_faces, device):
             )
             face_pil = result.images[0]
 
-        # Extract Sobel scribble from face
-        face_tensor = T.ToTensor()(face_pil).unsqueeze(0).to(device, dtype=torch.float32)
-        with torch.no_grad():
-            scribble_tensor = sobel_proxy(face_tensor, device)
-        scribble_pil = T.ToPILImage()(scribble_tensor.squeeze(0).cpu())
+        # Extract HED scribble from face
+        scribble_pil = extract_scribble_hed(face_pil)
 
         faces.append(face_pil)
         scribbles.append(scribble_pil)
-        print(f"  Generated face {i} + scribble", flush=True)
+        print(f"  Generated face {i} + HED scribble", flush=True)
 
     return faces, scribbles
 

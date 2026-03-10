@@ -212,20 +212,16 @@ def main():
         job_type="portrait_trajectory",
     )
 
-    # --- Load pipeline with fine-tuned U-Net to generate starting scribbles ---
-    print(f"\nLoading fine-tuned pipeline from {args.checkpoint}...", flush=True)
+    # --- Load base pipeline to generate starting scribbles ---
+    print("\nLoading base SDXL Turbo...", flush=True)
     pipe = StableDiffusionXLPipeline.from_pretrained(
         "stabilityai/sdxl-turbo",
         torch_dtype=torch.float16, variant="fp16",
     ).to(device)
-    ft_unet = UNet2DConditionModel.from_pretrained(
-        args.checkpoint, torch_dtype=torch.float16,
-    ).to(device)
     base_unet = pipe.unet  # keep reference to base
 
-    # Generate scribbles using fine-tuned model
-    pipe.unet = ft_unet
-    print(f"\nGenerating {args.num_faces} scribble faces with fine-tuned model...", flush=True)
+    # Generate scribbles using base model (same input for both base and FT denoising)
+    print(f"\nGenerating {args.num_faces} scribble faces with base model...", flush=True)
     print(f"  prompt: '{args.gen_prompt}'", flush=True)
     scribbles = generate_scribble_faces(
         pipe, args.num_faces, args.gen_prompt, args.gen_negative, args.gen_guidance, device)
@@ -235,9 +231,8 @@ def main():
     for i, scribble in enumerate(scribbles):
         scribble.save(output_dir / f"source_scribble_{i}.png")
 
-    # --- Base trajectories ---
-    pipe.unet = base_unet
-    print("\nSwitched to base U-Net", flush=True)
+    # --- Base trajectories (already using base unet) ---
+    print("\nRunning base trajectories...", flush=True)
 
     base_trajectories = {}
     for s in strengths:
@@ -245,8 +240,11 @@ def main():
         base_trajectories[s] = denoise_with_trajectory(pipe, scribbles, device, s, args.n_steps)
 
     # --- Fine-tuned trajectories ---
-    pipe.unet = ft_unet
-    print("\nSwitched to fine-tuned U-Net", flush=True)
+    print(f"\nLoading fine-tuned U-Net from {args.checkpoint}...", flush=True)
+    pipe.unet = UNet2DConditionModel.from_pretrained(
+        args.checkpoint, torch_dtype=torch.float16,
+    ).to(device)
+    print("Switched to fine-tuned U-Net", flush=True)
 
     ft_trajectories = {}
     for s in strengths:

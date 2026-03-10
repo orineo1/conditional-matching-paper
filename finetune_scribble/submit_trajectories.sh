@@ -17,6 +17,6 @@ echo "Trajectory comparison on $(hostname)"
 echo "Job ID: $SLURM_JOB_ID"
 
 python finetune_scribble/compare_trajectories.py \
-    --checkpoint finetune_scribble/output/checkpoint-5000
+    --checkpoint finetune_scribble/output/checkpoint-5000/merged
 
 echo "Trajectory comparison complete."

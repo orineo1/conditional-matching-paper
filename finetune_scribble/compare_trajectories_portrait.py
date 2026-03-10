@@ -22,9 +22,9 @@ from torchvision import transforms
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "SD_cond_SD_controlnet"))
 from generation import compute_pred_x0_direct
 
-DENOISE_PROMPT = "rough pencil scribble outline, loose sketch, minimal line art"
-DENOISE_NEGATIVE = "detailed, realistic, photograph, complex, colored, shading"
-GUIDANCE_SCALE = 7.5
+DENOISE_PROMPT = ""
+DENOISE_NEGATIVE = ""
+GUIDANCE_SCALE = 0.0
 
 
 def pil_to_tensor_batch(images, device):

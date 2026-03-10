@@ -8,7 +8,7 @@ train_batch_size: 16
 gradient_accumulation_steps: 1
 num_epochs: 3
 mixed_precision: "fp16"
-checkpointing_steps: 1000
+checkpointing_steps: 21562
 max_grad_norm: 1.0
 seed: 42
 wandb_project: "scribble_finetune"

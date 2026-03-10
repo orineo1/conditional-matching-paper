@@ -22,9 +22,8 @@ from torchvision import transforms
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "SD_cond_SD_controlnet"))
 from generation import compute_pred_x0_direct
 
-DENOISE_PROMPT = "rough pencil scribble outline, loose sketch, minimal line art"
-DENOISE_NEGATIVE = "detailed, realistic, photograph, complex, colored, shading"
-GUIDANCE_SCALE = 7.5
+GEN_PROMPT = "simple hand-drawn scribble of a male face"
+GEN_NEGATIVE = "detailed, realistic, photograph, shading"
 
 
 def pil_to_tensor_batch(images, device):
@@ -129,11 +128,10 @@ def denoise_with_trajectory(pipe, scribble_images, device, strength, n_steps, se
         torch.tensor([noise_timestep], device=device),
     )
 
-    (prompt_embeds, negative_prompt_embeds,
-     pooled_prompt_embeds, negative_pooled_prompt_embeds) = pipe.encode_prompt(
-        prompt=DENOISE_PROMPT, negative_prompt=DENOISE_NEGATIVE,
-        device=device, num_images_per_prompt=1,
-        do_classifier_free_guidance=True,
+    # Unconditional denoising: empty prompt, no CFG
+    (prompt_embeds, _, pooled_prompt_embeds, _) = pipe.encode_prompt(
+        prompt="", device=device, num_images_per_prompt=1,
+        do_classifier_free_guidance=False,
     )
     time_ids = torch.tensor([[512, 512, 0, 0, 512, 512]], device=device, dtype=torch.float16)
 
@@ -144,25 +142,15 @@ def denoise_with_trajectory(pipe, scribble_images, device, strength, n_steps, se
     with torch.no_grad():
         for step_idx, t in enumerate(denoise_timesteps):
             latent_input = pipe.scheduler.scale_model_input(latents, t)
-            latent_input = torch.cat([latent_input, latent_input])
-            encoder_hs = torch.cat([
-                negative_prompt_embeds.expand(bs, -1, -1),
-                prompt_embeds.expand(bs, -1, -1),
-            ])
             added_kwargs = {
-                "text_embeds": torch.cat([
-                    negative_pooled_prompt_embeds.expand(bs, -1),
-                    pooled_prompt_embeds.expand(bs, -1),
-                ]),
-                "time_ids": torch.cat([time_ids.expand(bs, -1)] * 2),
+                "text_embeds": pooled_prompt_embeds.expand(bs, -1),
+                "time_ids": time_ids.expand(bs, -1),
             }
             noise_pred = pipe.unet(
                 latent_input, t,
-                encoder_hidden_states=encoder_hs,
+                encoder_hidden_states=prompt_embeds.expand(bs, -1, -1),
                 added_cond_kwargs=added_kwargs,
             ).sample
-            noise_pred_uncond, noise_pred_cond = noise_pred.chunk(2)
-            noise_pred = noise_pred_uncond + GUIDANCE_SCALE * (noise_pred_cond - noise_pred_uncond)
 
             pred_x0 = compute_pred_x0_direct(pipe.scheduler, noise_pred, t, latents)
             pred_x0_pils = decode_latents(pipe, pred_x0, vae_dtype)

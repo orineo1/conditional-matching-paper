@@ -17,6 +17,6 @@ echo "Validating checkpoint on $(hostname)"
 echo "Job ID: $SLURM_JOB_ID"
 
 python finetune_scribble/validate.py \
-    --checkpoint finetune_scribble/output/checkpoint-5000
+    --checkpoint finetune_scribble/output/checkpoint-5000/merged
 
 echo "Validation complete."

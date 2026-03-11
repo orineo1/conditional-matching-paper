@@ -2,7 +2,7 @@
 #SBATCH --job-name=dps-ft-experiment
 #SBATCH --output=SD_cond_SD_controlnet/output/dps_ft_%j.log
 #SBATCH --error=SD_cond_SD_controlnet/output/dps_ft_%j.err
-#SBATCH --time=04:00:00
+#SBATCH --time=08:00:00
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
@@ -36,6 +36,8 @@ python SD_cond_SD_controlnet/run_dps_ft_experiment.py \
     --base_zeta 0.2 \
     --guidance_scale 7.5 \
     --controlnet_scale 0.5 \
-    --seed 42
+    --seed 42 \
+    --photo_every 5 \
+    --photos_per_step 3
 
 echo "DPS FT experiment complete."

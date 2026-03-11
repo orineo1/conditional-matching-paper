@@ -80,6 +80,10 @@ def parse_args():
     p.add_argument("--negative_prompt", type=str,
                    default="detailed, realistic, photograph, complex, colored, shading")
     p.add_argument("--n_targets", type=int, default=20)
+    p.add_argument("--photo_every", type=int, default=5,
+                   help="Generate sprinter photos every N denoising steps")
+    p.add_argument("--photos_per_step", type=int, default=3,
+                   help="Number of sprinter photos per trajectory step")
     return p.parse_args()
 
 
@@ -111,14 +115,25 @@ def partial_denoise_loop(unet, vae, scheduler, image_processor, latents,
                          guidance_scale, use_cfg=True,
                          dps_guidance=False, sprinter=None, clip_model=None,
                          clip_processor=None, all_clip_embeddings=None,
-                         num_variations=20, base_zeta_prime=0.2, device="cuda"):
+                         num_variations=20, base_zeta_prime=0.2, device="cuda",
+                         save_trajectory_dir=None, photo_every=5, photos_per_step=3,
+                         conditioning_outline=None):
     """Run denoising from a partial timestep schedule.
 
     If use_cfg=False, does a single unconditional forward pass (no CFG doubling).
     If dps_guidance=True, applies CLIP-MMD DPS correction at each step.
+
+    If save_trajectory_dir is set, saves:
+      - pred_x0 image at every step
+      - sprinter-conditioned photos every photo_every steps + at the final step
     """
     step_metrics = []
+    pred_x0_pils = []
     variation_batch_size = 1
+    n_total = len(timesteps_partial)
+
+    if save_trajectory_dir:
+        os.makedirs(save_trajectory_dir, exist_ok=True)
 
     for i, t in enumerate(timesteps_partial):
         if dps_guidance:
@@ -166,6 +181,24 @@ def partial_denoise_loop(unet, vae, scheduler, image_processor, latents,
             with torch.no_grad():
                 pred_x0 = compute_pred_x0_direct(scheduler, noise_pred, t, latents_step)
 
+        # Save pred_x0 as image at every step
+        if save_trajectory_dir:
+            with torch.no_grad():
+                pred_x0_pil = latent_to_pil(pred_x0.detach(), vae, image_processor)
+            pred_x0_pil.save(os.path.join(save_trajectory_dir, f"pred_x0_step_{i:02d}.png"))
+            pred_x0_pils.append(pred_x0_pil)
+
+            # Generate sprinter photos at key steps
+            is_photo_step = (i % photo_every == 0) or (i == n_total - 1)
+            if is_photo_step and conditioning_outline is not None:
+                step_photo_dir = os.path.join(save_trajectory_dir, f"step_{i:02d}_photos")
+                os.makedirs(step_photo_dir, exist_ok=True)
+                step_photos = generate_conditioned_photos(
+                    sprinter, pred_x0_pil, photos_per_step, batch_size=photos_per_step)
+                for p_idx, p_img in enumerate(step_photos):
+                    p_img.save(os.path.join(step_photo_dir, f"photo_{p_idx:02d}.png"))
+                del step_photos
+
         correction = None
         if dps_guidance:
             pred_x0_scaled = pred_x0 / vae.config.scaling_factor
@@ -198,7 +231,7 @@ def partial_denoise_loop(unet, vae, scheduler, image_processor, latents,
             grad_norm = grad.norm().item()
             zeta_val = zeta_i.item() if isinstance(zeta_i, torch.Tensor) else zeta_i
 
-            print(f"    DPS step {i+1}/{len(timesteps_partial)} t={t.item():.0f}  "
+            print(f"    DPS step {i+1}/{n_total} t={t.item():.0f}  "
                   f"MMD={mmd_loss.item():.6f}  grad={grad_norm:.6f}", flush=True)
 
             if torch.isnan(grad).any():
@@ -215,6 +248,11 @@ def partial_denoise_loop(unet, vae, scheduler, image_processor, latents,
 
             del grad, mmd_loss, loss_norm, zeta_i, vl_clip_flat
             del pixel_x0, pixel_x0_norm, pred_x0_scaled
+        else:
+            if not save_trajectory_dir:
+                pass  # no extra logging needed
+            else:
+                print(f"    Step {i+1}/{n_total} t={t.item():.0f}", flush=True)
 
         # Scheduler step
         latents = denoise_step(scheduler, noise_pred, t, latents_step, correction=correction)
@@ -224,7 +262,7 @@ def partial_denoise_loop(unet, vae, scheduler, image_processor, latents,
             del correction
         gc.collect(); torch.cuda.empty_cache()
 
-    return latents, step_metrics
+    return latents, step_metrics, pred_x0_pils
 
 
 def generate_conditioned_photos(sprinter, scribble_pil, num_photos, batch_size=2):
@@ -572,7 +610,10 @@ def main():
                 if dps:
                     sprinter.vae.to(dtype=torch.float32)
 
-                denoised_latent, step_metrics = partial_denoise_loop(
+                # Trajectory save directory
+                traj_dir = os.path.join(face_dir, f"s{strength}_{label}_trajectory")
+
+                denoised_latent, step_metrics, pred_x0_pils = partial_denoise_loop(
                     unet=unet,
                     vae=architect.vae,
                     scheduler=scheduler_copy,
@@ -584,13 +625,17 @@ def main():
                     guidance_scale=gs,
                     use_cfg=use_cfg,
                     dps_guidance=dps,
-                    sprinter=sprinter if dps else None,
+                    sprinter=sprinter,
                     clip_model=clip_model if dps else None,
                     clip_processor=clip_processor if dps else None,
                     all_clip_embeddings=all_clip_embeddings if dps else None,
                     num_variations=args.num_variations,
                     base_zeta_prime=args.base_zeta,
                     device=device,
+                    save_trajectory_dir=traj_dir,
+                    photo_every=args.photo_every,
+                    photos_per_step=args.photos_per_step,
+                    conditioning_outline=conditioning_outline,
                 )
 
                 with torch.no_grad():

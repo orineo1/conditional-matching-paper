@@ -3,6 +3,7 @@
 #SBATCH --output=finetune_hed/output/download_%j.log
 #SBATCH --error=finetune_hed/output/download_%j.err
 #SBATCH --time=08:00:00
+#SBATCH --gres=gpu:l40s:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --partition=salmon

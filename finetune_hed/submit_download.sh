@@ -16,8 +16,8 @@ conda activate /sci/labs/orzuk/shaulytolk/conditional-matching-paper/scribble_en
 echo "Starting LAION download on $(hostname)"
 echo "Job ID: $SLURM_JOB_ID"
 
-# Install img2dataset if not present
-pip install -q img2dataset
+# Install dependencies if not present
+pip install -q datasets img2dataset
 
 # Create output directory
 mkdir -p finetune_hed/output

@@ -19,13 +19,18 @@ def filter_and_save_urls(output_parquet: str, num_samples: int = 200_000, min_ae
     seen = 0
     for example in ds:
         seen += 1
+        if seen == 1:
+            print(f"  First row keys: {list(example.keys())}")
+            print(f"  First row sample: { {k: str(v)[:80] for k, v in example.items()} }")
         if seen % 100_000 == 0:
             print(f"  Scanned {seen:,} rows, collected {len(rows):,} so far...")
-        if example.get("AESTHETIC_SCORE", 0) >= min_aesthetic:
-            rows.append({
-                "url": example["URL"],
-                "caption": example.get("TEXT", ""),
-            })
+        # Field names vary: AESTHETIC_SCORE or aesthetic_score
+        score = example.get("AESTHETIC_SCORE") or example.get("aesthetic_score") or 0
+        if float(score) >= min_aesthetic:
+            url = example.get("URL") or example.get("url") or ""
+            caption = example.get("TEXT") or example.get("text") or ""
+            if url:
+                rows.append({"url": url, "caption": caption})
             if len(rows) >= num_samples:
                 break
 
@@ -44,7 +49,7 @@ def download_images(url_parquet: str, output_dir: str, image_size: int = 512, nu
     output_path.mkdir(parents=True, exist_ok=True)
 
     cmd = [
-        sys.executable, "-m", "img2dataset",
+        "img2dataset",
         "--url_list", url_parquet,
         "--output_folder", output_dir,
         "--output_format", "files",

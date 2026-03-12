@@ -16,6 +16,9 @@ conda activate /sci/labs/orzuk/shaulytolk/conditional-matching-paper/scribble_en
 echo "Starting LAION download on $(hostname)"
 echo "Job ID: $SLURM_JOB_ID"
 
+# HuggingFace auth for gated datasets
+export HF_TOKEN=$(cat ~/.cache/huggingface/token)
+
 # Install dependencies if not present
 pip install -q datasets img2dataset
 

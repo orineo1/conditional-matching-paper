@@ -24,8 +24,8 @@ def filter_and_save_urls(output_parquet: str, num_samples: int = 200_000, min_ae
             print(f"  First row sample: { {k: str(v)[:80] for k, v in example.items()} }")
         if seen % 100_000 == 0:
             print(f"  Scanned {seen:,} rows, collected {len(rows):,} so far...")
-        # Field names vary: AESTHETIC_SCORE or aesthetic_score
-        score = example.get("AESTHETIC_SCORE") or example.get("aesthetic_score") or 0
+        # Field name is "aesthetic" in laion2B-en-aesthetic
+        score = example.get("aesthetic") or example.get("AESTHETIC_SCORE") or example.get("aesthetic_score") or 0
         if float(score) >= min_aesthetic:
             url = example.get("URL") or example.get("url") or ""
             caption = example.get("TEXT") or example.get("text") or ""

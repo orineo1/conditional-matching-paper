@@ -3,10 +3,10 @@
 #SBATCH --output=finetune_hed/output/download_%j.log
 #SBATCH --error=finetune_hed/output/download_%j.err
 #SBATCH --time=08:00:00
-#SBATCH --gres=gpu:l40s:1
+#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
-#SBATCH --partition=salmon
+#SBATCH --partition=catfish
 
 # Conda setup
 export PATH="/usr/local/spack/opt/spack/linux-debian12-x86_64/gcc-12.2.0/miniconda3-24.3.0-iqeknetqo7ngpr57d6gmu3dg4rzlcgk6/bin:$PATH"

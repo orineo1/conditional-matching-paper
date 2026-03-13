@@ -3,7 +3,7 @@ import numpy as np
 import torch
 from sklearn.decomposition import PCA
 from image_utils import latent_to_pil
-
+import wandb
 def plot_row(images, title, count=5, save_path=None):
     fig, axes = plt.subplots(1, count, figsize=(4*count, 4))
     fig.suptitle(title, fontsize=14, fontweight='bold')
@@ -85,6 +85,7 @@ def visualize_step(sd, architect, sprinter, target_clip_np, num_cond=4, save_pat
     axes[1, 6].axis("on")   # re-enable axis only for PCA plot
 
     plt.tight_layout()
+    wandb.log({f"step_visualization/step_{i+1:03d}": wandb.Image(fig)}, step=i)
     if save_path:
         fig.savefig(save_path, dpi=100, bbox_inches='tight'); plt.close(fig)
     else:

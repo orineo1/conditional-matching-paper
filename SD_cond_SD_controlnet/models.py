@@ -57,7 +57,7 @@ def load_models(device, architect_lora_path=None):
     ).to(device)
 
     architect = StableDiffusionXLPipeline.from_pretrained(
-        "stabilityai/sdxl-turbo", torch_dtype=torch.float16, variant="fp16"
+    "stabilityai/stable-diffusion-xl-base-1.0", torch_dtype=torch.float16
     ).to(device)
 
     if architect_lora_path:

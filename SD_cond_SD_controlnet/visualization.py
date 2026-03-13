@@ -94,7 +94,7 @@ def visualize_step(sd, architect, sprinter, target_clip_np, num_cond=4, save_pat
 
     plt.tight_layout()
 
-    wandb.log({"step_visualization": wandb.Image(fig)}, step=i)
+    wandb.log({"step_visualization": wandb.Image(fig)}, step=i,commit=True)
 
     if save_path:
         fig.savefig(save_path, dpi=100, bbox_inches='tight')

@@ -1,0 +1,11 @@
+
+# Agent infrastructure (local only)
+.agents/
+
+# Claude Code local files
+.claude/
+
+# LoRA training data and outputs
+scribble_tune/data/
+scribble_tune/output/
+*.safetensors

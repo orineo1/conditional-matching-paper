@@ -4,14 +4,18 @@ import torch
 from sklearn.decomposition import PCA
 from image_utils import latent_to_pil
 
-def plot_row(images, title, count=5):
+def plot_row(images, title, count=5, save_path=None):
     fig, axes = plt.subplots(1, count, figsize=(4*count, 4))
     fig.suptitle(title, fontsize=14, fontweight='bold')
     for i in range(min(count, len(images))):
         axes[i].imshow(images[i]); axes[i].axis('off')
-    plt.tight_layout(); plt.show()
+    plt.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=100, bbox_inches='tight'); plt.close(fig)
+    else:
+        plt.show()
 
-def visualize_step(sd, architect, sprinter, all_latents_flat, num_cond=4):
+def visualize_step(sd, architect, sprinter, target_clip_np, num_cond=4, save_path=None):
     i = sd['step']
     with torch.no_grad():
         img_xt_reg  = latent_to_pil(sd['latents_step_regular_cpu'].to(architect.device), architect.vae, architect.image_processor)
@@ -32,32 +36,56 @@ def visualize_step(sd, architect, sprinter, all_latents_flat, num_cond=4):
         ]
         sprinter.vae.to(dtype=torch.float32)
 
-        combined = np.vstack([all_latents_flat, sd['variation_latents_flat']])
-        pca = PCA(n_components=2)
+        # ── PCA in CLIP embedding space ───────────────────────────────────────
+        # variation_clip_flat: (N, 512) CLIP embs of this step's variations
+        # target_clip_np:      (M, 512) CLIP embs of target images (masc + fem)
+        combined   = np.vstack([target_clip_np, sd['variation_clip_flat']])
+        pca        = PCA(n_components=2)
         pca_coords = pca.fit_transform(combined)
-        target_pca = pca_coords[:all_latents_flat.shape[0]]
-        gen_pca    = pca_coords[all_latents_flat.shape[0]:]
+        target_pca = pca_coords[:target_clip_np.shape[0]]
+        gen_pca    = pca_coords[target_clip_np.shape[0]:]
+
+        # Split target PCA coords into masculine / feminine halves for coloring
+        n_per_mode  = target_clip_np.shape[0] // 2
+        masc_pca    = target_pca[:n_per_mode]
+        fem_pca     = target_pca[n_per_mode:]
 
     fig, axes = plt.subplots(2, 7, figsize=(28, 8))
     fig.suptitle(f"Step {i+1}  (t={sd['timestep']:.0f})", fontsize=14, fontweight='bold')
 
+    # ── Row 0: regular (no DPS) ───────────────────────────────────────────────
     axes[0,0].imshow(img_xt_reg); axes[0,0].set_title("Regular x_t")
     axes[0,1].imshow(img_x0_reg); axes[0,1].set_title("Regular pred x_0")
     for j in range(2, 7):
-        axes[0,j].text(0.5,0.5,'N/A',ha='center',va='center',transform=axes[0,j].transAxes)
+        axes[0,j].text(0.5, 0.5, 'N/A', ha='center', va='center',
+                       transform=axes[0,j].transAxes)
         axes[0,j].set_facecolor('#f0f0f0')
 
+    # ── Row 1: DPS guided ─────────────────────────────────────────────────────
     axes[1,0].imshow(img_xt_dps); axes[1,0].set_title(f"DPS x_t  ζ={sd['zeta_i']:.4f}")
     axes[1,1].imshow(img_x0_dps); axes[1,1].set_title(f"DPS x_0  MMD={sd['mmd_loss']:.6f}")
     for j, ci in enumerate(cond_imgs):
-        axes[1,j+2].imshow(ci); axes[1,j+2].set_title(f"Cond {j+1}")
+        axes[1, j+2].imshow(ci); axes[1, j+2].set_title(f"Cond {j+1}")
 
-    axes[1,6].scatter(target_pca[:,0], target_pca[:,1], c='blue', alpha=0.5, s=20, label='Target')
-    axes[1,6].scatter(gen_pca[:,0],    gen_pca[:,1],    c='red',  alpha=0.6, s=30, marker='x', label='Generated')
-    axes[1,6].set_title(f"PCA  Var={pca.explained_variance_ratio_.sum():.1%}")
-    axes[1,6].legend(fontsize=8); axes[1,6].grid(True, alpha=0.3)
+    # ── CLIP PCA scatter ──────────────────────────────────────────────────────
+    ax = axes[1, 6]
+    ax.scatter(masc_pca[:, 0], masc_pca[:, 1],
+               c='royalblue', alpha=0.6, s=40, label='Target masc')
+    ax.scatter(fem_pca[:, 0],  fem_pca[:, 1],
+               c='crimson',    alpha=0.6, s=40, label='Target fem')
+    ax.scatter(gen_pca[:, 0],  gen_pca[:, 1],
+               c='limegreen',  alpha=0.8, s=50, marker='x', label='Generated')
+    ax.set_title(f"CLIP PCA  Var={pca.explained_variance_ratio_.sum():.1%}")
+    ax.legend(fontsize=7)
+    ax.grid(True, alpha=0.3)
 
     for row in axes:
-        for ax in row: ax.axis("off")
-    axes[1,6].axis("on")
-    plt.tight_layout(); plt.show()
+        for ax_ in row:
+            ax_.axis("off")
+    axes[1, 6].axis("on")   # re-enable axis only for PCA plot
+
+    plt.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=100, bbox_inches='tight'); plt.close(fig)
+    else:
+        plt.show()

@@ -137,7 +137,7 @@ def run_dps_step(latents, latents_step, noise_pred, pixel_x0_norm,
 def run_dps_step_clip(latents, latents_step, noise_pred, pixel_x0_norm,
                       sprinter, all_clip_embeddings, num_variations,
                       variation_batch_size, base_zeta_prime,
-                      clip_model, clip_processor, vae, vae_scaling_factor):
+                      clip_model, clip_processor, vae, vae_scaling_factor,variation_prompt):
     from clip_utils import encode_images_clip
 
     variation_clip_list = []
@@ -148,7 +148,7 @@ def run_dps_step_clip(latents, latents_step, noise_pred, pixel_x0_norm,
 
         def sprinter_vae_clip_forward(ctrl):
             var_latents = sprinter(
-                prompt=["a superrealistic professional photograph of"] * ctrl.shape[0],
+                prompt=[variation_prompt] * ctrl.shape[0],
                 image=ctrl, num_inference_steps=2, guidance_scale=0.0,
                 controlnet_conditioning_scale=0.8,
                 output_type="latent", return_dict=True,

@@ -18,7 +18,7 @@ GUIDANCE_SCALE = 7.5
 def load_pipeline(device, unet_path=None):
     """Load SDXL Turbo pipeline, optionally with fine-tuned U-Net."""
     pipe = StableDiffusionXLPipeline.from_pretrained(
-        "stabilityai/sdxl-turbo",
+        "stabilityai/stable-diffusion-xl-base-1.0",
         torch_dtype=torch.float16, variant="fp16",
     ).to(device)
 

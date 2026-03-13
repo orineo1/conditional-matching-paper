@@ -1,4 +1,4 @@
-model_name: "stabilityai/sdxl-turbo"
+model_name: "stabilityai/stable-diffusion-xl-base-1.0"
 data_dir: "./finetune_hed/data/hed_512"
 output_dir: "./finetune_hed/output"
 resolution: 512

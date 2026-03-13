@@ -52,10 +52,20 @@ def main():
     entries = find_images(args.images_dir)
     print(f"Found {len(entries)} images.")
 
+    # Resume support: load existing metadata and skip already-processed images
+    metadata_path = output_dir / "metadata.jsonl"
     metadata = []
-    idx = 0
+    if metadata_path.exists():
+        with open(metadata_path) as f:
+            metadata = [json.loads(line.strip()) for line in f if line.strip()]
+        print(f"Resuming: {len(metadata)} images already processed.")
+    idx = len(metadata)
+    already_done = set(range(idx))
 
-    for entry in tqdm(entries, desc="Computing HED edges"):
+    for i, entry in enumerate(tqdm(entries, desc="Computing HED edges")):
+        if i < idx:
+            continue  # skip already processed
+
         try:
             img = Image.open(entry["image_path"]).convert("RGB")
             img = img.resize((args.resolution, args.resolution), Image.LANCZOS)
@@ -80,8 +90,13 @@ def main():
         })
         idx += 1
 
-    # Write metadata
-    metadata_path = output_dir / "metadata.jsonl"
+        # Save metadata incrementally every 1000 images
+        if idx % 1000 == 0:
+            with open(metadata_path, "w") as f:
+                for m in metadata:
+                    f.write(json.dumps(m) + "\n")
+
+    # Write final metadata
     with open(metadata_path, "w") as f:
         for m in metadata:
             f.write(json.dumps(m) + "\n")

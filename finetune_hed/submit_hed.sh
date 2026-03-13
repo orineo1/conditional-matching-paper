@@ -2,7 +2,7 @@
 #SBATCH --job-name=hed-compute
 #SBATCH --output=finetune_hed/output/hed_%j.log
 #SBATCH --error=finetune_hed/output/hed_%j.err
-#SBATCH --time=04:00:00
+#SBATCH --time=12:00:00
 #SBATCH --gres=gpu:l40s:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G

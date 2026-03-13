@@ -48,7 +48,7 @@ def compute_mmd(x, y, bandwidth=None):
 
 def evaluate_distribution_mmd(latent, architect_vae, architect_image_processor,
                                 sprinter, clip_model, clip_processor,
-                                all_clip_embeddings, n_eval=10, device="cuda"):
+                                all_clip_embeddings,eval_prompt, n_eval=10, device="cuda",):
     """
     Decode latent -> scribble PIL -> generate n_eval sprinter photos
     -> encode to CLIP -> compute MMD vs target distribution.
@@ -70,7 +70,7 @@ def evaluate_distribution_mmd(latent, architect_vae, architect_image_processor,
         for start in range(0, n_eval, 2):
             bs = min(2, n_eval - start)
             result = sprinter(
-                prompt=["a superrealistic professional photograph of a person, studio lighting"] * bs,
+                prompt=[eval_prompt] * bs,
                 image=[scribble_pil] * bs,
                 num_inference_steps=2, guidance_scale=0.0,
                 controlnet_conditioning_scale=0.8,

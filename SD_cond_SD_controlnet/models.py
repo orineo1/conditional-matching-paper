@@ -67,6 +67,8 @@ def load_models(device, architect_lora_path=None):
 
     architect.vae.to(dtype=torch.float32)
     sprinter.vae.to(dtype=torch.float32)
+    architect.set_progress_bar_config(disable=True)
+    sprinter.set_progress_bar_config(disable=True)
 
     original_call = StableDiffusionXLControlNetPipeline.__call__
     StableDiffusionXLControlNetPipeline.__call__ = lambda self, *args, **kwargs: (

@@ -30,6 +30,7 @@ python finetune_hed/download_laion.py \
     --data_dir ./finetune_hed/data \
     --num_samples 200000 \
     --min_aesthetic 5.0 \
-    --image_size 512
+    --image_size 512 \
+    --skip_filter
 
 echo "Download complete."

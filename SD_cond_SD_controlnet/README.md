@@ -106,6 +106,27 @@ All target the `salmon` partition (L40S 48GB GPU), 2-hour time limit.
 - **HuggingFace auth**: notebook now reads `HF` and `GITHUB` tokens from Colab
   secrets and logs in automatically; falls back to manual input if absent.
 
+## Changes in `scribble_cond_loss` Ori Meidler (13/03)
+
+### `main.ipynb` — Redesigned experiment flow
+- **wandb logging**: added input images (scribble, source portrait, target samples) and final evaluation metrics (MMD delta, eval photos, PCA comparison) to wandb.
+- **Final MMD evaluation**: added `evaluate_distribution_mmd()` calls at the end for both the DPS and regular paths, with side-by-side photo comparison and CLIP PCA plot.
+- **HuggingFace auth**: reads `HF` and `GITHUB` tokens from Colab secrets automatically.
+
+### `generation.py` — `run_dps_step_clip()` signature change
+- Added `variation_prompt` parameter so the sprinter prompt used during DPS variations is configurable from the notebook (was hardcoded to `"a superrealistic professional photograph of"`).
+
+### `metrics.py` — Added `evaluate_distribution_mmd()`
+- New function that decodes an architect latent to a scribble PIL, generates `n_eval` sprinter photos, encodes them to CLIP, and returns the MMD scalar vs the target distribution. Used for intermediate and final evaluation in the DPS loop.
+
+### `models.py` — `load_models()` signature change
+- Added `architect_unet_path` parameter: loads a fully fine-tuned U-Net (via `UNet2DConditionModel.from_pretrained`) as an alternative to LoRA. Takes priority over `architect_lora_path` when both are provided.
+- Architect base model changed from `stable-diffusion-xl-base-1.0` to `sdxl-turbo` (consistent with sprinter).
+- Removed `set_progress_bar_config(disable=True)` calls.
+
+### `visualization.py` — wandb integration
+- `visualize_step()` now logs the step figure to wandb (`step_visualization`) and always closes the figure (no `plt.show()` call). `save_path` is still supported.
+
 ## Gradient Flow Path
 
 ```

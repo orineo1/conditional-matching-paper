@@ -58,7 +58,7 @@ def load_models(device, architect_lora_path=None, architect_unet_path=None):
     ).to(device)
 
     architect = StableDiffusionXLPipeline.from_pretrained(
-        "stabilityai/sdxl-turbo", torch_dtype=torch.float16, variant="fp16"
+    "stabilityai/stable-diffusion-xl-base-1.0", torch_dtype=torch.float16
     ).to(device)
 
     if architect_unet_path:
@@ -73,6 +73,8 @@ def load_models(device, architect_lora_path=None, architect_unet_path=None):
 
     architect.vae.to(dtype=torch.float32)
     sprinter.vae.to(dtype=torch.float32)
+    architect.set_progress_bar_config(disable=True)
+    sprinter.set_progress_bar_config(disable=True)
 
     original_call = StableDiffusionXLControlNetPipeline.__call__
     StableDiffusionXLControlNetPipeline.__call__ = lambda self, *args, **kwargs: (

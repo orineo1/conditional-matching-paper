@@ -60,7 +60,6 @@ def download_images(url_parquet: str, output_dir: str, image_size: int = 512, nu
         "--resize_mode", "center_crop",
         "--number_sample_per_shard", "10000",
         "--thread_count", str(num_threads),
-        "--save_additional_columns", '["caption"]',
         "--encode_format", "png",
     ]
 

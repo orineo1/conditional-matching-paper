@@ -137,8 +137,11 @@ def run_dps_step(latents, latents_step, noise_pred, pixel_x0_norm,
 def run_dps_step_clip(latents, latents_step, noise_pred, pixel_x0_norm,
                       sprinter, all_clip_embeddings, num_variations,
                       variation_batch_size, base_zeta_prime,
-                      clip_model, clip_processor, vae, vae_scaling_factor,variation_prompt):
+                      clip_model, clip_processor, vae, vae_scaling_factor, variation_prompt):
     from clip_utils import encode_images_clip
+
+    device = pixel_x0_norm.device
+    clip_model.to(device)
 
     variation_clip_list = []
     for start_idx in range(0, num_variations, variation_batch_size):

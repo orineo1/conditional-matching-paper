@@ -32,12 +32,12 @@ python SD_cond_SD_controlnet/run_dps.py \
     --output_dir SD_cond_SD_controlnet/output/dps_main_${SLURM_JOB_ID} \
     --n_steps 100 \
     --start_step 15 \
-    --num_variations 150 \
-    --n_targets 150 \
+    --num_variations 100 \
+    --n_targets 100 \
     --base_zeta 5.0 \
     --guidance_scale 0.0 \
     --controlnet_scale 0.5 \
-    --n_eval 150 \
+    --n_eval 100 \
     --sprinter_variation_prompt "a superrealistic professional photograph of" \
     --sprinter_target_man_prompt "a superrealistic portrait photograph of a man, studio lighting" \
     --sprinter_target_woman_prompt "a superrealistic portrait photograph of a woman, studio lighting" \

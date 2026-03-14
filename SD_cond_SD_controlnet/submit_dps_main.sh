@@ -31,7 +31,7 @@ mkdir -p SD_cond_SD_controlnet/output
 python SD_cond_SD_controlnet/run_dps.py \
     --output_dir SD_cond_SD_controlnet/output/dps_main_${SLURM_JOB_ID} \
     --n_steps 100 \
-    --start_step 15 \
+    --start_step 25 \
     --num_variations 100 \
     --n_targets 100 \
     --base_zeta 5.0 \

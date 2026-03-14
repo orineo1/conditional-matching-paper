@@ -34,7 +34,7 @@ python SD_cond_SD_controlnet/run_dps.py \
     --start_step 15 \
     --num_variations 150 \
     --n_targets 150 \
-    --base_zeta 1.0 \
+    --base_zeta 5.0 \
     --guidance_scale 0.0 \
     --controlnet_scale 0.5 \
     --n_eval 150 \

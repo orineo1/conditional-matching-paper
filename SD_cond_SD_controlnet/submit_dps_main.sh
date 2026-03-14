@@ -2,7 +2,7 @@
 #SBATCH --job-name=dps-main
 #SBATCH --output=/sci/labs/orzuk/ori_m/conditional-matching-paper/dps_main_%j.log
 #SBATCH --error=/sci/labs/orzuk/ori_m/conditional-matching-paper/dps_main_%j.err
-#SBATCH --time=06:00:00
+#SBATCH --time=09:30:00
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=48G
@@ -30,8 +30,8 @@ mkdir -p SD_cond_SD_controlnet/output
 
 python SD_cond_SD_controlnet/run_dps.py \
     --output_dir SD_cond_SD_controlnet/output/dps_main_${SLURM_JOB_ID} \
-    --n_steps 300 \
-    --start_step 150 \
+    --n_steps 500 \
+    --start_step 250 \
     --num_variations 100 \
     --n_targets 100 \
     --base_zeta 2.0 \

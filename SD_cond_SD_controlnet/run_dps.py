@@ -25,6 +25,7 @@ import torch
 import torchvision.transforms as T
 import torchvision.transforms.functional as TF
 from sklearn.decomposition import PCA
+from diffusers import DDIMScheduler
 
 # Ensure SD_cond_SD_controlnet/ is on the path
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -133,6 +134,7 @@ def main():
         sprinter_model_id=args.sprinter_model_id,
         architect_model_id=args.architect_model_id,
     )
+    architect.scheduler = DDIMScheduler.from_config(architect.scheduler.config)
     clip_model, clip_processor = load_clip_model(device)
     print("Models loaded.", flush=True)
 

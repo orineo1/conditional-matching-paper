@@ -11,7 +11,6 @@ from peft import PeftModel
 from huggingface_hub import hf_hub_download
 
 
-
 def _resolve_lora_path(lora_path: str) -> str:
     """
     If lora_path starts with 'hf://', download it from HuggingFace Hub.
@@ -47,23 +46,32 @@ def _resolve_lora_path(lora_path: str) -> str:
 
     return local_path
 
+
 def load_models(device,
                 architect_lora_path=None,
                 architect_unet_path=None,
                 controlnet_model_id="xinsir/controlnet-scribble-sdxl-1.0",
                 sprinter_model_id="stabilityai/sdxl-turbo",
                 architect_model_id="stabilityai/stable-diffusion-xl-base-1.0"):
+
     controlnet = ControlNetModel.from_pretrained(
-        controlnet_model_id,torch_dtype=torch.float16
+        controlnet_model_id,
+        torch_dtype=torch.float16,
+        use_safetensors=True,
     ).to(device)
 
     sprinter = StableDiffusionXLControlNetPipeline.from_pretrained(
-        sprinter_model_id,controlnet=controlnet,
-        torch_dtype=torch.float16, variant="fp16"
+        sprinter_model_id,
+        controlnet=controlnet,
+        torch_dtype=torch.float16,
+        variant="fp16",
+        use_safetensors=True,
     ).to(device)
 
     architect = StableDiffusionXLPipeline.from_pretrained(
-    architect_model_id, torch_dtype=torch.float16
+        architect_model_id,
+        torch_dtype=torch.float16,
+        use_safetensors=True,
     ).to(device)
 
     if architect_unet_path:
@@ -90,9 +98,11 @@ def load_models(device,
 
     return architect, sprinter
 
+
 def freeze_module(module):
     for p in module.parameters():
         p.requires_grad_(False)
+
 
 def setup_gradient_checkpointing(architect, sprinter):
     architect.unet.enable_gradient_checkpointing()

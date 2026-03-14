@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=dps-main
-#SBATCH --output=SD_cond_SD_controlnet/output/dps_main_%j.log
-#SBATCH --error=SD_cond_SD_controlnet/output/dps_main_%j.err
+#SBATCH --output=/sci/labs/orzuk/ori_m/conditional-matching-paper/dps_main_%j.log
+#SBATCH --error=/sci/labs/orzuk/ori_m/conditional-matching-paper/dps_main_%j.err
 #SBATCH --time=03:00:00
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
@@ -21,6 +21,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 pip install -q matplotlib scikit-learn controlnet_aux
 
+cd /sci/labs/orzuk/ori_m/conditional-matching-paper
 mkdir -p SD_cond_SD_controlnet/output
 
 python SD_cond_SD_controlnet/run_dps.py \

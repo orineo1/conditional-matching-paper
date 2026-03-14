@@ -134,7 +134,7 @@ def main():
         sprinter_model_id=args.sprinter_model_id,
         architect_model_id=args.architect_model_id,
     )
-    architect.scheduler = DDIMScheduler.from_config(architect.scheduler.config)
+    # architect.scheduler = DDIMScheduler.from_config(architect.scheduler.config)
     clip_model, clip_processor = load_clip_model(device)
     print("Models loaded.", flush=True)
 

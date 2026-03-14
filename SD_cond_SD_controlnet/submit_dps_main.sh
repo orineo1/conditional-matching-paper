@@ -31,18 +31,18 @@ mkdir -p SD_cond_SD_controlnet/output
 python SD_cond_SD_controlnet/run_dps.py \
     --output_dir SD_cond_SD_controlnet/output/dps_main_${SLURM_JOB_ID} \
     --n_steps 100 \
-    --start_step 50 \
-    --num_variations 100 \
-    --n_targets 100 \
+    --start_step 15 \
+    --num_variations 150 \
+    --n_targets 150 \
     --base_zeta 1.0 \
     --guidance_scale 0.0 \
     --controlnet_scale 0.5 \
-    --n_eval 100 \
+    --n_eval 150 \
     --sprinter_variation_prompt "a superrealistic professional photograph of" \
     --sprinter_target_man_prompt "a superrealistic portrait photograph of a man, studio lighting" \
     --sprinter_target_woman_prompt "a superrealistic portrait photograph of a woman, studio lighting" \
     --sprinter_eval_prompt "a superrealistic professional photograph of" \
-    --architect_model_id "stabilityai/sdxl-turbo" \
+    --architect_model_id "stabilityai/stable-diffusion-xl-base-1.0" \
     --sprinter_model_id "stabilityai/sdxl-turbo" \
     --controlnet_model_id "xinsir/controlnet-scribble-sdxl-1.0" \
     --seed 1

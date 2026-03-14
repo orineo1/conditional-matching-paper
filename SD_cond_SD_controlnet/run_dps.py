@@ -65,7 +65,7 @@ def parse_args():
     p.add_argument("--controlnet_scale", type=float, default=0.5)
 
     # Variations / eval
-    p.add_argument("--num_variations", type=int, default=6)
+    p.add_argument("--num_variations", type=int, default=20)
     p.add_argument("--n_targets", type=int, default=20,
                    help="Total target images (split evenly man/woman)")
     p.add_argument("--n_eval", type=int, default=10,

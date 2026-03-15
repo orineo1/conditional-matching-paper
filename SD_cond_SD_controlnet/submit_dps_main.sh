@@ -2,7 +2,7 @@
 #SBATCH --job-name=dps-main
 #SBATCH --output=/sci/labs/orzuk/ori_m/conditional-matching-paper/dps_main_%j.log
 #SBATCH --error=/sci/labs/orzuk/ori_m/conditional-matching-paper/dps_main_%j.err
-#SBATCH --time=03:00:00
+#SBATCH --time=06:00:00
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=48G
@@ -33,11 +33,11 @@ python SD_cond_SD_controlnet/run_dps.py \
     --n_steps 30 \
     --start_step 15 \
     --num_variations 6 \
-    --n_targets 20 \
-    --base_zeta 1.0 \
+    --n_targets 6 \
+    --base_zeta 2.0 \
     --guidance_scale 0.0 \
     --controlnet_scale 0.5 \
-    --n_eval 10 \
+    --n_eval 6 \
     --sprinter_variation_prompt "a superrealistic professional photograph of" \
     --sprinter_target_man_prompt "a superrealistic portrait photograph of a man, studio lighting" \
     --sprinter_target_woman_prompt "a superrealistic portrait photograph of a woman, studio lighting" \
@@ -45,6 +45,6 @@ python SD_cond_SD_controlnet/run_dps.py \
     --architect_model_id "stabilityai/sdxl-turbo" \
     --sprinter_model_id "stabilityai/sdxl-turbo" \
     --controlnet_model_id "xinsir/controlnet-scribble-sdxl-1.0" \
-    --seed 42
+    --seed 1
 
 echo "DPS main pipeline complete."

@@ -42,7 +42,7 @@ from generation import (
 from image_utils import build_base_image, latent_to_pil, sobel_proxy
 from metrics import compute_mmd, evaluate_distribution_mmd
 from models import load_models, setup_gradient_checkpointing
-from visualization import plot_row, visualize_step
+from visualization import plot_row, visualize_step, compare_scribbles_heatmap
 
 
 def parse_args():
@@ -485,7 +485,9 @@ def main():
 
     final_dps_pil.save(os.path.join(args.output_dir, "final_scribble_dps.png"))
     final_regular_pil.save(os.path.join(args.output_dir, "final_scribble_regular.png"))
-
+    heatmap_path = os.path.join(args.output_dir, "scribble_heatmap.png")
+    compare_scribbles_heatmap(final_dps_pil, final_regular_pil, save_path=heatmap_path)
+    print("✅ Scribble heatmap saved.", flush=True)
     # Save eval photo rows
     plot_row(regular_eval_photos, f"Regular final photos  (MMD={regular_mmd:.4f})",
              save_path=os.path.join(args.output_dir, "final_photos_regular.png"))
@@ -560,6 +562,7 @@ def main():
         "regular_eval_photos":      [wandb.Image(p) for p in regular_eval_photos],
         "final_pca_comparison":     wandb.Image(pca_final_path),
         "training_curves":          wandb.Image(curves_path),
+        "scribble_heatmap": wandb.Image(heatmap_path),
     })
 
     wandb.summary["final_dps_mmd"]            = dps_mmd

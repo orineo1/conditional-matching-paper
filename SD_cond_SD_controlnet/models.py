@@ -9,7 +9,7 @@ from diffusers import (
 )
 from peft import PeftModel
 from huggingface_hub import hf_hub_download
-
+from diffusers import DDIMScheduler
 
 def _resolve_lora_path(lora_path: str) -> str:
     """
@@ -73,6 +73,7 @@ def load_models(device,
         torch_dtype=torch.float16,
         use_safetensors=True,
     ).to(device)
+    architect.scheduler = DDIMScheduler.from_config(architect.scheduler.config)
 
     if architect_unet_path:
         architect.unet = UNet2DConditionModel.from_pretrained(

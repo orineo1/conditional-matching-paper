@@ -277,7 +277,7 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     seeds = [42, 123, 456]
-    strengths = [0.1, 0.2, 0.3, 0.4, 0.5]
+    strengths = [0.3, 0.5, 0.7, 0.85, 1.0]
     gen_prompts = ["a cat", "a mountain landscape", "a portrait of a person"]
 
     run = wandb.init(

@@ -42,7 +42,7 @@ from generation import (
 from image_utils import build_base_image, latent_to_pil, sobel_proxy
 from metrics import compute_mmd, evaluate_distribution_mmd
 from models import load_models, setup_gradient_checkpointing
-from visualization import plot_row, visualize_step
+from visualization import plot_row, visualize_step, compare_scribbles_heatmap
 
 
 def parse_args():
@@ -214,7 +214,8 @@ def main():
     ax.set_title("PCA of Target CLIP Embeddings"); ax.legend(); ax.grid(True, alpha=0.3)
     pca_path = os.path.join(args.output_dir, "target_clip_pca.png")
     fig.savefig(pca_path, dpi=100, bbox_inches='tight'); plt.close(fig)
-    del _pca, _coords
+    pca_fixed = _pca
+    del _coords
 
     # ── 7. wandb init (after we have config details) ───────────────────────────
     eval_interval = args.eval_interval if args.eval_interval > 0 else max(1, (args.n_steps - args.start_step) // 5)
@@ -437,7 +438,7 @@ def main():
 
         step_save_path = os.path.join(steps_dir, f"step_{i:03d}.png")
         visualize_step(sd, architect, sprinter, target_clip_np,
-                       num_cond=2, save_path=step_save_path)
+                       num_cond=2, save_path=step_save_path, pca_fixed=pca_fixed)
 
         # Scheduler step
         latents = denoise_step(architect.scheduler, noise_pred, t, latents_step,
@@ -484,7 +485,9 @@ def main():
 
     final_dps_pil.save(os.path.join(args.output_dir, "final_scribble_dps.png"))
     final_regular_pil.save(os.path.join(args.output_dir, "final_scribble_regular.png"))
-
+    heatmap_path = os.path.join(args.output_dir, "scribble_heatmap.png")
+    compare_scribbles_heatmap(final_dps_pil, final_regular_pil, save_path=heatmap_path)
+    print("✅ Scribble heatmap saved.", flush=True)
     # Save eval photo rows
     plot_row(regular_eval_photos, f"Regular final photos  (MMD={regular_mmd:.4f})",
              save_path=os.path.join(args.output_dir, "final_photos_regular.png"))
@@ -519,9 +522,8 @@ def main():
     dps_eval_clip     = pil_list_to_clip(dps_eval_photos)
     target_clip_np_   = all_clip_embeddings.cpu().numpy()
 
-    combined  = np.vstack([target_clip_np_, regular_eval_clip, dps_eval_clip])
-    pca_final = PCA(n_components=2)
-    coords    = pca_final.fit_transform(combined)
+    combined = np.vstack([target_clip_np_, regular_eval_clip, dps_eval_clip])
+    coords = pca_fixed.transform(combined)  # use fixed PCA
 
     n_target  = target_clip_np_.shape[0]
     n_ev      = regular_eval_clip.shape[0]
@@ -542,7 +544,7 @@ def main():
                c="limegreen", alpha=0.8, s=80, marker="x",
                label=f"DPS eval     (MMD={dps_mmd:.4f})")
     ax.set_title(f"Final CLIP PCA — Target vs Unguided vs DPS\n"
-                 f"Var explained: {pca_final.explained_variance_ratio_.sum():.1%}")
+                 f"Var explained: {pca_fixed.explained_variance_ratio_.sum():.1%}")
     ax.legend(); ax.grid(True, alpha=0.3)
     plt.tight_layout()
     pca_final_path = os.path.join(args.output_dir, "final_pca_comparison.png")
@@ -560,6 +562,7 @@ def main():
         "regular_eval_photos":      [wandb.Image(p) for p in regular_eval_photos],
         "final_pca_comparison":     wandb.Image(pca_final_path),
         "training_curves":          wandb.Image(curves_path),
+        "scribble_heatmap": wandb.Image(heatmap_path),
     })
 
     wandb.summary["final_dps_mmd"]            = dps_mmd

@@ -111,7 +111,7 @@ def decode_latents(pipe, latents, vae_dtype):
     return images
 
 
-def noise_denoise(pipe, ref_images, captions, device, strength, seed=42, num_inference_steps=10, unconditional=False):
+def noise_denoise(pipe, ref_images, captions, device, strength, seed=42, num_inference_steps=30, unconditional=False):
     """Add noise at given strength, then denoise. If unconditional=True, uses empty prompt and no CFG."""
     if not ref_images:
         return [], []
@@ -204,7 +204,7 @@ def generate_images(pipe, device, prompts, seeds):
             with torch.no_grad():
                 img = pipe(
                     prompt=prompt,
-                    num_inference_steps=4,
+                    num_inference_steps=30,
                     guidance_scale=GUIDANCE_SCALE,
                     output_type="pil",
                     generator=generator,

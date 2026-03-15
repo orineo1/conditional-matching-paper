@@ -31,19 +31,19 @@ mkdir -p SD_cond_SD_controlnet/output
 python SD_cond_SD_controlnet/run_dps.py \
     --output_dir SD_cond_SD_controlnet/output/dps_hed_ft_${SLURM_JOB_ID} \
     --architect_unet_path /sci/labs/orzuk/shaulytolk/conditional-matching-paper/finetune_hed/output/final/merged \
-    --n_steps 30 \
-    --start_step 15 \
-    --num_variations 6 \
-    --n_targets 6 \
+    --n_steps 250 \
+    --start_step 125 \
+    --num_variations 100 \
+    --n_targets 100 \
     --base_zeta 2.0 \
     --guidance_scale 0.0 \
     --controlnet_scale 0.5 \
-    --n_eval 6 \
+    --n_eval 100 \
     --sprinter_variation_prompt "a superrealistic professional photograph of" \
     --sprinter_target_man_prompt "a superrealistic portrait photograph of a man, studio lighting" \
     --sprinter_target_woman_prompt "a superrealistic portrait photograph of a woman, studio lighting" \
     --sprinter_eval_prompt "a superrealistic professional photograph of" \
-    --architect_model_id "stabilityai/sdxl-turbo" \
+    --architect_model_id "stabilityai/stable-diffusion-xl-base-1.0" \
     --sprinter_model_id "stabilityai/sdxl-turbo" \
     --controlnet_model_id "xinsir/controlnet-scribble-sdxl-1.0" \
     --seed 1

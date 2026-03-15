@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=dps-hed-ft
-#SBATCH --output=/sci/labs/orzuk/ori_m/conditional-matching-paper/dps_hed_ft_%j.log
-#SBATCH --error=/sci/labs/orzuk/ori_m/conditional-matching-paper/dps_hed_ft_%j.err
+#SBATCH --output=/sci/labs/orzuk/shaulytolk/conditional-matching-paper/dps_hed_ft_%j.log
+#SBATCH --error=/sci/labs/orzuk/shaulytolk/conditional-matching-paper/dps_hed_ft_%j.err
 #SBATCH --time=06:00:00
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
@@ -18,14 +18,14 @@ echo "Starting DPS pipeline (HED fine-tuned) on $(hostname) with GPU: $CUDA_VISI
 echo "Job ID: $SLURM_JOB_ID"
 
 # Point HF cache to lab storage (home dir is full)
-export HF_HOME=/sci/labs/orzuk/ori_m/hf_cache
-mkdir -p /sci/labs/orzuk/ori_m/hf_cache
+export HF_HOME=/sci/labs/orzuk/shaulytolk/hf_cache
+mkdir -p /sci/labs/orzuk/shaulytolk/hf_cache
 
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 pip install -q matplotlib scikit-learn controlnet_aux
 
-cd /sci/labs/orzuk/ori_m/conditional-matching-paper
+cd /sci/labs/orzuk/shaulytolk/conditional-matching-paper
 mkdir -p SD_cond_SD_controlnet/output
 
 python SD_cond_SD_controlnet/run_dps.py \

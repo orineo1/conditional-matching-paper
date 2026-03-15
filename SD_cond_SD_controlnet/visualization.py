@@ -33,7 +33,7 @@ def plot_row(images, title, count=5, save_path=None):
     else:
         plt.show()
 
-def visualize_step(sd, architect, sprinter, target_clip_np, num_cond=4, save_path=None):
+def visualize_step(sd, architect, sprinter, target_clip_np, num_cond=4, save_path=None, pca_fixed=None):
     i = sd['step']
     with torch.no_grad():
         img_xt_reg  = latent_to_pil(sd['latents_step_regular_cpu'].to(architect.device), architect.vae, architect.image_processor)
@@ -55,8 +55,15 @@ def visualize_step(sd, architect, sprinter, target_clip_np, num_cond=4, save_pat
         sprinter.vae.to(dtype=torch.float32)
 
         combined   = np.vstack([target_clip_np, sd['variation_clip_flat']])
-        pca        = PCA(n_components=2)
-        pca_coords = pca.fit_transform(combined)
+        # ── use fixed PCA if provided, otherwise fit a new one ──
+        if pca_fixed is not None:
+            pca_coords = pca_fixed.transform(combined)
+            pca_var = pca_fixed.explained_variance_ratio_.sum()
+        else:
+            pca = PCA(n_components=2)
+            pca_coords = pca.fit_transform(combined)
+            pca_var = pca.explained_variance_ratio_.sum()
+
         target_pca = pca_coords[:target_clip_np.shape[0]]
         gen_pca    = pca_coords[target_clip_np.shape[0]:]
 
@@ -83,7 +90,7 @@ def visualize_step(sd, architect, sprinter, target_clip_np, num_cond=4, save_pat
     ax.scatter(masc_pca[:, 0], masc_pca[:, 1], c='royalblue', alpha=0.6, s=40, label='Target masc')
     ax.scatter(fem_pca[:, 0],  fem_pca[:, 1],  c='crimson',   alpha=0.6, s=40, label='Target fem')
     ax.scatter(gen_pca[:, 0],  gen_pca[:, 1],  c='limegreen', alpha=0.8, s=50, marker='x', label='Generated')
-    ax.set_title(f"CLIP PCA  Var={pca.explained_variance_ratio_.sum():.1%}")
+    ax.set_title(f"CLIP PCA  Var={pca_var:.1%}")
     ax.legend(fontsize=7)
     ax.grid(True, alpha=0.3)
 

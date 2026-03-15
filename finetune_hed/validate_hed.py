@@ -111,8 +111,8 @@ def decode_latents(pipe, latents, vae_dtype):
     return images
 
 
-def noise_denoise(pipe, ref_images, captions, device, strength, seed=42, num_inference_steps=10):
-    """Add noise at given strength, then denoise with per-image captions. Returns (denoised, noisy) PIL images."""
+def noise_denoise(pipe, ref_images, captions, device, strength, seed=42, num_inference_steps=10, unconditional=False):
+    """Add noise at given strength, then denoise. If unconditional=True, uses empty prompt and no CFG."""
     if not ref_images:
         return [], []
 
@@ -135,7 +135,8 @@ def noise_denoise(pipe, ref_images, captions, device, strength, seed=42, num_inf
     denoise_timesteps = all_timesteps[t_start:]
     noise_timestep = denoise_timesteps[0]
 
-    print(f"  strength={strength}: noise at t={noise_timestep.item():.0f}, "
+    mode_str = "unconditional" if unconditional else "captioned"
+    print(f"  strength={strength} ({mode_str}): noise at t={noise_timestep.item():.0f}, "
           f"denoise {len(denoise_timesteps)} steps", flush=True)
 
     noisy_latents = pipe.scheduler.add_noise(
@@ -143,12 +144,13 @@ def noise_denoise(pipe, ref_images, captions, device, strength, seed=42, num_inf
         torch.tensor([noise_timestep], device=device),
     )
 
-    # Use first caption for prompt (all same for simplicity in noise-denoise)
-    prompt = captions[0] if captions else ""
+    prompt = "" if unconditional else (captions[0] if captions else "")
+    use_cfg = not unconditional
+
     (prompt_embeds, negative_prompt_embeds,
      pooled_prompt_embeds, negative_pooled_prompt_embeds) = pipe.encode_prompt(
         prompt=prompt, device=device, num_images_per_prompt=1,
-        do_classifier_free_guidance=True,
+        do_classifier_free_guidance=use_cfg,
     )
     time_ids = torch.tensor([[512, 512, 0, 0, 512, 512]], device=device, dtype=torch.float16)
 
@@ -158,25 +160,33 @@ def noise_denoise(pipe, ref_images, captions, device, strength, seed=42, num_inf
     with torch.no_grad():
         for t in denoise_timesteps:
             latent_input = pipe.scheduler.scale_model_input(latents, t)
-            latent_input = torch.cat([latent_input, latent_input])
-            encoder_hs = torch.cat([
-                negative_prompt_embeds.expand(bs, -1, -1),
-                prompt_embeds.expand(bs, -1, -1),
-            ])
-            added_kwargs = {
-                "text_embeds": torch.cat([
-                    negative_pooled_prompt_embeds.expand(bs, -1),
-                    pooled_prompt_embeds.expand(bs, -1),
-                ]),
-                "time_ids": torch.cat([time_ids.expand(bs, -1)] * 2),
-            }
+            if use_cfg:
+                latent_input = torch.cat([latent_input, latent_input])
+                encoder_hs = torch.cat([
+                    negative_prompt_embeds.expand(bs, -1, -1),
+                    prompt_embeds.expand(bs, -1, -1),
+                ])
+                added_kwargs = {
+                    "text_embeds": torch.cat([
+                        negative_pooled_prompt_embeds.expand(bs, -1),
+                        pooled_prompt_embeds.expand(bs, -1),
+                    ]),
+                    "time_ids": torch.cat([time_ids.expand(bs, -1)] * 2),
+                }
+            else:
+                encoder_hs = prompt_embeds.expand(bs, -1, -1)
+                added_kwargs = {
+                    "text_embeds": pooled_prompt_embeds.expand(bs, -1),
+                    "time_ids": time_ids.expand(bs, -1),
+                }
             noise_pred = pipe.unet(
                 latent_input, t,
                 encoder_hidden_states=encoder_hs,
                 added_cond_kwargs=added_kwargs,
             ).sample
-            noise_pred_uncond, noise_pred_cond = noise_pred.chunk(2)
-            noise_pred = noise_pred_uncond + GUIDANCE_SCALE * (noise_pred_cond - noise_pred_uncond)
+            if use_cfg:
+                noise_pred_uncond, noise_pred_cond = noise_pred.chunk(2)
+                noise_pred = noise_pred_uncond + GUIDANCE_SCALE * (noise_pred_cond - noise_pred_uncond)
             latents = pipe.scheduler.step(noise_pred, t, latents).prev_sample
 
     denoised_images = decode_latents(pipe, latents, vae_dtype)
@@ -297,14 +307,19 @@ def main():
     ref_images, ref_captions = load_reference_images(data_dir, num_images=5)
 
     # Phase 1: Base pipeline
-    print("\nLoading base SDXL Turbo (no fine-tune)...", flush=True)
+    print("\nLoading base SDXL (no fine-tune)...", flush=True)
     pipe_base = load_pipeline(device)
 
-    base_nd_results = {}
+    base_nd_cap = {}
+    base_nd_uncond = {}
     for s in strengths:
-        print(f"\nNoise-denoise (base, strength={s})...", flush=True)
+        print(f"\nNoise-denoise (base, captioned, strength={s})...", flush=True)
         denoised, noisy = noise_denoise(pipe_base, ref_images, ref_captions, device, strength=s, seed=42)
-        base_nd_results[s] = (denoised, noisy)
+        base_nd_cap[s] = (denoised, noisy)
+
+        print(f"\nNoise-denoise (base, unconditional, strength={s})...", flush=True)
+        denoised_u, _ = noise_denoise(pipe_base, ref_images, ref_captions, device, strength=s, seed=42, unconditional=True)
+        base_nd_uncond[s] = denoised_u
 
     print("\nGenerating images (base)...", flush=True)
     base_gen = generate_images(pipe_base, device, gen_prompts, seeds)
@@ -316,31 +331,51 @@ def main():
     print(f"\nLoading fine-tuned pipeline from {unet_path}...", flush=True)
     pipe_ft = load_pipeline(device, unet_path=unet_path)
 
-    ft_nd_results = {}
+    ft_nd_cap = {}
+    ft_nd_uncond = {}
     for s in strengths:
-        print(f"\nNoise-denoise (fine-tuned, strength={s})...", flush=True)
+        print(f"\nNoise-denoise (fine-tuned, captioned, strength={s})...", flush=True)
         denoised, noisy = noise_denoise(pipe_ft, ref_images, ref_captions, device, strength=s, seed=42)
-        ft_nd_results[s] = (denoised, noisy)
+        ft_nd_cap[s] = (denoised, noisy)
+
+        print(f"\nNoise-denoise (fine-tuned, unconditional, strength={s})...", flush=True)
+        denoised_u, _ = noise_denoise(pipe_ft, ref_images, ref_captions, device, strength=s, seed=42, unconditional=True)
+        ft_nd_uncond[s] = denoised_u
 
     print("\nGenerating images (fine-tuned)...", flush=True)
     ft_gen = generate_images(pipe_ft, device, gen_prompts, seeds)
 
-    # Log noise-denoise grids
+    # Log captioned noise-denoise grids
     col_labels = ["Original", "Noised", "Base", "Fine-tuned"]
-    nd_grids = []
+    nd_grids_cap = []
     for s in strengths:
-        base_denoised, noisy_imgs = base_nd_results[s]
-        ft_denoised, _ = ft_nd_results[s]
+        base_denoised, noisy_imgs = base_nd_cap[s]
+        ft_denoised, _ = ft_nd_cap[s]
 
         rows = []
         for i in range(len(ref_images)):
             rows.append([ref_images[i], noisy_imgs[i], base_denoised[i], ft_denoised[i]])
 
         grid = make_grid(rows, col_labels=col_labels, row_labels=[f"#{i}" for i in range(len(ref_images))])
-        grid.save(output_dir / f"nd_grid_s{s}.png")
-        nd_grids.append(wandb.Image(grid, caption=f"strength={s}"))
+        grid.save(output_dir / f"nd_captioned_s{s}.png")
+        nd_grids_cap.append(wandb.Image(grid, caption=f"captioned strength={s}"))
 
-    wandb.log({"noise_denoise": nd_grids})
+    wandb.log({"noise_denoise_captioned": nd_grids_cap})
+
+    # Log unconditional noise-denoise grids
+    nd_grids_uncond = []
+    for s in strengths:
+        _, noisy_imgs = base_nd_cap[s]  # reuse noisy images (same noise)
+
+        rows = []
+        for i in range(len(ref_images)):
+            rows.append([ref_images[i], noisy_imgs[i], base_nd_uncond[s][i], ft_nd_uncond[s][i]])
+
+        grid = make_grid(rows, col_labels=col_labels, row_labels=[f"#{i}" for i in range(len(ref_images))])
+        grid.save(output_dir / f"nd_uncond_s{s}.png")
+        nd_grids_uncond.append(wandb.Image(grid, caption=f"unconditional strength={s}"))
+
+    wandb.log({"noise_denoise_unconditional": nd_grids_uncond})
 
     # Log generation grid: rows=prompts, cols=base/ft per seed
     gen_rows = []

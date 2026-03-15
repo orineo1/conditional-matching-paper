@@ -15,6 +15,8 @@ conda activate /sci/labs/orzuk/shaulytolk/conditional-matching-paper/scribble_en
 
 echo "Starting HED validation on $(hostname)"
 echo "Job ID: $SLURM_JOB_ID"
+echo "Python: $(which python)"
+python -c "import numpy; print(f'numpy {numpy.__version__}')"
 
 mkdir -p finetune_hed/output/validation
 

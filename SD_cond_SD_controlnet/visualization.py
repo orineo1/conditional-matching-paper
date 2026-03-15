@@ -4,6 +4,8 @@ import torch
 from sklearn.decomposition import PCA
 from image_utils import latent_to_pil
 import wandb
+import matplotlib.cm as cm
+
 def plot_row(images, title, count=5, save_path=None):
     fig, axes = plt.subplots(1, count, figsize=(4*count, 4))
     fig.suptitle(title, fontsize=14, fontweight='bold')
@@ -107,3 +109,24 @@ def visualize_step(sd, architect, sprinter, target_clip_np, num_cond=4, save_pat
         fig.savefig(save_path, dpi=100, bbox_inches='tight')
 
     plt.close(fig)
+
+def compare_scribbles_heatmap(dps_pil, regular_pil, save_path=None):
+    dps_np     = np.array(dps_pil).astype(float)
+    regular_np = np.array(regular_pil).astype(float)
+
+    diff       = np.abs(dps_np - regular_np).mean(axis=2)  # [H, W]
+    diff_norm  = diff / (diff.max() + 1e-8)                 # normalize to [0,1]
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    axes[0].imshow(regular_pil);                   axes[0].set_title("Unguided");   axes[0].axis("off")
+    axes[1].imshow(dps_pil);                       axes[1].set_title("DPS");        axes[1].axis("off")
+    im = axes[2].imshow(diff_norm, cmap="hot");    axes[2].set_title("Difference"); axes[2].axis("off")
+    plt.colorbar(im, ax=axes[2], fraction=0.046)
+
+    plt.suptitle(f"Max diff: {diff.max():.1f}  Mean diff: {diff.mean():.2f}", fontsize=12)
+    plt.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, dpi=120, bbox_inches="tight")
+    plt.close(fig)
+    return fig

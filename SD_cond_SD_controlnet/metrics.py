@@ -46,6 +46,48 @@ def compute_mmd(x, y, bandwidth=None):
     # and clamp(min=0) kills the gradient (grad=0 when clamped).
     return mmd_sq
 
+
+def compute_swd(x, y, n_projections=50):
+    """
+    Sliced Wasserstein Distance between two sets of embeddings.
+    x: [n, d] — generated (grad flows through this)
+    y: [m, d] — target (detached)
+    Returns scalar SWD (differentiable w.r.t. x)
+    """
+    if isinstance(x, np.ndarray): x = torch.from_numpy(x)
+    if isinstance(y, np.ndarray): y = torch.from_numpy(y)
+
+    dev = x.device
+    x = x.float().to(dev)
+    y = y.float().to(dev).detach()
+
+    if x.dim() > 2: x = x.reshape(x.shape[0], -1)
+    if y.dim() > 2: y = y.reshape(y.shape[0], -1)
+
+    d = x.shape[1]
+
+    # Sample random unit projection directions
+    projections = torch.randn(n_projections, d, device=dev)
+    projections = projections / projections.norm(dim=1, keepdim=True)  # [n_proj, d]
+
+    # Project both distributions: [n_proj, n] and [n_proj, m]
+    x_proj = projections @ x.T  # [n_proj, n]
+    y_proj = projections @ y.T  # [n_proj, m]
+
+    # Sort each 1D projection and compute W1 distance
+    x_sorted = x_proj.sort(dim=1).values
+    y_sorted = y_proj.sort(dim=1).values
+
+    # Interpolate y to match x size if n != m
+    if x_sorted.shape[1] != y_sorted.shape[1]:
+        y_sorted = torch.nn.functional.interpolate(
+            y_sorted.unsqueeze(0), size=x_sorted.shape[1], mode='linear', align_corners=False
+        ).squeeze(0)
+
+    swd = (x_sorted - y_sorted).abs().mean()
+    return swd
+
+
 def evaluate_distribution_mmd(latent, architect_vae, architect_image_processor,
                                 sprinter, clip_model, clip_processor,
                                 all_clip_embeddings,eval_prompt, n_eval=10, device="cuda",):

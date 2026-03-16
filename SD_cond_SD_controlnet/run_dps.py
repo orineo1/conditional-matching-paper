@@ -40,7 +40,7 @@ from generation import (
     run_dps_step_clip,
 )
 from image_utils import build_base_image, latent_to_pil, sobel_proxy
-from metrics import compute_mmd, evaluate_distribution_mmd
+from metrics import compute_mmd, evaluate_distribution_mmd, compute_swd
 from models import load_models, setup_gradient_checkpointing
 from visualization import plot_row, visualize_step
 

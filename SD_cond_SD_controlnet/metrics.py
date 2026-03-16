@@ -44,7 +44,7 @@ def compute_mmd(x, y, bandwidth=None):
     mmd_sq = xx_term - xy_term + yy_term
     # Don't clamp — with small n the unbiased estimator can be slightly negative,
     # and clamp(min=0) kills the gradient (grad=0 when clamped).
-    return mmd_sq
+    return torch.sqrt(mmd_sq.abs() + 1e-8)
 
 
 def compute_swd(x, y, n_projections=50):

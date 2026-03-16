@@ -84,7 +84,8 @@ def parse_args():
                    default="a superrealistic portrait photograph of a woman, studio lighting")
     p.add_argument("--sprinter_eval_prompt", type=str,
                    default="a superrealistic professional photograph of")
-
+    p.add_argument("--loss_fn", type=str, default="mmd", choices=["mmd", "swd"],
+                   help="Loss function for DPS guidance: 'mmd' or 'swd'")
     # Models
     p.add_argument("--controlnet_model_id", type=str,
                    default="xinsir/controlnet-scribble-sdxl-1.0")
@@ -246,6 +247,8 @@ def main():
             "sprinter_target_man_prompt":   args.sprinter_target_man_prompt,
             "sprinter_target_woman_prompt": args.sprinter_target_woman_prompt,
             "sprinter_eval_prompt":         args.sprinter_eval_prompt,
+            "loss_fn": args.loss_fn
+
         },
     )
     print(f"✅ wandb run: {run.name}", flush=True)
@@ -358,7 +361,7 @@ def main():
         pixel_x0_norm = torch.clamp((pixel_x0 + 1.0) / 2.0, 0.0, 1.0)
 
         # CLIP-MMD + gradient
-        grad, mmd_loss, zeta_i, loss_norm, vl_clip_flat = run_dps_step_clip(
+        grad, loss, zeta_i, loss_norm, vl_clip_flat = run_dps_step_clip(
             latents=latents,
             latents_step=latents_step,
             noise_pred=noise_pred,
@@ -373,11 +376,12 @@ def main():
             vae=sprinter.vae,
             vae_scaling_factor=sprinter.vae.config.scaling_factor,
             variation_prompt=args.sprinter_variation_prompt,
+            loss_fn=args.loss_fn
         )
 
         grad_norm = grad.norm().item()
         zeta_val  = zeta_i.item() if isinstance(zeta_i, torch.Tensor) else zeta_i
-        print(f"  MMD={mmd_loss.item():.6f}  ζi={zeta_val:.4f}  ∥∇∥={grad_norm:.6f}", flush=True)
+        print(f"  MMD={loss.item():.6f}  ζi={zeta_val:.4f}  ∥∇∥={grad_norm:.6f}", flush=True)
 
         if torch.isnan(grad).any():
             print(f"  ⚠️  NaN in gradient at step {i} — skipping correction", flush=True)
@@ -389,7 +393,7 @@ def main():
             "step":            i,
             "timestep":        t.item(),
             "gradient_norm":   grad_norm,
-            "mmd_loss":        mmd_loss.item(),
+            "mmd_loss":        loss.item(),
             "zeta_i":          zeta_val,
             "loss_norm":       loss_norm.item(),
             "correction_norm": zeta_val * grad_norm,
@@ -397,7 +401,7 @@ def main():
 
         wandb_log = {
             "step":            i,
-            "mmd_loss":        mmd_loss.item(),
+            "mmd_loss":        loss.item(),
             "gradient_norm":   grad_norm,
             "zeta":            zeta_val,
             "correction_norm": zeta_val * grad_norm,
@@ -412,11 +416,11 @@ def main():
                 n_eval=args.n_eval, device=device,
             )
             wandb_log["intermediate/unguided_cond_mmd"] = unguided_mmd
-            wandb_log["intermediate/guided_cond_mmd"]   = mmd_loss.item()
-            wandb_log["intermediate/cond_mmd_delta"]    = mmd_loss.item() - unguided_mmd
-            print(f"  [eval] guided={mmd_loss.item():.6f}  "
+            wandb_log["intermediate/guided_cond_mmd"]   = loss.item()
+            wandb_log["intermediate/cond_mmd_delta"]    = loss.item() - unguided_mmd
+            print(f"  [eval] guided={loss.item():.6f}  "
                   f"unguided={unguided_mmd:.6f}  "
-                  f"delta={mmd_loss.item()-unguided_mmd:.6f}", flush=True)
+                  f"delta={loss.item()-unguided_mmd:.6f}", flush=True)
 
         wandb.log(wandb_log, commit=False)
 
@@ -425,7 +429,7 @@ def main():
             sd = {
                 "step":                     i,
                 "timestep":                 t.item(),
-                "mmd_loss":                 mmd_loss.item(),
+                "mmd_loss":                 loss.item(),
                 "zeta_i":                   zeta_val,
                 "latents_step_cpu":         latents_step.detach().cpu(),
                 "latents_step_regular_cpu": latents_step_regular.detach().cpu(),
@@ -447,7 +451,7 @@ def main():
                                            t, latents_step_regular)
 
         # Cleanup
-        del grad, mmd_loss, loss_norm, zeta_i, correction
+        del grad, loss, loss_norm, zeta_i, correction
         del pixel_x0, pixel_x0_norm, pred_x0, pred_x0_regular
         del latents_step_regular, noise_pred_regular
         gc.collect(); torch.cuda.empty_cache()

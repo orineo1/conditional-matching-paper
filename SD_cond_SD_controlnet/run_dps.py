@@ -43,7 +43,7 @@ from image_utils import build_base_image, latent_to_pil, sobel_proxy
 from metrics import compute_mmd, evaluate_distribution_mmd, compute_swd
 from models import load_models, setup_gradient_checkpointing
 from visualization import plot_row, visualize_step
-
+LOSS_FNS = {"mmd": compute_mmd, "swd": compute_swd}
 
 def parse_args():
     p = argparse.ArgumentParser(description="DPS CLIP-MMD Pipeline (main.ipynb script version)")

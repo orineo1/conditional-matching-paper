@@ -19,11 +19,15 @@ echo "Job ID: $SLURM_JOB_ID"
 
 cd /sci/labs/orzuk/shaulytolk/conditional-matching-paper
 
+WEIGHTS=/sci/labs/orzuk/shaulytolk/models/fairface/res34_fair_align_multi_7_20190809.pt
+OUTPUT_DIR=SD_cond_SD_controlnet/output/dps_hed_ft_44245644
+
+# Evaluate DPS-guided photos
 python scripts/evaluate_gender_balance.py \
-    --image_dir SD_cond_SD_controlnet/output/dps_hed_ft_44245644/ \
-    --run_name gender_eval_hed_ft \
+    --image_dir "${OUTPUT_DIR}" \
+    --run_name gender_eval_hed_ft_dps \
     --wandb_project gender-classifier \
     --wandb_entity conditional-matching \
-    --weights_path /sci/labs/orzuk/shaulytolk/models/fairface/res34_fair_align_multi_7_20190809.pt
+    --weights_path "${WEIGHTS}"
 
 echo "Gender evaluation complete."

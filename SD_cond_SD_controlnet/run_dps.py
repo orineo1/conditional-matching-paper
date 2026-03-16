@@ -494,6 +494,14 @@ def main():
     plot_row(dps_eval_photos, f"DPS final photos      (MMD={dps_mmd:.4f})",
              save_path=os.path.join(args.output_dir, "final_photos_dps.png"))
 
+    # Save individual photos for downstream evaluation (e.g. gender classifier)
+    for folder, photos in [("photos_regular", regular_eval_photos),
+                           ("photos_dps", dps_eval_photos)]:
+        photo_dir = os.path.join(args.output_dir, folder)
+        os.makedirs(photo_dir, exist_ok=True)
+        for idx, photo in enumerate(photos):
+            photo.save(os.path.join(photo_dir, f"photo_{idx:03d}.png"))
+
     # Training curves
     steps_list = [d["step"]          for d in step_gradients]
     mmd_vals   = [d["mmd_loss"]      for d in step_gradients]

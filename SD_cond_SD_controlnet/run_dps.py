@@ -324,6 +324,59 @@ def main():
     step_gradients = []
     step_vis_data  = []
     target_clip_np = all_clip_embeddings.cpu().numpy()
+    # ── Baseline visualization (step 0, before any DPS correction) ────────────
+    with torch.no_grad():
+        baseline_noise_pred = predict_noise_cfg(
+            architect.unet, architect.scheduler,
+            latents.detach(), timesteps_to_run[0],
+            cfg_encoder_states, added_cond_kwargs, args.guidance_scale,
+        )
+        baseline_pred_x0 = compute_pred_x0_direct(
+            architect.scheduler, baseline_noise_pred, timesteps_to_run[0], latents.detach()
+        )
+
+        # Generate dummy variation clip embeddings (encode the pred_x0 itself via sprinter)
+        baseline_px = architect.vae.decode(
+            (baseline_pred_x0 / architect.vae.config.scaling_factor).to(architect.vae.dtype)
+        ).sample
+        baseline_px_norm = torch.clamp((baseline_px + 1.0) / 2.0, 0.0, 1.0)
+
+        sprinter.vae.to(dtype=torch.float16)
+        baseline_var_images = [
+            sprinter(
+                prompt=args.sprinter_variation_prompt,
+                image=baseline_px_norm,
+                num_inference_steps=2, guidance_scale=0.0,
+                controlnet_conditioning_scale=0.8, output_type="pil",
+            ).images[0]
+            for _ in range(5)
+        ]
+        sprinter.vae.to(dtype=torch.float32)
+
+        # Encode to CLIP
+        from clip_utils import encode_images_clip
+        import torchvision.transforms.functional as TF
+        var_tensors = torch.cat([TF.to_tensor(img).unsqueeze(0) for img in baseline_var_images], dim=0).to(device)
+        clip_model.to(device)
+        baseline_clip_flat = encode_images_clip(var_tensors, clip_model, clip_processor).cpu().numpy()
+        clip_model.to("cpu")
+
+        sd_baseline = {
+            "step": 0,
+            "timestep": timesteps_to_run[0].item(),
+            "mmd_loss": 0.0,
+            "zeta_i": 0.0,
+            "latents_step_cpu": latents.detach().cpu(),
+            "latents_step_regular_cpu": latents.detach().cpu(),
+            "pred_x0_cpu": baseline_pred_x0.detach().cpu(),
+            "pred_x0_regular_cpu": baseline_pred_x0.detach().cpu(),
+            "variation_clip_flat": baseline_clip_flat,
+        }
+
+    baseline_save_path = os.path.join(steps_dir, "step_baseline.png")
+    visualize_step(sd_baseline, architect, sprinter, target_clip_np,
+                   num_cond=5, save_path=baseline_save_path, pca_fixed=pca_fixed)
+    print("✅ Baseline visualization saved.", flush=True)
 
     # ── 9. DPS loop ────────────────────────────────────────────────────────────
     for i, t in enumerate(timesteps_to_run):
@@ -391,7 +444,7 @@ def main():
             correction = -zeta_i * grad
 
         step_gradients.append({
-            "step":            i,
+            "step":            i+1,
             "timestep":        t.item(),
             "gradient_norm":   grad_norm,
             "mmd_loss":        mmd_loss.item(),
@@ -401,7 +454,7 @@ def main():
         })
 
         wandb_log = {
-            "step":            i,
+            "step":            i+1,
             "mmd_loss":        mmd_loss.item(),
             "gradient_norm":   grad_norm,
             "zeta":            zeta_val,
@@ -428,7 +481,7 @@ def main():
         # Store step data for visualization
         with torch.no_grad():
             sd = {
-                "step":                     i,
+                "step":                     i+1,
                 "timestep":                 t.item(),
                 "mmd_loss":                 mmd_loss.item(),
                 "zeta_i":                   zeta_val,
@@ -442,7 +495,7 @@ def main():
 
         step_save_path = os.path.join(steps_dir, f"step_{i:03d}.png")
         visualize_step(sd, architect, sprinter, target_clip_np,
-                       num_cond=2, save_path=step_save_path, pca_fixed=pca_fixed)
+                       num_cond=5, save_path=step_save_path, pca_fixed=pca_fixed)
 
         # Scheduler step
         latents = denoise_step(architect.scheduler, noise_pred, t, latents_step,

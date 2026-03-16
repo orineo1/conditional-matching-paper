@@ -17,7 +17,7 @@ export WANDB_API_KEY=wandb_v1_90yBnA49RWOwonoVtoQjo97TW4Q_SZcEAeW0hgo7XyHUE5xv31
 echo "Starting gender evaluation on $(hostname)"
 echo "Job ID: $SLURM_JOB_ID"
 
-pip install "sympy>=1.12,<1.14"
+pip install --force-reinstall "sympy>=1.12,<1.14"
 
 cd /sci/labs/orzuk/shaulytolk/conditional-matching-paper
 

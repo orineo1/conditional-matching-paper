@@ -45,6 +45,7 @@ python SD_cond_SD_controlnet/run_dps.py \
     --architect_model_id "stabilityai/sdxl-turbo" \
     --sprinter_model_id "stabilityai/sdxl-turbo" \
     --controlnet_model_id "xinsir/controlnet-scribble-sdxl-1.0" \
+    --loss_fn swd \
     --seed 1
 
 echo "DPS main pipeline complete."

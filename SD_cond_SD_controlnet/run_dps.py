@@ -40,10 +40,11 @@ from generation import (
     run_dps_step_clip,
 )
 from image_utils import build_base_image, latent_to_pil, sobel_proxy
-from metrics import compute_mmd, evaluate_distribution_mmd
+from metrics import compute_mmd, evaluate_distribution_mmd, compute_swd
 from models import load_models, setup_gradient_checkpointing
 from visualization import plot_row, visualize_step, compare_scribbles_heatmap
 
+LOSS_FNS = {"mmd": compute_mmd, "swd": compute_swd}
 
 def parse_args():
     p = argparse.ArgumentParser(description="DPS CLIP-MMD Pipeline (main.ipynb script version)")
@@ -63,6 +64,7 @@ def parse_args():
     p.add_argument("--guidance_scale", type=float, default=0.0,
                    help="CFG scale for architect (0.0 = unconditional)")
     p.add_argument("--controlnet_scale", type=float, default=0.5)
+    p.add_argument("--loss_fn", type=str, default="mmd", choices=["mmd", "swd"])
 
     # Variations / eval
     p.add_argument("--num_variations", type=int, default=6)
@@ -247,6 +249,7 @@ def main():
             "sprinter_target_man_prompt":   args.sprinter_target_man_prompt,
             "sprinter_target_woman_prompt": args.sprinter_target_woman_prompt,
             "sprinter_eval_prompt":         args.sprinter_eval_prompt,
+            "loss_fn": args.loss_fn
         },
     )
     print(f"✅ wandb run: {run.name}", flush=True)
@@ -374,6 +377,7 @@ def main():
             vae=sprinter.vae,
             vae_scaling_factor=sprinter.vae.config.scaling_factor,
             variation_prompt=args.sprinter_variation_prompt,
+            loss_fn=LOSS_FNS[args.loss_fn]
         )
 
         grad_norm = grad.norm().item()

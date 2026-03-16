@@ -74,12 +74,39 @@ def main():
 
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Find images
+    # Find individual sprinter photos (photo_*.png in photos_*/ subdirs)
     image_dir = Path(args.image_dir)
     image_paths = sorted(
-        [str(p) for p in image_dir.rglob("*") if p.suffix.lower() in {".png", ".jpg", ".jpeg"}]
+        [str(p) for p in image_dir.rglob("photo_*.png")]
     )
-    print(f"Found {len(image_paths)} images in {image_dir}", flush=True)
+    if not image_paths:
+        # Fallback: split grid images (final_photos_*.png) into individual crops
+        grid_paths = sorted(image_dir.glob("final_photos_*.png"))
+        if grid_paths:
+            from PIL import Image
+            split_dir = image_dir / "photos_split"
+            split_dir.mkdir(exist_ok=True)
+            for grid_path in grid_paths:
+                grid = Image.open(grid_path)
+                w, h = grid.size
+                # Grids are 1-row matplotlib figures with title bar at top
+                # Estimate face region: skip top ~15% (title), split remaining equally
+                title_h = int(h * 0.12)
+                face_h = h - title_h
+                n_faces = round(w / face_h)  # faces are roughly square
+                face_w = w // n_faces
+                tag = grid_path.stem.replace("final_photos_", "")
+                for i in range(n_faces):
+                    crop = grid.crop((i * face_w, title_h, (i + 1) * face_w, h))
+                    crop_path = split_dir / f"{tag}_photo_{i:03d}.png"
+                    crop.save(crop_path)
+                    image_paths.append(str(crop_path))
+            print(f"Split {len(grid_paths)} grids into {len(image_paths)} individual photos", flush=True)
+        else:
+            print("No photo_*.png or final_photos_*.png found. Exiting.")
+            return
+    else:
+        print(f"Found {len(image_paths)} sprinter photos in {image_dir}", flush=True)
 
     if not image_paths:
         print("No images found. Exiting.")

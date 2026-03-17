@@ -428,7 +428,8 @@ def main():
             vae=sprinter.vae,
             vae_scaling_factor=sprinter.vae.config.scaling_factor,
             variation_prompt=args.sprinter_variation_prompt,
-            loss_fn=LOSS_FNS[args.loss_fn]
+            loss_fn=LOSS_FNS[args.loss_fn],
+            loss_scale=args.loss_scale,
         )
 
         grad_norm = grad.norm().item()

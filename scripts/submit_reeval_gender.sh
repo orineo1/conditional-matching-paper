@@ -13,9 +13,6 @@ export PATH="/usr/local/spack/opt/spack/linux-debian12-x86_64/gcc-12.2.0/minicon
 source /usr/local/spack/opt/spack/linux-debian12-x86_64/gcc-12.2.0/miniconda3-24.3.0-iqeknetqo7ngpr57d6gmu3dg4rzlcgk6/etc/profile.d/conda.sh
 conda activate /sci/labs/orzuk/shaulytolk/conditional-matching-paper/scribble_env
 
-# facenet-pytorch for MTCNN
-export PYTHONPATH=/sci/labs/orzuk/shaulytolk/.local_packages:$PYTHONPATH
-
 echo "Starting gender re-eval (fine-tuned weights) on $(hostname)"
 echo "Job ID: $SLURM_JOB_ID"
 

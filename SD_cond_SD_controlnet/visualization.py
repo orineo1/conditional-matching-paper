@@ -57,7 +57,6 @@ def visualize_step(sd, architect, sprinter, target_clip_np, num_cond=4, save_pat
         sprinter.vae.to(dtype=torch.float32)
 
         combined   = np.vstack([target_clip_np, sd['variation_clip_flat']])
-        # ── use fixed PCA if provided, otherwise fit a new one ──
         if pca_fixed is not None:
             pca_coords = pca_fixed.transform(combined)
             pca_var = pca_fixed.explained_variance_ratio_.sum()
@@ -73,12 +72,13 @@ def visualize_step(sd, architect, sprinter, target_clip_np, num_cond=4, save_pat
         masc_pca    = target_pca[:n_per_mode]
         fem_pca     = target_pca[n_per_mode:]
 
-    fig, axes = plt.subplots(2, 7, figsize=(28, 8))
+    n_cols = 2 + num_cond + 1
+    fig, axes = plt.subplots(2, n_cols, figsize=(4 * n_cols, 8))
     fig.suptitle(f"Step {i+1}  (t={sd['timestep']:.0f})", fontsize=14, fontweight='bold')
 
     axes[0,0].imshow(img_xt_reg); axes[0,0].set_title("Regular x_t")
     axes[0,1].imshow(img_x0_reg); axes[0,1].set_title("Regular pred x_0")
-    for j in range(2, 7):
+    for j in range(2, n_cols):
         axes[0,j].text(0.5, 0.5, 'N/A', ha='center', va='center',
                        transform=axes[0,j].transAxes)
         axes[0,j].set_facecolor('#f0f0f0')
@@ -88,7 +88,7 @@ def visualize_step(sd, architect, sprinter, target_clip_np, num_cond=4, save_pat
     for j, ci in enumerate(cond_imgs):
         axes[1, j+2].imshow(ci); axes[1, j+2].set_title(f"Cond {j+1}")
 
-    ax = axes[1, 6]
+    ax = axes[1, n_cols - 1]
     ax.scatter(masc_pca[:, 0], masc_pca[:, 1], c='royalblue', alpha=0.6, s=40, label='Target masc')
     ax.scatter(fem_pca[:, 0],  fem_pca[:, 1],  c='crimson',   alpha=0.6, s=40, label='Target fem')
     ax.scatter(gen_pca[:, 0],  gen_pca[:, 1],  c='limegreen', alpha=0.8, s=50, marker='x', label='Generated')
@@ -99,11 +99,11 @@ def visualize_step(sd, architect, sprinter, target_clip_np, num_cond=4, save_pat
     for row in axes:
         for ax_ in row:
             ax_.axis("off")
-    axes[1, 6].axis("on")
+    axes[1, n_cols - 1].axis("on")
 
     plt.tight_layout()
 
-    wandb.log({"step_visualization": wandb.Image(fig)}, step=i+1,commit=True)
+    wandb.log({"step_visualization": wandb.Image(fig)}, step=i+1, commit=True)
 
     if save_path:
         fig.savefig(save_path, dpi=100, bbox_inches='tight')

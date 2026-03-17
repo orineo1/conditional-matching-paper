@@ -2,6 +2,9 @@
 # Agent infrastructure (local only)
 .agents/
 
+# Autoresearch (local experiment runner)
+autoresearch/
+
 # Claude Code local files
 .claude/
 

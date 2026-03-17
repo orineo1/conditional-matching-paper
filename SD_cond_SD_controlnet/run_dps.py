@@ -457,6 +457,7 @@ def main():
             "gradient_norm":   grad_norm,
             "zeta":            zeta_val,
             "correction_norm": zeta_val * grad_norm,
+            "loss_scale": args.loss_scale,
         }
 
         # Intermediate MMD evaluation

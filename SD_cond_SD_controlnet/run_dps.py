@@ -335,7 +335,6 @@ def main():
             architect.scheduler, baseline_noise_pred, timesteps_to_run[0], latents.detach()
         )
 
-        # Generate dummy variation clip embeddings (encode the pred_x0 itself via sprinter)
         baseline_px = architect.vae.decode(
             (baseline_pred_x0 / architect.vae.config.scaling_factor).to(architect.vae.dtype)
         ).sample
@@ -353,9 +352,6 @@ def main():
         ]
         sprinter.vae.to(dtype=torch.float32)
 
-        # Encode to CLIP
-        from clip_utils import encode_images_clip
-        import torchvision.transforms.functional as TF
         var_tensors = torch.cat([TF.to_tensor(img).unsqueeze(0) for img in baseline_var_images], dim=0).to(device)
         clip_model.to(device)
         baseline_clip_flat = encode_images_clip(var_tensors, clip_model, clip_processor).cpu().numpy()

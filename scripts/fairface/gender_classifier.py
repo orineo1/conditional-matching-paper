@@ -29,6 +29,7 @@ GENDER_LABELS = ["Male", "Female"]
 GENDER_SLICE = slice(7, 9)  # neurons 7-8 in the 18-output head
 
 DEFAULT_WEIGHTS = Path(__file__).resolve().parent.parent.parent / "models" / "fairface" / "res34_fair_align_multi_7_20190809.pt"
+FINETUNED_WEIGHTS = Path(__file__).resolve().parent.parent.parent / "models" / "fairface" / "res34_fairface_finetuned.pt"
 
 TRANSFORM = transforms.Compose([
     transforms.Resize((224, 224)),
@@ -69,8 +70,18 @@ def _crop_face(img: Image.Image, mtcnn) -> Optional[Image.Image]:
 
 
 def load_model(weights_path: Optional[Union[str, Path]] = None, device: str = "cpu") -> nn.Module:
-    """Load FairFace ResNet-34 with pretrained weights."""
-    weights_path = Path(weights_path) if weights_path else DEFAULT_WEIGHTS
+    """Load FairFace ResNet-34 with pretrained weights.
+
+    If no weights_path is given, uses fine-tuned weights if available,
+    otherwise falls back to original FairFace weights.
+    """
+    if weights_path is not None:
+        weights_path = Path(weights_path)
+    elif FINETUNED_WEIGHTS.exists():
+        weights_path = FINETUNED_WEIGHTS
+        print(f"Using fine-tuned weights: {weights_path}", flush=True)
+    else:
+        weights_path = DEFAULT_WEIGHTS
     if not weights_path.exists():
         raise FileNotFoundError(
             f"FairFace weights not found at {weights_path}. "

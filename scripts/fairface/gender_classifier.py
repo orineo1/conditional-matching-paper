@@ -1,4 +1,4 @@
-"""Minimal gender classifier extracted from FairFace (dchen236/FairFace).
+"""Gender classifier using FairFace (dchen236/FairFace).
 
 Uses ResNet-34 with 18-output multi-task head:
   - neurons 0-6: race (7 classes)
@@ -13,9 +13,15 @@ Weights: res34_fair_align_multi_7_20190809.pt
 Download from: https://drive.google.com/drive/folders/1F_pXfbzWvG-bhCpNsRj6F_xsdjpesiFu
 """
 
+import json
+import math
+import os
 from pathlib import Path
 from typing import List, Optional, Union
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
 import torchvision
@@ -82,6 +88,22 @@ def load_model(weights_path: Optional[Union[str, Path]] = None, device: str = "c
     return model
 
 
+def _classify_batch(pil_images, model, mtcnn, device):
+    """Classify a list of PIL images. Returns (predictions, confidences) tensors."""
+    tensors = []
+    for img in pil_images:
+        face_crop = _crop_face(img, mtcnn)
+        tensors.append(TRANSFORM(face_crop if face_crop is not None else img))
+
+    batch = torch.stack(tensors).to(device)
+    with torch.no_grad():
+        outputs = model(batch)
+        gender_logits = outputs[:, GENDER_SLICE]
+        probs = torch.softmax(gender_logits, dim=1)
+        confidences, predictions = probs.max(dim=1)
+    return predictions, confidences
+
+
 def classify_gender(
     image_paths: List[str],
     model: Optional[nn.Module] = None,
@@ -116,12 +138,11 @@ def classify_gender(
                     n_detected += 1
                     face_flags.append(True)
                 else:
-                    # Fallback: use full image if no face detected
                     tensors.append(TRANSFORM(img))
                     n_fallback += 1
                     face_flags.append(False)
                 valid_paths.append(p)
-            except Exception as e:
+            except Exception:
                 results.append({"path": str(p), "predicted_gender": "Error", "confidence": 0.0, "face_detected": False})
                 continue
 
@@ -145,3 +166,95 @@ def classify_gender(
 
     print(f"Face detection: {n_detected} detected, {n_fallback} fallback (no face found)", flush=True)
     return results
+
+
+def evaluate_gender_balance(pil_images, device, save_dir=None, target_ratio=(50, 50),
+                            weights_path=None):
+    """Classify gender of PIL images and compute balance metrics.
+
+    Uses MTCNN face detection + FairFace classification.
+    If save_dir is provided:
+      - Saves images into male/ and female/ subdirectories
+      - Saves per-image gender_results.json
+      - Saves gender_confidence_boxplot.png
+
+    Returns dict with gender_L, n_male, n_female, gender_conf_mean, male_confs, female_confs.
+    """
+    model = load_model(weights_path, device)
+    mtcnn = _load_mtcnn(device)
+    predictions, confidences = _classify_batch(pil_images, model, mtcnn, device)
+
+    n = len(pil_images)
+    n_male = (predictions == 0).sum().item()
+    n_female = n - n_male
+    conf_mean = confidences.mean().item()
+
+    # Build per-image results
+    per_image = []
+    male_confs = []
+    female_confs = []
+    for idx, (pred, conf) in enumerate(zip(predictions, confidences)):
+        label = GENDER_LABELS[pred.item()]
+        c = round(conf.item(), 4)
+        per_image.append({"image_idx": idx, "gender": label, "confidence": c})
+        if pred.item() == 0:
+            male_confs.append(c)
+        else:
+            female_confs.append(c)
+
+    if save_dir is not None:
+        os.makedirs(save_dir, exist_ok=True)
+
+        # Save images sorted by gender
+        male_dir = os.path.join(save_dir, "male")
+        female_dir = os.path.join(save_dir, "female")
+        os.makedirs(male_dir, exist_ok=True)
+        os.makedirs(female_dir, exist_ok=True)
+        for idx, (img, pred, conf) in enumerate(zip(pil_images, predictions, confidences)):
+            out_dir = male_dir if pred.item() == 0 else female_dir
+            img.save(os.path.join(out_dir, f"{idx:03d}_conf{conf.item():.2f}.png"))
+
+        # Save per-image JSON
+        with open(os.path.join(save_dir, "gender_results.json"), "w") as f:
+            json.dump(per_image, f, indent=2)
+
+        # Save confidence boxplot
+        fig, ax = plt.subplots(figsize=(6, 5))
+        box_data = []
+        box_labels = []
+        if male_confs:
+            box_data.append(male_confs)
+            box_labels.append(f"Male (n={len(male_confs)})")
+        if female_confs:
+            box_data.append(female_confs)
+            box_labels.append(f"Female (n={len(female_confs)})")
+        if box_data:
+            bp = ax.boxplot(box_data, labels=box_labels, patch_artist=True,
+                            widths=0.5, showmeans=True,
+                            meanprops=dict(marker='D', markerfacecolor='red', markersize=6))
+            colors = ['#4C72B0', '#DD8452']
+            for patch, color in zip(bp['boxes'], colors[:len(box_data)]):
+                patch.set_facecolor(color)
+                patch.set_alpha(0.7)
+        ax.set_ylabel("Confidence")
+        ax.set_title(f"Gender Classification Confidence\n{n_male}M / {n_female}F")
+        ax.set_ylim(0.45, 1.02)
+        ax.grid(True, alpha=0.3, axis='y')
+        fig.tight_layout()
+        fig.savefig(os.path.join(save_dir, "gender_confidence_boxplot.png"), dpi=120, bbox_inches='tight')
+        plt.close(fig)
+
+    # Gender balance loss: L2 distance from target
+    ratio_sum = target_ratio[0] + target_ratio[1]
+    t_male = n * target_ratio[0] / ratio_sum
+    t_female = n * target_ratio[1] / ratio_sum
+    L = math.sqrt((n_male - t_male) ** 2 + (n_female - t_female) ** 2)
+
+    return {
+        "gender_L": round(L, 4),
+        "n_male": n_male,
+        "n_female": n_female,
+        "gender_conf_mean": round(conf_mean, 4),
+        "male_confs": male_confs,
+        "female_confs": female_confs,
+    }

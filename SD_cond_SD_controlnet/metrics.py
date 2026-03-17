@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-
+import torchvision.transforms.functional as TF
 
 
 def compute_mmd(x, y, bandwidth=None):
@@ -117,7 +117,6 @@ def evaluate_distribution_mmd(latent, architect_vae, architect_image_processor,
     Returns (mmd_scalar, eval_photos_list, clip_embs)
     """
     from clip_utils import encode_images_clip
-    import torchvision.transforms.functional as TF
     from image_utils import latent_to_pil
 
     # 1. Decode architect latent to scribble PIL

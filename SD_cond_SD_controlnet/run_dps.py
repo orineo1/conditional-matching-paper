@@ -61,6 +61,8 @@ def parse_args():
 
     # Guidance
     p.add_argument("--base_zeta", type=float, default=1.0)
+    p.add_argument("--loss_scale", type=float, default=1.0,
+                   help="Multiply loss by this factor before grad computation"),
     p.add_argument("--guidance_scale", type=float, default=0.0,
                    help="CFG scale for architect (0.0 = unconditional)")
     p.add_argument("--controlnet_scale", type=float, default=0.5)

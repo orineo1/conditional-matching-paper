@@ -202,11 +202,14 @@ def evaluate_gender_balance(pil_images, device, save_dir=None, target_ratio=(50,
     if save_dir is not None:
         os.makedirs(save_dir, exist_ok=True)
 
-        # Save images sorted by gender
+        # Save images sorted by gender (clear old results first)
         male_dir = os.path.join(save_dir, "male")
         female_dir = os.path.join(save_dir, "female")
-        os.makedirs(male_dir, exist_ok=True)
-        os.makedirs(female_dir, exist_ok=True)
+        import shutil
+        for d in [male_dir, female_dir]:
+            if os.path.exists(d):
+                shutil.rmtree(d)
+            os.makedirs(d)
         for idx, (img, pred, conf) in enumerate(zip(pil_images, predictions, confidences)):
             out_dir = male_dir if pred.item() == 0 else female_dir
             img.save(os.path.join(out_dir, f"{idx:03d}_conf{conf.item():.2f}.png"))

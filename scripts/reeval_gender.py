@@ -22,7 +22,7 @@ if scripts_dir not in sys.path:
 
 from fairface.gender_classifier import evaluate_gender_balance
 
-DEFAULT_WEIGHTS = "/sci/labs/orzuk/shaulytolk/models/fairface/res34_fair_align_multi_7_20190809.pt"
+DEFAULT_WEIGHTS = None  # auto-selects fine-tuned weights if available
 
 
 def evaluate_dir(image_dir, device, weights_path):

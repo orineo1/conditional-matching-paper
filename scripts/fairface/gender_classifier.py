@@ -19,9 +19,6 @@ import os
 from pathlib import Path
 from typing import List, Optional, Union
 
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
 import torchvision
@@ -219,6 +216,9 @@ def evaluate_gender_balance(pil_images, device, save_dir=None, target_ratio=(50,
             json.dump(per_image, f, indent=2)
 
         # Save confidence boxplot
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
         fig, ax = plt.subplots(figsize=(6, 5))
         box_data = []
         box_labels = []

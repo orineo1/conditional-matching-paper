@@ -3,7 +3,7 @@ import numpy as np
 import torchvision.transforms.functional as TF
 
 
-def compute_mmd(x, y, bandwidth=None):
+def compute_mmd(x, y, bandwidth=None,bandwidth_scale=1.0):
     if isinstance(x, np.ndarray): x = torch.from_numpy(x)
     if isinstance(y, np.ndarray): y = torch.from_numpy(y)
 
@@ -15,7 +15,7 @@ def compute_mmd(x, y, bandwidth=None):
     if y.dim() > 2: y = y.reshape(y.shape[0], -1)
     n, m = x.shape[0], y.shape[0]
 
-    def rbf_kernel(a, b, bw):
+    def rbf_kernel(a, b, bw,):
         a_sq = (a ** 2).sum(dim=1, keepdim=True)
         b_sq = (b ** 2).sum(dim=1, keepdim=True)
         dist_sq = a_sq + b_sq.T - 2 * torch.mm(a, b.T)
@@ -30,7 +30,7 @@ def compute_mmd(x, y, bandwidth=None):
             dists = dists[dists > 0]
             bandwidth = (torch.sqrt(torch.median(dists) / 2) if len(dists) > 0
                          else torch.tensor(1.0, device=dev))
-        bandwidth = bandwidth.detach()  # ← detach bandwidth, it's just a scalar constant
+        bandwidth = bandwidth.detach() *bandwidth_scale   # ← detach bandwidth, it's just a scalar constant
 
     # These three calls are outside no_grad — grad flows through x
     K_xx = rbf_kernel(x, x, bandwidth)

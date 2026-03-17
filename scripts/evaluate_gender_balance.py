@@ -1,72 +1,33 @@
 """Evaluate gender balance of generated images using FairFace classifier.
 
-Classifies sprinter outputs by gender, computes balance metrics, logs to WandB.
+Thin CLI wrapper around fairface.gender_classifier.evaluate_gender_balance().
+Finds photo_*.png in --image_dir, classifies with MTCNN + FairFace,
+saves sorted dirs + boxplot + JSON, optionally logs to WandB.
 
 Usage:
     python scripts/evaluate_gender_balance.py \
-        --image_dir outputs/sprinter/run_001/ \
-        --run_name run_001 \
-        --wandb_project conditional-matching
+        --image_dir outputs/my_run/ \
+        --run_name my_eval \
+        --wandb_project gender-classifier \
+        --wandb_entity conditional-matching
 """
 
 import argparse
-import json
-import math
 from pathlib import Path
 
 import torch
-import wandb
+from PIL import Image
 
-from fairface.gender_classifier import classify_gender, load_model
-
-
-def compute_metrics(results, target_ratio):
-    """Compute gender balance metrics from classification results.
-
-    Returns dict with L (balance loss), counts, and confidence stats.
-    """
-    valid = [r for r in results if r["predicted_gender"] != "Error"]
-    n = len(valid)
-    if n == 0:
-        return {"n_images": 0, "n_male": 0, "n_female": 0, "L": 0.0,
-                "conf_male_mean": 0.0, "conf_female_mean": 0.0, "conf_overall_mean": 0.0}
-
-    n_male = sum(1 for r in valid if r["predicted_gender"] == "Male")
-    n_female = n - n_male
-
-    # Target counts from ratio
-    ratio_sum = target_ratio[0] + target_ratio[1]
-    t_male = n * target_ratio[0] / ratio_sum
-    t_female = n * target_ratio[1] / ratio_sum
-
-    # Gender Balance Loss: L2 distance between observed and target counts
-    L = math.sqrt((n_male - t_male) ** 2 + (n_female - t_female) ** 2)
-
-    # Confidence stats
-    male_confs = [r["confidence"] for r in valid if r["predicted_gender"] == "Male"]
-    female_confs = [r["confidence"] for r in valid if r["predicted_gender"] == "Female"]
-    all_confs = [r["confidence"] for r in valid]
-
-    return {
-        "n_images": n,
-        "n_male": n_male,
-        "n_female": n_female,
-        "L": round(L, 4),
-        "conf_male_mean": round(sum(male_confs) / len(male_confs), 4) if male_confs else 0.0,
-        "conf_female_mean": round(sum(female_confs) / len(female_confs), 4) if female_confs else 0.0,
-        "conf_overall_mean": round(sum(all_confs) / len(all_confs), 4) if all_confs else 0.0,
-    }
+from fairface.gender_classifier import evaluate_gender_balance
 
 
 def main():
     parser = argparse.ArgumentParser(description="Evaluate gender balance of generated images")
-    parser.add_argument("--image_dir", type=str, required=True, help="Directory of generated images")
+    parser.add_argument("--image_dir", type=str, required=True, help="Directory with photo_*.png files")
     parser.add_argument("--target_ratio", type=float, nargs=2, default=[50, 50],
                         help="Target gender ratio [male, female]")
     parser.add_argument("--run_name", type=str, required=True, help="Name for WandB run and output")
-    parser.add_argument("--output_json", type=str, default=None,
-                        help="Path for per-image results JSON (default: results/<run_name>_gender_eval.json)")
-    parser.add_argument("--wandb_project", type=str, default="conditional-matching")
+    parser.add_argument("--wandb_project", type=str, default=None)
     parser.add_argument("--wandb_entity", type=str, default=None)
     parser.add_argument("--weights_path", type=str, default=None, help="Path to FairFace weights")
     parser.add_argument("--device", type=str, default=None)
@@ -74,92 +35,45 @@ def main():
 
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Find individual sprinter photos (photo_*.png in photos_*/ subdirs)
+    # Find individual sprinter photos
     image_dir = Path(args.image_dir)
-    image_paths = sorted(
-        [str(p) for p in image_dir.rglob("photo_*.png")]
-    )
-    if not image_paths:
-        # Fallback: split grid images (final_photos_*.png) into individual crops
-        grid_paths = sorted(image_dir.glob("final_photos_*.png"))
-        if grid_paths:
-            from PIL import Image
-            split_dir = image_dir / "photos_split"
-            split_dir.mkdir(exist_ok=True)
-            for grid_path in grid_paths:
-                grid = Image.open(grid_path)
-                w, h = grid.size
-                # Grids are 1-row matplotlib figures with title bar at top
-                # Estimate face region: skip top ~15% (title), split remaining equally
-                title_h = int(h * 0.12)
-                face_h = h - title_h
-                n_faces = round(w / face_h)  # faces are roughly square
-                face_w = w // n_faces
-                tag = grid_path.stem.replace("final_photos_", "")
-                for i in range(n_faces):
-                    crop = grid.crop((i * face_w, title_h, (i + 1) * face_w, h))
-                    crop_path = split_dir / f"{tag}_photo_{i:03d}.png"
-                    crop.save(crop_path)
-                    image_paths.append(str(crop_path))
-            print(f"Split {len(grid_paths)} grids into {len(image_paths)} individual photos", flush=True)
-        else:
-            print("No photo_*.png or final_photos_*.png found. Exiting.")
-            return
-    else:
-        print(f"Found {len(image_paths)} sprinter photos in {image_dir}", flush=True)
-
-    if not image_paths:
-        print("No images found. Exiting.")
+    photo_paths = sorted(image_dir.rglob("photo_*.png"))
+    if not photo_paths:
+        print("No photo_*.png found. Exiting.")
         return
 
-    # Load model and classify
-    print(f"Loading FairFace model on {device}...", flush=True)
-    model = load_model(args.weights_path, device)
+    pil_images = [Image.open(p).convert("RGB") for p in photo_paths]
+    print(f"Found {len(pil_images)} sprinter photos in {image_dir}", flush=True)
 
-    print("Classifying gender...", flush=True)
-    results = classify_gender(image_paths, model=model, device=device)
-
-    # Compute metrics
-    metrics = compute_metrics(results, args.target_ratio)
-    print(f"Results: {metrics['n_male']} male, {metrics['n_female']} female, L={metrics['L']}", flush=True)
-
-    # Save JSON
-    output_json = args.output_json or f"results/{args.run_name}_gender_eval.json"
-    Path(output_json).parent.mkdir(parents=True, exist_ok=True)
-    output = {
-        "run_name": args.run_name,
-        **metrics,
-        "per_image": results,
-    }
-    with open(output_json, "w") as f:
-        json.dump(output, f, indent=2)
-    print(f"Saved per-image results to {output_json}", flush=True)
-
-    # Log to WandB
-    run = wandb.init(
-        project=args.wandb_project,
-        entity=args.wandb_entity,
-        name=args.run_name,
-        job_type="gender_evaluation",
-        config={
-            "image_dir": str(image_dir),
-            "n_images": metrics["n_images"],
-            "target_ratio": args.target_ratio,
-        },
+    # Run unified evaluation (MTCNN crop + classify + sort + boxplot + JSON)
+    result = evaluate_gender_balance(
+        pil_images, device,
+        save_dir=str(image_dir),
+        target_ratio=tuple(args.target_ratio),
+        weights_path=args.weights_path,
     )
-    wandb.log({
-        "gender_L": metrics["L"],
-        "n_male": metrics["n_male"],
-        "n_female": metrics["n_female"],
-        "conf_male_mean": metrics["conf_male_mean"],
-        "conf_female_mean": metrics["conf_female_mean"],
-        "conf_overall_mean": metrics["conf_overall_mean"],
-        "conf_loss_overall": 1.0 - metrics["conf_overall_mean"],
-        "conf_loss_male": 1.0 - metrics["conf_male_mean"],
-        "conf_loss_female": 1.0 - metrics["conf_female_mean"],
-    })
-    wandb.finish()
-    print("WandB logging complete.", flush=True)
+
+    print(f"Results: {result['n_male']}M / {result['n_female']}F, L={result['gender_L']}", flush=True)
+
+    # Optional WandB logging
+    if args.wandb_project:
+        import wandb
+        wandb.init(
+            project=args.wandb_project,
+            entity=args.wandb_entity,
+            name=args.run_name,
+            job_type="gender_evaluation",
+            config={"image_dir": str(image_dir), "n_images": result["n_male"] + result["n_female"]},
+        )
+        wandb.log({
+            "gender_L": result["gender_L"],
+            "n_male": result["n_male"],
+            "n_female": result["n_female"],
+            "gender_conf_mean": result["gender_conf_mean"],
+            "conf_loss": 1.0 - result["gender_conf_mean"],
+        })
+        wandb.finish()
+        print("WandB logging complete.", flush=True)
 
 
 if __name__ == "__main__":

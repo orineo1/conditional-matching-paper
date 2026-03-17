@@ -17,6 +17,8 @@ export WANDB_API_KEY=wandb_v1_90yBnA49RWOwonoVtoQjo97TW4Q_SZcEAeW0hgo7XyHUE5xv31
 echo "Starting gender evaluation on $(hostname)"
 echo "Job ID: $SLURM_JOB_ID"
 
+pip install --user facenet-pytorch 2>/dev/null
+
 cd /sci/labs/orzuk/shaulytolk/conditional-matching-paper
 
 WEIGHTS=/sci/labs/orzuk/shaulytolk/models/fairface/res34_fair_align_multi_7_20190809.pt

@@ -61,13 +61,14 @@ def parse_args():
 
     # Guidance
     p.add_argument("--base_zeta", type=float, default=1.0)
-    p.add_argument("--loss_scale", type=float, default=1.0,
-                   help="Multiply loss by this factor before grad computation"),
     p.add_argument("--guidance_scale", type=float, default=0.0,
                    help="CFG scale for architect (0.0 = unconditional)")
     p.add_argument("--controlnet_scale", type=float, default=0.5)
     p.add_argument("--loss_fn", type=str, default="mmd", choices=["mmd", "swd"])
-
+    p.add_argument("--bandwidth_scale", type=float, default=1.0,
+                   help="Scale factor for MMD bandwidth (< 1 = sharper kernel)")
+    p.add_argument("--loss_scale", type=float, default=1.0,
+                   help="Multiply loss by this factor before grad computation"),
     # Variations / eval
     p.add_argument("--num_variations", type=int, default=6)
     p.add_argument("--n_targets", type=int, default=20,
@@ -251,7 +252,9 @@ def main():
             "sprinter_target_man_prompt":   args.sprinter_target_man_prompt,
             "sprinter_target_woman_prompt": args.sprinter_target_woman_prompt,
             "sprinter_eval_prompt":         args.sprinter_eval_prompt,
-            "loss_fn": args.loss_fn
+            "loss_fn":              args.loss_fn,
+            "loss_scale":           args.loss_scale,
+            "bandwidth_scale":      args.bandwidth_scale,
         },
     )
     print(f"✅ wandb run: {run.name}", flush=True)
@@ -326,6 +329,11 @@ def main():
     step_gradients = []
     step_vis_data  = []
     target_clip_np = all_clip_embeddings.cpu().numpy()
+    from functools import partial
+    if args.loss_fn == "mmd":
+        loss_fn = partial(compute_mmd, bandwidth_scale=args.bandwidth_scale)
+    else:
+        loss_fn = LOSS_FNS[args.loss_fn]
     # ── Baseline visualization (step 0, before any DPS correction) ────────────
     with torch.no_grad():
         baseline_noise_pred = predict_noise_cfg(
@@ -458,7 +466,6 @@ def main():
             "gradient_norm":   grad_norm,
             "zeta":            zeta_val,
             "correction_norm": zeta_val * grad_norm,
-            "loss_scale": args.loss_scale,
         }
 
         # Intermediate MMD evaluation

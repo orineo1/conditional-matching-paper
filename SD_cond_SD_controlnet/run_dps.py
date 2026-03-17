@@ -371,7 +371,7 @@ def main():
 
     baseline_save_path = os.path.join(steps_dir, "step_baseline.png")
     visualize_step(sd_baseline, architect, sprinter, target_clip_np,
-                   num_cond=5, save_path=baseline_save_path, pca_fixed=pca_fixed)
+                   num_cond=4, save_path=baseline_save_path, pca_fixed=pca_fixed)
     print("✅ Baseline visualization saved.", flush=True)
 
     # ── 9. DPS loop ────────────────────────────────────────────────────────────

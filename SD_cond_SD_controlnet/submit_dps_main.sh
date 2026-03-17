@@ -47,6 +47,7 @@ python SD_cond_SD_controlnet/run_dps.py \
     --controlnet_model_id "xinsir/controlnet-scribble-sdxl-1.0" \
     --loss_fn swd \
     --loss_scale 100.0 \
+    --bandwidth_scale 0.3 \
     --seed 1
 
 echo "DPS main pipeline complete."

@@ -355,10 +355,12 @@ def main():
             sprinter(
                 prompt=args.sprinter_variation_prompt,
                 image=baseline_px_norm,
-                num_inference_steps=2, guidance_scale=0.0,
-                controlnet_conditioning_scale=0.8, output_type="pil",
+                num_inference_steps=2, guidance_scale=guidance_scale,
+                controlnet_conditioning_scale=args.controlnet_scale, output_type="pil",
+
             ).images[0]
-            for _ in range(5)
+
+            for _ in range(args.n_eval)
         ]
         sprinter.vae.to(dtype=torch.float32)
 

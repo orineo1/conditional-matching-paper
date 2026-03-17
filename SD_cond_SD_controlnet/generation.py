@@ -138,7 +138,7 @@ def run_dps_step_clip(latents, latents_step, noise_pred, pixel_x0_norm,
                       sprinter, all_clip_embeddings, num_variations,
                       variation_batch_size, base_zeta_prime,
                       clip_model, clip_processor, vae, vae_scaling_factor, variation_prompt,
-                      loss_fn=compute_mmd):
+                      loss_fn=compute_mmd,loss_scale=1.0):
     from clip_utils import encode_images_clip
 
     device = pixel_x0_norm.device
@@ -180,14 +180,15 @@ def run_dps_step_clip(latents, latents_step, noise_pred, pixel_x0_norm,
 
     # ── B. MMD between variation embeddings and fixed target ──────────────────
     loss_value = loss_fn(variation_clip_embs, all_clip_embeddings.detach())
-    loss_norm = loss_value.detach()
+    loss_scaled = loss_value * loss_scale
+    loss_norm = loss_scaled.detach()
     zeta_i = base_zeta_prime / loss_norm
 
     grad = torch.autograd.grad(
-        loss_value , latents_step, retain_graph=False, create_graph=False
+        loss_scaled , latents_step, retain_graph=False, create_graph=False
     )[0]
 
     vl_clip_flat = variation_clip_embs.detach().cpu().numpy()
     del variation_clip_list, variation_clip_embs
 
-    return grad, loss_value , zeta_i, loss_norm, vl_clip_flat
+    return grad, loss_scaled , zeta_i, loss_norm, vl_clip_flat

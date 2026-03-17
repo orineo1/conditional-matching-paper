@@ -58,11 +58,15 @@ def main():
     device = args.device
     data_dir = Path(args.data_dir)
 
-    # Collect paths and labels
+    # Collect paths and labels (skip macOS ._ resource forks)
     all_items = []
     for img_path in sorted((data_dir / "man").glob("*.png")):
+        if img_path.name.startswith("._"):
+            continue
         all_items.append((img_path, 0))  # Male
     for img_path in sorted((data_dir / "woman").glob("*.png")):
+        if img_path.name.startswith("._"):
+            continue
         all_items.append((img_path, 1))  # Female
     print(f"Found {len(all_items)} images ({sum(1 for _, l in all_items if l == 0)} man, "
           f"{sum(1 for _, l in all_items if l == 1)} woman)", flush=True)

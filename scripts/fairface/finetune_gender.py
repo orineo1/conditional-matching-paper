@@ -18,16 +18,18 @@ import torchvision
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 
-from gender_classifier import FACE_PADDING, GENDER_SLICE, TRANSFORM, _load_mtcnn
+from gender_classifier import GENDER_SLICE, TRANSFORM
 
 
 class GenderDataset(Dataset):
-    """Face-cropped portraits with binary gender labels (0=Male, 1=Female)."""
+    """Portrait images with binary gender labels (0=Male, 1=Female).
 
-    def __init__(self, paths_and_labels, mtcnn, device):
+    Skips MTCNN face detection — portraits are already tightly cropped.
+    Just resizes to 224x224 with the same normalization as inference.
+    """
+
+    def __init__(self, paths_and_labels):
         self.items = paths_and_labels
-        self.mtcnn = mtcnn
-        self.device = device
 
     def __len__(self):
         return len(self.items)
@@ -35,21 +37,6 @@ class GenderDataset(Dataset):
     def __getitem__(self, idx):
         path, label = self.items[idx]
         img = Image.open(path).convert("RGB")
-
-        # MTCNN face crop (same as inference pipeline)
-        boxes, _ = self.mtcnn.detect(img)
-        if boxes is not None and len(boxes) > 0:
-            areas = [(b[2] - b[0]) * (b[3] - b[1]) for b in boxes]
-            i = max(range(len(areas)), key=lambda k: areas[k])
-            x1, y1, x2, y2 = boxes[i]
-            w, h = x2 - x1, y2 - y1
-            pad_w, pad_h = w * FACE_PADDING, h * FACE_PADDING
-            x1 = max(0, x1 - pad_w)
-            y1 = max(0, y1 - pad_h)
-            x2 = min(img.width, x2 + pad_w)
-            y2 = min(img.height, y2 + pad_h)
-            img = img.crop((int(x1), int(y1), int(x2), int(y2)))
-
         return TRANSFORM(img), label
 
 
@@ -88,11 +75,8 @@ def main():
     train_items = all_items[n_val:]
     print(f"Train: {len(train_items)}, Val: {len(val_items)}", flush=True)
 
-    # MTCNN for face cropping (run on CPU to avoid GPU memory contention)
-    mtcnn = _load_mtcnn("cpu")
-
-    train_ds = GenderDataset(train_items, mtcnn, device)
-    val_ds = GenderDataset(val_items, mtcnn, device)
+    train_ds = GenderDataset(train_items)
+    val_ds = GenderDataset(val_items)
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=4)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=4)
 

@@ -359,7 +359,7 @@ def main():
             sprinter(
                 prompt=args.sprinter_variation_prompt,
                 image=baseline_px_norm,
-                num_inference_steps=2, guidance_scale=guidance_scale,
+                num_inference_steps=2, guidance_scale=args.guidance_scale,
                 controlnet_conditioning_scale=args.controlnet_scale, output_type="pil",
 
             ).images[0]

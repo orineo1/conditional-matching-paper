@@ -69,6 +69,9 @@ def parse_args():
                    help="Scale factor for MMD bandwidth (< 1 = sharper kernel)")
     p.add_argument("--loss_scale", type=float, default=1.0,
                    help="Multiply loss by this factor before grad computation"),
+    p.add_argument("--kernel_alpha", type=float, default=1.0,
+                   help="Generalized RBF exponent. >1 = sharper falloff, penalizes inter-mode points more.")
+
     # Variations / eval
     p.add_argument("--num_variations", type=int, default=6)
     p.add_argument("--n_targets", type=int, default=20,
@@ -255,6 +258,7 @@ def main():
             "loss_fn":              args.loss_fn,
             "loss_scale":           args.loss_scale,
             "bandwidth_scale":      args.bandwidth_scale,
+            "kernel_alpha": args.kernel_alpha,
         },
     )
     print(f"✅ wandb run: {run.name}", flush=True)
@@ -331,7 +335,7 @@ def main():
     target_clip_np = all_clip_embeddings.cpu().numpy()
     from functools import partial
     if args.loss_fn == "mmd":
-        loss_fn = partial(compute_mmd, bandwidth_scale=args.bandwidth_scale)
+        loss_fn = partial(compute_mmd, bandwidth_scale=args.bandwidth_scale,kernel_alpha=args.kernel_alpha)
     else:
         loss_fn = LOSS_FNS[args.loss_fn]
     # ── Baseline visualization (step 0, before any DPS correction) ────────────
@@ -438,8 +442,9 @@ def main():
             vae=sprinter.vae,
             vae_scaling_factor=sprinter.vae.config.scaling_factor,
             variation_prompt=args.sprinter_variation_prompt,
-            loss_fn=LOSS_FNS[args.loss_fn],
+            loss_fn=loss_fn,
             loss_scale=args.loss_scale,
+
         )
 
         grad_norm = grad.norm().item()

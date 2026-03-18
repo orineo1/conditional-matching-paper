@@ -48,6 +48,7 @@ python SD_cond_SD_controlnet/run_dps.py \
     --loss_fn swd \
     --loss_scale 100.0 \
     --bandwidth_scale 0.3 \
+    --kernel_alpha 1.0 \
     --seed 1
 
 echo "DPS main pipeline complete."

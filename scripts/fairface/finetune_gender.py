@@ -90,9 +90,11 @@ def main():
     print(f"Train: {len(train_items)}, Val: {len(val_items)}", flush=True)
 
     train_ds = GenderDataset(train_items, augment=True)
-    val_ds = GenderDataset(val_items, augment=False)
+    val_clean_ds = GenderDataset(val_items, augment=False)
+    val_aug_ds = GenderDataset(val_items, augment=True)
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=4)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=4)
+    val_clean_loader = DataLoader(val_clean_ds, batch_size=args.batch_size, shuffle=False, num_workers=4)
+    val_aug_loader = DataLoader(val_aug_ds, batch_size=args.batch_size, shuffle=False, num_workers=4)
 
     # Load model, freeze everything except fc
     model = torchvision.models.resnet34(weights=None)
@@ -110,7 +112,38 @@ def main():
     optimizer = torch.optim.Adam(model.fc.parameters(), lr=args.lr)
     criterion = nn.CrossEntropyLoss()
 
-    best_val_acc = 0.0
+    def evaluate(loader, label=""):
+        model.eval()
+        correct, total = 0, 0
+        mc, mt, fc, ft = 0, 0, 0, 0
+        with torch.no_grad():
+            for images, labels in loader:
+                images, labels = images.to(device), labels.to(device)
+                outputs = model(images)
+                preds = outputs[:, GENDER_SLICE].argmax(dim=1)
+                correct += (preds == labels).sum().item()
+                total += len(labels)
+                male_mask = labels == 0
+                female_mask = labels == 1
+                mc += (preds[male_mask] == labels[male_mask]).sum().item()
+                mt += male_mask.sum().item()
+                fc += (preds[female_mask] == labels[female_mask]).sum().item()
+                ft += female_mask.sum().item()
+        acc = correct / total
+        m_acc = mc / mt if mt > 0 else 0
+        f_acc = fc / ft if ft > 0 else 0
+        return acc, m_acc, f_acc
+
+    # Output paths for 3 checkpoints
+    out = Path(args.output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    path_best_clean = out.parent / out.name.replace(".pt", "_best_clean.pt")
+    path_best_aug = out.parent / out.name.replace(".pt", "_best_aug.pt")
+    path_latest = out  # latest always overwrites the main path
+
+    best_clean_acc = 0.0
+    best_aug_acc = 0.0
+
     for epoch in range(args.epochs):
         # Train
         model.train()
@@ -133,43 +166,35 @@ def main():
         train_acc = correct / total
         train_loss = total_loss / total
 
-        # Validate
-        model.eval()
-        val_correct, val_total = 0, 0
-        male_correct, male_total, female_correct, female_total = 0, 0, 0, 0
-        with torch.no_grad():
-            for images, labels in val_loader:
-                images, labels = images.to(device), labels.to(device)
-                outputs = model(images)
-                gender_logits = outputs[:, GENDER_SLICE]
-                preds = gender_logits.argmax(dim=1)
-                val_correct += (preds == labels).sum().item()
-                val_total += len(labels)
-                # Per-class accuracy
-                male_mask = labels == 0
-                female_mask = labels == 1
-                male_correct += (preds[male_mask] == labels[male_mask]).sum().item()
-                male_total += male_mask.sum().item()
-                female_correct += (preds[female_mask] == labels[female_mask]).sum().item()
-                female_total += female_mask.sum().item()
-
-        val_acc = val_correct / val_total
-        male_acc = male_correct / male_total if male_total > 0 else 0
-        female_acc = female_correct / female_total if female_total > 0 else 0
+        # Two val passes: clean and augmented
+        clean_acc, clean_m, clean_f = evaluate(val_clean_loader, "clean")
+        aug_acc, aug_m, aug_f = evaluate(val_aug_loader, "aug")
 
         print(f"Epoch {epoch+1:2d}/{args.epochs} | "
               f"Loss {train_loss:.4f} | Train {train_acc:.3f} | "
-              f"Val {val_acc:.3f} (M:{male_acc:.3f} F:{female_acc:.3f})",
+              f"Val_clean {clean_acc:.3f} (M:{clean_m:.3f} F:{clean_f:.3f}) | "
+              f"Val_aug {aug_acc:.3f} (M:{aug_m:.3f} F:{aug_f:.3f})",
               flush=True)
 
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
-            Path(args.output_path).parent.mkdir(parents=True, exist_ok=True)
-            torch.save(model.state_dict(), args.output_path)
-            print(f"  → Saved best model (val_acc={val_acc:.4f})", flush=True)
+        # Save best on clean val
+        if clean_acc > best_clean_acc:
+            best_clean_acc = clean_acc
+            torch.save(model.state_dict(), path_best_clean)
+            print(f"  → Saved best_clean (val_clean={clean_acc:.4f})", flush=True)
 
-    print(f"\nDone. Best val accuracy: {best_val_acc:.4f}", flush=True)
-    print(f"Saved to: {args.output_path}", flush=True)
+        # Save best on augmented val
+        if aug_acc > best_aug_acc:
+            best_aug_acc = aug_acc
+            torch.save(model.state_dict(), path_best_aug)
+            print(f"  → Saved best_aug (val_aug={aug_acc:.4f})", flush=True)
+
+        # Always save latest
+        torch.save(model.state_dict(), path_latest)
+
+    print(f"\nDone.", flush=True)
+    print(f"  Best clean val: {best_clean_acc:.4f} → {path_best_clean}", flush=True)
+    print(f"  Best aug val:   {best_aug_acc:.4f} → {path_best_aug}", flush=True)
+    print(f"  Latest:         → {path_latest}", flush=True)
 
 
 if __name__ == "__main__":

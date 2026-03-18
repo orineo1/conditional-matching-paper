@@ -1,12 +1,24 @@
 
+# OS junk
+.DS_Store
+
 # Agent infrastructure (local only)
 .agents/
+
+# Caches and model weights
+.quickdrawcache/
+models/fairface/
 
 # Autoresearch (local experiment runner)
 autoresearch/
 
 # Claude Code local files
 .claude/
+
+# Experiment outputs (keep on disk, not in git)
+SD_cond_SD_controlnet/output/
+finetune_hed/output/
+output/
 
 # LoRA training data and outputs
 scribble_tune/data/

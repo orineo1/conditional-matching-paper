@@ -22,7 +22,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 cd /sci/labs/orzuk/shaulytolk/conditional-matching-paper
 
 # ── Set your scribble path here ──
-SCRIBBLE_PATH="${1:-SD_cond_SD_controlnet/output/dps_main_latest/final_image.png}"
+SCRIBBLE_PATH="${1:-scripts/assets/zeta5_input_scribble.png}"
 
 python scripts/gender_saliency.py \
     --scribble_path "$SCRIBBLE_PATH" \

@@ -13,5 +13,3 @@ scribble_tune/data/
 scribble_tune/output/
 *.safetensors
 
-# Gender classifier fine-tuning data
-scripts/fairface/finetune_data/

@@ -127,6 +127,28 @@ All target the `salmon` partition (L40S 48GB GPU), 2-hour time limit.
 ### `visualization.py` — wandb integration
 - `visualize_step()` now logs the step figure to wandb (`step_visualization`) and always closes the figure (no `plt.show()` call). `save_path` is still supported.
 
+## Changes in `add-swd-loss` Ori Meidler (18/03)
+
+### Loss functions
+- Added `compute_swd()` — Sliced Wasserstein Distance as an alternative to MMD, with adaptive
+  convergence (grows projections until `|SWD(n+step) - SWD(n)| < tol`)
+- Added `--loss_fn` arg (`mmd` / `swd`) to select loss at runtime
+- Added `--loss_scale` to amplify loss before gradient computation (necessary since SWD/MMD
+  values ~0.01 produce near-zero gradients without scaling)
+
+### MMD kernel controls
+- Added `--bandwidth_scale` to shrink/grow the RBF kernel bandwidth
+- Added `--kernel_alpha` — generalized RBF exponent (`alpha > 1` sharpens falloff,
+  penalizes inter-mode points more)
+
+### Visualization fix
+- `visualize_step()` grid is now dynamic (`n_cols = 2 + num_cond + 1`) so the PCA scatter
+  always appears in the last column regardless of `num_cond`
+
+### Pipeline & logging
+- Added baseline visualization before the DPS loop (step 0, before any correction)
+- `loss_scale`, `bandwidth_scale`, `kernel_alpha`, `loss_fn` logged to wandb config and per-step
+- 
 ## Gradient Flow Path
 
 ```

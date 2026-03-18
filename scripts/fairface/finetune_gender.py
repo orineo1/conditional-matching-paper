@@ -22,10 +22,10 @@ import torchvision.transforms as transforms
 
 from gender_classifier import GENDER_SLICE, TRANSFORM
 
-# Training augmentation: color jitter + random grayscale to handle
-# B&W/desaturated sprinter outputs that the original FairFace misclassifies
+# Training augmentation: color jitter, grayscale, and aspect ratio distortion
+# to handle B&W/desaturated outputs and prevent face-shape bias
 TRAIN_TRANSFORM = transforms.Compose([
-    transforms.Resize((224, 224)),
+    transforms.RandomResizedCrop(224, scale=(0.85, 1.0), ratio=(0.8, 1.2)),
     transforms.RandomHorizontalFlip(),
     transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.4, hue=0.1),
     transforms.RandomGrayscale(p=0.2),

@@ -18,18 +18,28 @@ import torchvision
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 
+import torchvision.transforms as transforms
+
 from gender_classifier import GENDER_SLICE, TRANSFORM
+
+# Training augmentation: color jitter + random grayscale to handle
+# B&W/desaturated sprinter outputs that the original FairFace misclassifies
+TRAIN_TRANSFORM = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.RandomHorizontalFlip(),
+    transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.4, hue=0.1),
+    transforms.RandomGrayscale(p=0.2),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+])
 
 
 class GenderDataset(Dataset):
-    """Portrait images with binary gender labels (0=Male, 1=Female).
+    """Portrait images with binary gender labels (0=Male, 1=Female)."""
 
-    Skips MTCNN face detection — portraits are already tightly cropped.
-    Just resizes to 224x224 with the same normalization as inference.
-    """
-
-    def __init__(self, paths_and_labels):
+    def __init__(self, paths_and_labels, augment=False):
         self.items = paths_and_labels
+        self.transform = TRAIN_TRANSFORM if augment else TRANSFORM
 
     def __len__(self):
         return len(self.items)
@@ -37,7 +47,7 @@ class GenderDataset(Dataset):
     def __getitem__(self, idx):
         path, label = self.items[idx]
         img = Image.open(path).convert("RGB")
-        return TRANSFORM(img), label
+        return self.transform(img), label
 
 
 def main():
@@ -79,8 +89,8 @@ def main():
     train_items = all_items[n_val:]
     print(f"Train: {len(train_items)}, Val: {len(val_items)}", flush=True)
 
-    train_ds = GenderDataset(train_items)
-    val_ds = GenderDataset(val_items)
+    train_ds = GenderDataset(train_items, augment=True)
+    val_ds = GenderDataset(val_items, augment=False)
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=4)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=4)
 

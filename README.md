@@ -24,9 +24,12 @@ SD_cond_SD_controlnet/       # Main DPS pipeline
   visualization.py           # PCA & CLIP visualizations
 
 scripts/                     # Evaluation scripts
-  evaluate_gender_balance.py # Gender balance evaluation (FairFace)
+  evaluate_gender_balance.py # Gender balance CLI (photo_*.png in a dir)
+  reeval_gender.py           # Re-eval all runs in autoresearch_output/
   fairface/                  # FairFace gender classifier
-    gender_classifier.py     # ResNet-34 multi-task classifier
+    gender_classifier.py     # ResNet-34 multi-task classifier (fine-tuned)
+    finetune_gender.py       # Fine-tune FC head on generated portraits
+    submit_finetune.sh       # SLURM job for fine-tuning
 ```
 
 ## Setup
@@ -59,13 +62,33 @@ python SD_cond_SD_controlnet/run_dps.py \
 
 ### Gender Balance Evaluation
 
+Classify gender of generated portraits using a fine-tuned FairFace ResNet-34.
+Fine-tuned weights (`models/fairface/res34_fairface_finetuned.pt`) are auto-selected if present.
+
+**Evaluate a single folder** (looks for `photo_*.png`):
+
 ```bash
 python scripts/evaluate_gender_balance.py \
     --image_dir output/my_run/ \
-    --run_name my_eval \
-    --wandb_project gender-classifier \
-    --wandb_entity conditional-matching \
-    --weights_path path/to/res34_fair_align_multi_7_20190809.pt
+    --run_name my_eval
+```
+
+**Re-evaluate all runs** in `autoresearch_output/` (looks for `eval_photos_guided/` and `eval_photos_unguided/`):
+
+```bash
+python scripts/reeval_gender.py --base_dir autoresearch_output
+# Or a single run:
+python scripts/reeval_gender.py --base_dir autoresearch_output --run run2_zeta5
+```
+
+**Fine-tune the gender classifier** on new portrait data (freeze ResNet, train FC head only):
+
+```bash
+# Prepare data: data_dir/man/*.png + data_dir/woman/*.png
+python scripts/fairface/finetune_gender.py \
+    --data_dir scripts/fairface/finetune_data \
+    --weights_path models/fairface/res34_fair_align_multi_7_20190809.pt \
+    --output_path models/fairface/res34_fairface_finetuned.pt
 ```
 
 ## Key Results

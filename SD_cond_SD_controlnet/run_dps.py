@@ -40,10 +40,11 @@ from generation import (
     run_dps_step_clip,
 )
 from image_utils import build_base_image, latent_to_pil, sobel_proxy
-from metrics import compute_mmd, evaluate_distribution_mmd
+from metrics import compute_mmd, evaluate_distribution_mmd, compute_swd
 from models import load_models, setup_gradient_checkpointing
 from visualization import plot_row, visualize_step, compare_scribbles_heatmap
 
+LOSS_FNS = {"mmd": compute_mmd, "swd": compute_swd}
 
 def parse_args():
     p = argparse.ArgumentParser(description="DPS CLIP-MMD Pipeline (main.ipynb script version)")
@@ -63,6 +64,13 @@ def parse_args():
     p.add_argument("--guidance_scale", type=float, default=0.0,
                    help="CFG scale for architect (0.0 = unconditional)")
     p.add_argument("--controlnet_scale", type=float, default=0.5)
+    p.add_argument("--loss_fn", type=str, default="mmd", choices=["mmd", "swd"])
+    p.add_argument("--bandwidth_scale", type=float, default=1.0,
+                   help="Scale factor for MMD bandwidth (< 1 = sharper kernel)")
+    p.add_argument("--loss_scale", type=float, default=1.0,
+                   help="Multiply loss by this factor before grad computation"),
+    p.add_argument("--kernel_alpha", type=float, default=1.0,
+                   help="Generalized RBF exponent. >1 = sharper falloff, penalizes inter-mode points more.")
 
     # Variations / eval
     p.add_argument("--num_variations", type=int, default=6)
@@ -247,6 +255,10 @@ def main():
             "sprinter_target_man_prompt":   args.sprinter_target_man_prompt,
             "sprinter_target_woman_prompt": args.sprinter_target_woman_prompt,
             "sprinter_eval_prompt":         args.sprinter_eval_prompt,
+            "loss_fn":              args.loss_fn,
+            "loss_scale":           args.loss_scale,
+            "bandwidth_scale":      args.bandwidth_scale,
+            "kernel_alpha": args.kernel_alpha,
         },
     )
     print(f"✅ wandb run: {run.name}", flush=True)
@@ -321,6 +333,62 @@ def main():
     step_gradients = []
     step_vis_data  = []
     target_clip_np = all_clip_embeddings.cpu().numpy()
+    from functools import partial
+    if args.loss_fn == "mmd":
+        loss_fn = partial(compute_mmd, bandwidth_scale=args.bandwidth_scale,kernel_alpha=args.kernel_alpha)
+    else:
+        loss_fn = LOSS_FNS[args.loss_fn]
+    # ── Baseline visualization (step 0, before any DPS correction) ────────────
+    with torch.no_grad():
+        baseline_noise_pred = predict_noise_cfg(
+            architect.unet, architect.scheduler,
+            latents.detach(), timesteps_to_run[0],
+            cfg_encoder_states, added_cond_kwargs, args.guidance_scale,
+        )
+        baseline_pred_x0 = compute_pred_x0_direct(
+            architect.scheduler, baseline_noise_pred, timesteps_to_run[0], latents.detach()
+        )
+
+        baseline_px = architect.vae.decode(
+            (baseline_pred_x0 / architect.vae.config.scaling_factor).to(architect.vae.dtype)
+        ).sample
+        baseline_px_norm = torch.clamp((baseline_px + 1.0) / 2.0, 0.0, 1.0)
+
+        sprinter.vae.to(dtype=torch.float16)
+        baseline_var_images = [
+            sprinter(
+                prompt=args.sprinter_variation_prompt,
+                image=baseline_px_norm,
+                num_inference_steps=2, guidance_scale=args.guidance_scale,
+                controlnet_conditioning_scale=args.controlnet_scale, output_type="pil",
+
+            ).images[0]
+
+            for _ in range(args.n_eval)
+        ]
+        sprinter.vae.to(dtype=torch.float32)
+
+        var_tensors = torch.cat([TF.to_tensor(img).unsqueeze(0) for img in baseline_var_images], dim=0).to(device)
+        clip_model.to(device)
+        baseline_clip_flat = encode_images_clip(var_tensors, clip_model, clip_processor).cpu().numpy()
+        clip_model.to("cpu")
+
+        sd_baseline = {
+            "step": 0,
+            "timestep": timesteps_to_run[0].item(),
+            "mmd_loss": 0.0,
+            "zeta_i": 0.0,
+            "latents_step_cpu": latents.detach().cpu(),
+            "latents_step_regular_cpu": latents.detach().cpu(),
+            "pred_x0_cpu": baseline_pred_x0.detach().cpu(),
+            "pred_x0_regular_cpu": baseline_pred_x0.detach().cpu(),
+            "variation_clip_flat": baseline_clip_flat,
+        }
+
+    baseline_save_path = os.path.join(steps_dir, "step_baseline.png")
+    visualize_step(sd_baseline, architect, sprinter, target_clip_np,
+                   num_cond=4, save_path=baseline_save_path, pca_fixed=pca_fixed)
+    print("✅ Baseline visualization saved.", flush=True)
 
     # ── 9. DPS loop ────────────────────────────────────────────────────────────
     for i, t in enumerate(timesteps_to_run):
@@ -374,6 +442,9 @@ def main():
             vae=sprinter.vae,
             vae_scaling_factor=sprinter.vae.config.scaling_factor,
             variation_prompt=args.sprinter_variation_prompt,
+            loss_fn=loss_fn,
+            loss_scale=args.loss_scale,
+
         )
 
         grad_norm = grad.norm().item()
@@ -387,7 +458,7 @@ def main():
             correction = -zeta_i * grad
 
         step_gradients.append({
-            "step":            i,
+            "step":            i+1,
             "timestep":        t.item(),
             "gradient_norm":   grad_norm,
             "mmd_loss":        mmd_loss.item(),
@@ -397,7 +468,7 @@ def main():
         })
 
         wandb_log = {
-            "step":            i,
+            "step":            i+1,
             "mmd_loss":        mmd_loss.item(),
             "gradient_norm":   grad_norm,
             "zeta":            zeta_val,
@@ -424,7 +495,7 @@ def main():
         # Store step data for visualization
         with torch.no_grad():
             sd = {
-                "step":                     i,
+                "step":                     i+1,
                 "timestep":                 t.item(),
                 "mmd_loss":                 mmd_loss.item(),
                 "zeta_i":                   zeta_val,
@@ -438,7 +509,7 @@ def main():
 
         step_save_path = os.path.join(steps_dir, f"step_{i:03d}.png")
         visualize_step(sd, architect, sprinter, target_clip_np,
-                       num_cond=2, save_path=step_save_path, pca_fixed=pca_fixed)
+                       num_cond=5, save_path=step_save_path, pca_fixed=pca_fixed)
 
         # Scheduler step
         latents = denoise_step(architect.scheduler, noise_pred, t, latents_step,

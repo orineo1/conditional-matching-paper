@@ -175,7 +175,8 @@ def import_models():
 # ── training helpers ──────────────────────────────────────────────────────────
 
 def train_diffusion_cond(mu_list, Sigma_list, alpha, condition_on, nfeatures,
-                          nblocks, nunits, diffusion_steps, nepochs, batch_size, device):
+                          nblocks, nunits, diffusion_steps, nepochs, batch_size, device,
+                          wandb_run=None, wandb_prefix="diff_cond", log_every=100):
     DiffusionModel, _, _ = import_models()
     model = DiffusionModel(
         nfeatures=nfeatures, nblocks=nblocks, nunits=nunits,
@@ -185,12 +186,14 @@ def train_diffusion_cond(mu_list, Sigma_list, alpha, condition_on, nfeatures,
                        means=mu_list, variances=Sigma_list, weights=alpha, kernel_func=None)
     model.train_model(X=None, data_generator=data_gen,
                       nepochs=nepochs, batch_size=batch_size,
-                      condition_on=condition_on, device=device)
+                      condition_on=condition_on, device=device,
+                      wandb_run=wandb_run, wandb_prefix=wandb_prefix, log_every=log_every)
     return model
 
 
 def train_diffusion_uncond(mu_list, Sigma_list, alpha, condition_on,
-                            nblocks, nunits, diffusion_steps, nepochs, batch_size, device):
+                            nblocks, nunits, diffusion_steps, nepochs, batch_size, device,
+                            wandb_run=None, wandb_prefix="diff_uncond", log_every=100):
     """Unconditional diffusion over the x-marginal (first `condition_on` dims)."""
     DiffusionModel, _, _ = import_models()
     kernel_func = lambda X: X[:, :condition_on]
@@ -201,30 +204,35 @@ def train_diffusion_uncond(mu_list, Sigma_list, alpha, condition_on,
     data_gen = partial(generate_mog_samples_not_differentiable,
                        means=mu_list, variances=Sigma_list, weights=alpha, kernel_func=kernel_func)
     model.train_model(X=None, data_generator=data_gen,
-                      nepochs=nepochs, batch_size=batch_size, device=device)
+                      nepochs=nepochs, batch_size=batch_size, device=device,
+                      wandb_run=wandb_run, wandb_prefix=wandb_prefix, log_every=log_every)
     return model
 
 
 def train_cm(mu_list, Sigma_list, alpha, condition_on, nfeatures_y,
-              nunits, nepochs, batch_size, device):
+              nunits, nepochs, batch_size, device,
+              wandb_run=None, wandb_prefix="ict", log_every=100):
     _, ConsistencyModeliCT, _ = import_models()
     model = ConsistencyModeliCT(nfeatures=nfeatures_y, condition_on=condition_on, nunits=nunits)
     data_gen = partial(generate_mog_samples_not_differentiable,
                        means=mu_list, variances=Sigma_list, weights=alpha)
     model.train_model(X=None, nepochs=nepochs, batch_size=batch_size,
                       device=device, condition=condition_on,
-                      data_generator=data_gen, use_improved_training=True)
+                      data_generator=data_gen, use_improved_training=True,
+                      wandb_run=wandb_run, wandb_prefix=wandb_prefix, log_every=log_every)
     return model
 
 
 def train_fm(mu_list, Sigma_list, alpha, condition_on, nfeatures_y,
-              nunits, nblocks, nepochs, batch_size, device):
+              nunits, nblocks, nepochs, batch_size, device,
+              wandb_run=None, wandb_prefix="fm", log_every=100):
     _, _, FMModel = import_models()
     model = FMModel(nfeatures=nfeatures_y, condition_on=condition_on,
                     nunits=nunits, nblocks=nblocks, device=device)
     data_gen = partial(generate_mog_samples_not_differentiable,
                        means=mu_list, variances=Sigma_list, weights=alpha)
-    model.train_FM(lr=1e-3, batch_size=batch_size, data_generator=data_gen, nepochs=nepochs)
+    model.train_FM(lr=1e-3, batch_size=batch_size, data_generator=data_gen, nepochs=nepochs,
+                   wandb_run=wandb_run, wandb_prefix=wandb_prefix, log_every=log_every)
     return model
 
 
@@ -252,6 +260,14 @@ def parse_args():
     p.add_argument("--skip_cm",   action="store_true")
     p.add_argument("--skip_fm",   action="store_true")
     p.add_argument("--seed",      type=int, default=42)
+
+    # wandb
+    p.add_argument("--wandb_project", type=str, default="compare-methods-train")
+    p.add_argument("--wandb_entity",  type=str, default="conditional-matching")
+    p.add_argument("--no_wandb",      action="store_true",
+                   help="Disable wandb logging (e.g. for local runs)")
+    p.add_argument("--log_every",     type=int, default=100,
+                   help="Log loss to wandb every N epochs/steps")
     return p.parse_args()
 
 
@@ -284,7 +300,7 @@ def main():
         "nunits":          args.nunits,
         "diffusion_steps": args.diffusion_steps,
         "seed":            args.seed,
-        "target_info":     target_info,   # baked-in x_star and known target q(Y|X=x*)
+        "target_info":     target_info,
     }
     with open(os.path.join(args.output_dir, "config.json"), "w") as f:
         json.dump(config, f, indent=2)
@@ -296,13 +312,27 @@ def main():
     }, os.path.join(args.output_dir, "mog_params.pt"))
     print("Config + MoG params saved.", flush=True)
 
-    # ── 3. Diffusion ───────────────────────────────────────────────────────────
+    # ── 3. wandb init ──────────────────────────────────────────────────────────
+    wandb_run = None
+    if not args.no_wandb:
+        import wandb
+        wandb_run = wandb.init(
+            project=args.wandb_project,
+            entity=args.wandb_entity,
+            config={**vars(args), **config},
+            name=f"train_{args.dim}d_seed{args.seed}",
+        )
+        print(f"wandb run: {wandb_run.name}", flush=True)
+
+    # ── 4. Diffusion ───────────────────────────────────────────────────────────
     if not args.skip_diff:
         print("\n── Training unconditional diffusion (x-marginal) ──", flush=True)
         model_uncond = train_diffusion_uncond(
             mu_list, Sigma_list, alpha, condition_on,
             args.nblocks, args.nunits, args.diffusion_steps,
             args.nepochs_diff, args.batch_size_diff, device,
+            wandb_run=wandb_run, wandb_prefix="diff_uncond",
+            log_every=args.log_every,
         )
         torch.save(model_uncond.state_dict(), os.path.join(args.output_dir, "model_uncond.pt"))
         print("  Saved model_uncond.pt", flush=True)
@@ -312,35 +342,44 @@ def main():
             mu_list, Sigma_list, alpha, condition_on, nfeatures,
             args.nblocks, args.nunits, args.diffusion_steps,
             args.nepochs_diff, args.batch_size_diff, device,
+            wandb_run=wandb_run, wandb_prefix="diff_cond",
+            log_every=args.log_every,
         )
         torch.save(model_cond.state_dict(), os.path.join(args.output_dir, "model_cond.pt"))
         print("  Saved model_cond.pt", flush=True)
     else:
         print("Skipping Diffusion.", flush=True)
 
-    # ── 4. Consistency Model ───────────────────────────────────────────────────
+    # ── 5. Consistency Model ───────────────────────────────────────────────────
     if not args.skip_cm:
         print("\n── Training Consistency Model (iCT) ──", flush=True)
         model_cm = train_cm(
             mu_list, Sigma_list, alpha, condition_on, nfeatures_y,
             args.nunits, args.nepochs_cm, args.batch_size_cm, device,
+            wandb_run=wandb_run, wandb_prefix="ict",
+            log_every=args.log_every,
         )
         torch.save(model_cm.state_dict(), os.path.join(args.output_dir, "model_cm.pt"))
         print("  Saved model_cm.pt", flush=True)
     else:
         print("Skipping CM.", flush=True)
 
-    # ── 5. Flow Matching ───────────────────────────────────────────────────────
+    # ── 6. Flow Matching ───────────────────────────────────────────────────────
     if not args.skip_fm:
         print("\n── Training Flow Matching model ──", flush=True)
         model_fm = train_fm(
             mu_list, Sigma_list, alpha, condition_on, nfeatures_y,
             args.nunits, args.nblocks, args.nepochs_fm, args.batch_size_fm, device,
+            wandb_run=wandb_run, wandb_prefix="fm",
+            log_every=args.log_every,
         )
         torch.save(model_fm.state_dict(), os.path.join(args.output_dir, "model_fm.pt"))
         print("  Saved model_fm.pt", flush=True)
     else:
         print("Skipping FM.", flush=True)
+
+    if wandb_run is not None:
+        wandb_run.finish()
 
     print(f"\n✅ Training complete. Outputs in: {args.output_dir}", flush=True)
 

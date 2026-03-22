@@ -29,6 +29,8 @@ echo "Log file: $LOG_FILE (deleted on success)" | tee -a "$LOG_FILE"
 
 pip install -q flow_matching POT
 
+mkdir -p compare-methods/output
+
 # ── Run comparison, capturing all output ──────────────────────────────────────
 python compare-methods/run_compare.py \
     --models_dir "$MODELS_DIR" \

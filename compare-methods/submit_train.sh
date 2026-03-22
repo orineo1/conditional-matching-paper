@@ -18,7 +18,7 @@ cd /sci/labs/orzuk/ori_m/conditional-matching-paper
 
 # ── Log file setup ────────────────────────────────────────────────────────────
 DIM=${1:-2}
-OUTPUT_DIR="compare_methods/output/models_${DIM}d_${SLURM_JOB_ID}"
+OUTPUT_DIR="compare-methods/output/models_${DIM}d_${SLURM_JOB_ID}"
 LOG_FILE="/sci/labs/orzuk/ori_m/conditional-matching-paper/compare_train_${SLURM_JOB_ID}.log"
 
 echo "Starting compare-methods training on $(hostname)" | tee "$LOG_FILE"
@@ -29,7 +29,7 @@ echo "Log file: $LOG_FILE (deleted on success)" | tee -a "$LOG_FILE"
 pip install -q flow_matching POT
 
 # ── Run training, capturing all output ───────────────────────────────────────
-python compare_methods/train_models.py \
+python compare-methods/train_models.py \
     --output_dir "$OUTPUT_DIR" \
     --dim "$DIM" \
     --condition_on 1 \
@@ -49,7 +49,7 @@ EXIT_CODE=$?
 # ── On success: remove log. On failure: keep it. ──────────────────────────────
 if [ $EXIT_CODE -eq 0 ]; then
     echo "Training complete. Models in: $OUTPUT_DIR" | tee -a "$LOG_FILE"
-    echo "OUTPUT_DIR=$OUTPUT_DIR" > compare_methods/output/last_train_${SLURM_JOB_ID}.env
+    echo "OUTPUT_DIR=$OUTPUT_DIR" > compare-methods/output/last_train_${SLURM_JOB_ID}.env
     rm -f "$LOG_FILE"
     echo "SUCCESS — log deleted."
 else

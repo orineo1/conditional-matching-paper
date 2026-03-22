@@ -151,7 +151,8 @@ def compute_mmd_eval(x_pred, mu_list, Sigma_list, alpha,
     norm_coef = torch.sqrt(torch.trace(cov) / cov.shape[0]).item()
 
     mmd_val = mmd.item()
-    return float(mmd_val), float(mmd_val / (norm_coef + 1e-8))
+    return float(mmd_val), float(mmd_val)
+    # return float(mmd_val), float(mmd_val / (norm_coef + 1e-8))
 
 
 # ── algorithm runners ─────────────────────────────────────────────────────────
@@ -210,13 +211,14 @@ def evaluate_result(x_pred, mu_list, Sigma_list, alpha,
 
 def plot_results(results, output_dir):
     methods = list(results.keys())
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+
     fig.suptitle("Method Comparison", fontsize=14, fontweight="bold")
     colors = ["#4C72B0", "#DD8452", "#55A868", "#C44E52"]
 
-    for ax, metric, label in zip(axes,
-                                 ["swd", "norm_swd", "l1"],
-                                 ["MMD", "Normalized MMD", "L1 to optimal"]):
+    for ax, metric, label in zip(axes[:2],
+                                 ["mmd", "l1"],
+                                 ["MMD", "L1 to optimal"]):
         data = [results[m][metric] for m in methods]
         bp = ax.boxplot(data, labels=methods, patch_artist=True, showmeans=True,
                         meanprops=dict(marker="D", markerfacecolor="red", markersize=6))
@@ -232,11 +234,10 @@ def plot_results(results, output_dir):
 
 def print_summary(results):
     print("\n" + "=" * 65)
-    print(f"{'Method':<12} {'MMD mean':>10} {'±':>4} {'NormMMD mean':>13} {'±':>4} {'L1 mean':>9}")
-    print("=" * 65)
+    print(f"{'Method':<12} {'MMD mean':>10} {'±':>4} {'L1 mean':>9}")
+    print("=" * 45)
     for method, data in results.items():
-        print(f"{method:<12} {np.mean(data['swd']):>10.4f} {np.std(data['swd']):>4.3f} "
-              f"{np.mean(data['norm_swd']):>13.4f} {np.std(data['norm_swd']):>4.3f} "
+        print(f"{method:<12} {np.mean(data['mmd']):>10.4f} {np.std(data['mmd']):>4.3f} "
               f"{np.mean(data['l1']):>9.4f}")
     print("=" * 65)
 
@@ -324,24 +325,24 @@ def main():
 
     def _run_method(name, run_fn):
         print(f"\n── {name} ({args.n_attempts} attempts) ──", flush=True)
-        data = {"swd": [], "norm_swd": [], "l1": [], "time": [], "x_pred": []}
+        data = {"mmd": [], "l1": [], "time": [], "x_pred": []}
         for i in range(args.n_attempts):
             t0 = time.time()
             x_pred, _ = run_fn()
             elapsed = time.time() - t0
-            l1, swd, norm_swd = evaluate_result(
+            l1, mmd, _ = evaluate_result(
                 x_pred, mu_list, Sigma_list, alpha, mog_means, mog_variances, weights,
                 args.nsamples_swd, args.num_projections_swd,
             )
-            data["swd"].append(swd); data["norm_swd"].append(norm_swd)
-            data["l1"].append(l1);   data["time"].append(elapsed)
+            data["mmd"].append(mmd)
+            data["l1"].append(l1)
+            data["time"].append(elapsed)
             data["x_pred"].append(
                 x_pred.detach().cpu().tolist() if isinstance(x_pred, torch.Tensor) else x_pred)
-            print(f"  [{i+1:2d}/{args.n_attempts}] swd={swd:.4f}  "
-                  f"norm_swd={norm_swd:.4f}  l1={l1:.4f}  t={elapsed:.1f}s", flush=True)
+            print(f"  [{i + 1:2d}/{args.n_attempts}] mmd={mmd:.4f}  l1={l1:.4f}  t={elapsed:.1f}s", flush=True)
             if not args.no_wandb:
                 import wandb
-                wandb.log({f"{name.lower()}/swd": swd, f"{name.lower()}/norm_swd": norm_swd,
+                wandb.log({f"{name.lower()}/mmd": mmd,
                            f"{name.lower()}/l1": l1, f"{name.lower()}/time": elapsed,
                            "attempt": i + 1}, commit=False)
         return data
@@ -367,13 +368,11 @@ def main():
 
     summary = {
         method: {
-            "swd_mean":      float(np.mean(d["swd"])),
-            "swd_std":       float(np.std(d["swd"])),
-            "norm_swd_mean": float(np.mean(d["norm_swd"])),
-            "norm_swd_std":  float(np.std(d["norm_swd"])),
-            "l1_mean":       float(np.mean(d["l1"])),
-            "l1_std":        float(np.std(d["l1"])),
-            "time_mean":     float(np.mean(d["time"])),
+            "mmd_mean": float(np.mean(d["mmd"])),
+            "mmd_std": float(np.std(d["mmd"])),
+            "l1_mean": float(np.mean(d["l1"])),
+            "l1_std": float(np.std(d["l1"])),
+            "time_mean": float(np.mean(d["time"])),
         } for method, d in results.items()
     }
 

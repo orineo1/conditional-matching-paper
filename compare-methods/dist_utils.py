@@ -30,6 +30,7 @@ def generate_mog_samples_not_differentiable(n, means, variances, weights, kernel
     """Non-differentiable MoG sampler (faster, numpy-backed)."""
     device = means[0].device if isinstance(means[0], torch.Tensor) else torch.device("cpu")
     weights_np = weights.cpu().numpy() if isinstance(weights, torch.Tensor) else np.array(weights)
+    weights_np = weights_np.astype(np.float64)
     weights_np = weights_np / weights_np.sum()
 
     k = len(means)
@@ -103,6 +104,7 @@ def compute_alpha(mu_list, Sigma_list, alpha, x_cond):
 
     log_probs = torch.stack(log_probs)
     alpha_t = alpha.float() if isinstance(alpha, torch.Tensor) else torch.tensor(alpha, dtype=torch.float32)
+    alpha_t = alpha_t.to(log_probs.device)
     log_alpha = torch.log(alpha_t + 1e-12)
     log_weights = log_alpha + log_probs
     log_weights -= log_weights.logsumexp(0)
@@ -127,10 +129,11 @@ def mog_covariance(mu_list, Sigma_list, alpha):
     """Full MoG covariance matrix (for SWD normalization)."""
     alpha_t = alpha.float() if isinstance(alpha, torch.Tensor) else torch.tensor(alpha, dtype=torch.float32)
     mu_stack = torch.stack([m.float() for m in mu_list])   # [K, d]
+    alpha_t = alpha_t.to(mu_stack.device)
     mean = (alpha_t.unsqueeze(1) * mu_stack).sum(0)         # [d]
 
     d = mean.shape[0]
-    cov = torch.zeros(d, d)
+    cov = torch.zeros(d, d, device=mean.device)
     for k, (mu, Sigma, a) in enumerate(zip(mu_list, Sigma_list, alpha_t)):
         diff = (mu.float() - mean).unsqueeze(1)             # [d, 1]
         cov += a * (Sigma.float() + diff @ diff.T)

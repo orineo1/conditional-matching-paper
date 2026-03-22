@@ -46,6 +46,8 @@ python compare-methods/train_models.py \
     >> "$LOG_FILE" 2>&1
 EXIT_CODE=$?
 
+mkdir -p compare-methods/output
+
 # ── On success: remove log. On failure: keep it. ──────────────────────────────
 if [ $EXIT_CODE -eq 0 ]; then
     echo "Training complete. Models in: $OUTPUT_DIR" | tee -a "$LOG_FILE"

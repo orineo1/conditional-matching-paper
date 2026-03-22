@@ -10,7 +10,7 @@ from torch.distributions import MultivariateNormal, Categorical, MixtureSameFami
 
 # ── Sampling ──────────────────────────────────────────────────────────────────
 
-def generate_mog_samples(n, means, variances, weights, kernel_func=None):
+def generate_mog_samples(n, means, variances, weights, kernel_func=None, device=None):
     """Differentiable MoG sampler (reparameterization trick)."""
     device = means[0].device if isinstance(means[0], torch.Tensor) else torch.device("cpu")
     weights_t = weights.to(device) if isinstance(weights, torch.Tensor) else torch.tensor(weights, device=device)
@@ -26,7 +26,7 @@ def generate_mog_samples(n, means, variances, weights, kernel_func=None):
     return samples
 
 
-def generate_mog_samples_not_differentiable(n, means, variances, weights, kernel_func=None):
+def generate_mog_samples_not_differentiable(n, means, variances, weights, kernel_func=None, device=None):
     """Non-differentiable MoG sampler (faster, numpy-backed)."""
     device = means[0].device if isinstance(means[0], torch.Tensor) else torch.device("cpu")
     weights_np = weights.cpu().numpy() if isinstance(weights, torch.Tensor) else np.array(weights)

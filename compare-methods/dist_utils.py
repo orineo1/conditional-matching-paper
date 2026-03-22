@@ -30,6 +30,7 @@ def generate_mog_samples_not_differentiable(n, means, variances, weights, kernel
     """Non-differentiable MoG sampler (faster, numpy-backed)."""
     device = means[0].device if isinstance(means[0], torch.Tensor) else torch.device("cpu")
     weights_np = weights.cpu().numpy() if isinstance(weights, torch.Tensor) else np.array(weights)
+    weights_np = weights_np.astype(np.float64)
     weights_np = weights_np / weights_np.sum()
 
     k = len(means)

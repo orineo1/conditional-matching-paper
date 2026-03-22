@@ -74,11 +74,12 @@ def compute_conditionals(mu_list, Sigma_list, x_cond):
         Sigma_yy = Sigma[d_x:, d_x:]
         Sigma_yx = Sigma[d_x:, :d_x]
 
-        Sigma_xx_inv = torch.linalg.inv(Sigma_xx + 1e-6 * torch.eye(d_x))
+        Sigma_xx_inv = torch.linalg.inv(Sigma_xx + 1e-6 * torch.eye(d_x, device=Sigma_xx.device))
         mu_y_given_x = mu_y + Sigma_yx @ Sigma_xx_inv @ (x_cond - mu_x)
         Sigma_y_given_x = Sigma_yy - Sigma_yx @ Sigma_xx_inv @ Sigma_yx.T
         # Ensure PSD
-        Sigma_y_given_x = (Sigma_y_given_x + Sigma_y_given_x.T) / 2 + 1e-6 * torch.eye(Sigma_y_given_x.shape[0])
+        Sigma_y_given_x = (Sigma_y_given_x + Sigma_y_given_x.T) / 2 + 1e-6 * torch.eye(Sigma_y_given_x.shape[0],
+                                                                                       device=Sigma_y_given_x.device)
 
         mu_list_cond.append(mu_y_given_x)
         Sigma_list_cond.append(Sigma_y_given_x)
@@ -96,7 +97,7 @@ def compute_alpha(mu_list, Sigma_list, alpha, x_cond):
         mu = mu.float()
         Sigma = Sigma.float()
         mu_x = mu[:d_x]
-        Sigma_xx = Sigma[:d_x, :d_x] + 1e-6 * torch.eye(d_x)
+        Sigma_xx = Sigma[:d_x, :d_x] + 1e-6 * torch.eye(d_x, device=Sigma.device)
         dist = MultivariateNormal(mu_x, Sigma_xx)
         log_probs.append(dist.log_prob(x_cond))
 

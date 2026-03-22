@@ -334,6 +334,8 @@ def main():
                 x_pred, mu_list, Sigma_list, alpha, mog_means, mog_variances, weights,
                 args.nsamples_swd, args.num_projections_swd,
             )
+            x_pred_list = x_pred.detach().cpu().tolist() if isinstance(x_pred, torch.Tensor) else x_pred
+
             data["mmd"].append(mmd)
             data["l1"].append(l1)
             data["time"].append(elapsed)
@@ -344,6 +346,7 @@ def main():
                 import wandb
                 wandb.log({f"{name.lower()}/mmd": mmd,
                            f"{name.lower()}/l1": l1, f"{name.lower()}/time": elapsed,
+                            f"{name.lower()}/x_pred": x_pred_list,
                            "attempt": i + 1},)
         return data
 

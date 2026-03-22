@@ -96,6 +96,7 @@ def load_fm_model(cfg, models_dir, device):
 
 # ── SWD metric ────────────────────────────────────────────────────────────────
 
+# BEFORE
 def compute_swd_simple(x_pred, mu_list, Sigma_list, alpha,
                         mog_means, mog_variances, weights,
                         nsamples=10_000, num_projections=500):
@@ -126,6 +127,31 @@ def compute_swd_simple(x_pred, mu_list, Sigma_list, alpha,
     swd /= num_projections
 
     return float(swd), float(swd / (norm_coef + 1e-8))
+
+# AFTER
+def compute_mmd_eval(x_pred, mu_list, Sigma_list, alpha,
+                     mog_means, mog_variances, weights,
+                     nsamples=10_000):
+    """MMD between p(y|x=x_pred) and target G(y), using MMDLoss for consistency with optimization."""
+    from LossFunctions import MMDLoss, RBF
+
+    x_pred_t = (x_pred.float().view(-1) if isinstance(x_pred, torch.Tensor)
+                else torch.tensor(x_pred, dtype=torch.float32).view(-1))
+    d_x = len(mu_list[0]) - len(mog_means[0])
+
+    mu_opt, Sigma_opt = compute_conditionals(mu_list, Sigma_list, x_pred_t[:d_x])
+    alpha_opt = compute_alpha(mu_list, Sigma_list, alpha, x_pred_t[:d_x])
+    samples_opt    = generate_mog_samples_not_differentiable(nsamples, mu_opt, Sigma_opt, alpha_opt)
+    samples_target = generate_mog_samples_not_differentiable(nsamples, mog_means, mog_variances, weights)
+
+    mmd_loss = MMDLoss(kernel=RBF())
+    mmd = mmd_loss(samples_opt, samples_target)
+
+    cov = mog_covariance(mu_list, Sigma_list, alpha)
+    norm_coef = torch.sqrt(torch.trace(cov) / cov.shape[0]).item()
+
+    mmd_val = mmd.item()
+    return float(mmd_val), float(mmd_val / (norm_coef + 1e-8))
 
 
 # ── algorithm runners ─────────────────────────────────────────────────────────
@@ -173,11 +199,11 @@ def evaluate_result(x_pred, mu_list, Sigma_list, alpha,
                     nsamples_swd=10_000, num_projections_swd=500):
     l1 = warpper_L1_distance(x_pred, mu_list, Sigma_list, alpha,
                              mog_means, mog_variances, weights)
-    swd, norm_swd = compute_swd_simple(
+    mmd, norm_mmd = compute_mmd_eval(
         x_pred, mu_list, Sigma_list, alpha, mog_means, mog_variances, weights,
-        nsamples=nsamples_swd, num_projections=num_projections_swd,
+        nsamples=nsamples_swd,
     )
-    return l1, swd, norm_swd
+    return l1, mmd, norm_mmd
 
 
 # ── plots ─────────────────────────────────────────────────────────────────────
@@ -189,8 +215,8 @@ def plot_results(results, output_dir):
     colors = ["#4C72B0", "#DD8452", "#55A868", "#C44E52"]
 
     for ax, metric, label in zip(axes,
-                                  ["swd", "norm_swd", "l1"],
-                                  ["SWD", "Normalized SWD", "L1 to optimal"]):
+                                 ["swd", "norm_swd", "l1"],
+                                 ["MMD", "Normalized MMD", "L1 to optimal"]):
         data = [results[m][metric] for m in methods]
         bp = ax.boxplot(data, labels=methods, patch_artist=True, showmeans=True,
                         meanprops=dict(marker="D", markerfacecolor="red", markersize=6))
@@ -206,7 +232,7 @@ def plot_results(results, output_dir):
 
 def print_summary(results):
     print("\n" + "=" * 65)
-    print(f"{'Method':<12} {'SWD mean':>10} {'±':>4} {'NormSWD mean':>13} {'±':>4} {'L1 mean':>9}")
+    print(f"{'Method':<12} {'MMD mean':>10} {'±':>4} {'NormMMD mean':>13} {'±':>4} {'L1 mean':>9}")
     print("=" * 65)
     for method, data in results.items():
         print(f"{method:<12} {np.mean(data['swd']):>10.4f} {np.std(data['swd']):>4.3f} "

@@ -190,7 +190,7 @@ def run_dflow(model_fm, model_fm_x, mog_means, mog_variances, weights,
         mog_means=mog_means, mog_variances=mog_variances, weights=weights,
         n_sample=nsamples, loss_method="MMD", FLAG=False,
     )
-    return best_x1, final_loss
+    return best_x1.detach(), final_loss
 
 
 # ── evaluation ────────────────────────────────────────────────────────────────
@@ -344,7 +344,7 @@ def main():
                 import wandb
                 wandb.log({f"{name.lower()}/mmd": mmd,
                            f"{name.lower()}/l1": l1, f"{name.lower()}/time": elapsed,
-                           "attempt": i + 1}, commit=False)
+                           "attempt": i + 1},)
         return data
 
     if not args.skip_lgd:

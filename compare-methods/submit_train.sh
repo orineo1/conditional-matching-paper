@@ -28,6 +28,8 @@ echo "Log file: $LOG_FILE (deleted on success)" | tee -a "$LOG_FILE"
 
 pip install -q flow_matching POT
 
+mkdir -p compare-methods/output
+
 # ── Run training, capturing all output ───────────────────────────────────────
 python compare-methods/train_models.py \
     --output_dir "$OUTPUT_DIR" \
@@ -46,7 +48,6 @@ python compare-methods/train_models.py \
     >> "$LOG_FILE" 2>&1
 EXIT_CODE=$?
 
-mkdir -p compare-methods/output
 
 # ── On success: remove log. On failure: keep it. ──────────────────────────────
 if [ $EXIT_CODE -eq 0 ]; then

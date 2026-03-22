@@ -18,7 +18,7 @@ cd /sci/labs/orzuk/ori_m/conditional-matching-paper
 
 # ── Required arg: path to models directory ────────────────────────────────────
 MODELS_DIR=${1:?"Usage: sbatch submit_compare_logged.sh <models_dir>"}
-OUTPUT_DIR="compare_methods/output/compare_${SLURM_JOB_ID}"
+OUTPUT_DIR="compare-methods/output/compare_${SLURM_JOB_ID}"
 LOG_FILE="/sci/labs/orzuk/ori_m/conditional-matching-paper/compare_run_${SLURM_JOB_ID}.log"
 
 echo "Starting compare-methods run on $(hostname)" | tee "$LOG_FILE"
@@ -30,7 +30,7 @@ echo "Log file: $LOG_FILE (deleted on success)" | tee -a "$LOG_FILE"
 pip install -q flow_matching POT
 
 # ── Run comparison, capturing all output ──────────────────────────────────────
-python compare_methods/run_compare.py \
+python compare-methods/run_compare.py \
     --models_dir "$MODELS_DIR" \
     --output_dir "$OUTPUT_DIR" \
     --n_attempts 25 \

@@ -334,19 +334,20 @@ def main():
                 x_pred, mu_list, Sigma_list, alpha, mog_means, mog_variances, weights,
                 args.nsamples_swd, args.num_projections_swd,
             )
-            x_pred_list = x_pred.detach().cpu().tolist() if isinstance(x_pred, torch.Tensor) else x_pred
+            x_pred_vals = x_pred.detach().cpu().flatten().tolist()
 
             data["mmd"].append(mmd)
             data["l1"].append(l1)
             data["time"].append(elapsed)
             data["x_pred"].append(
                 x_pred.detach().cpu().tolist() if isinstance(x_pred, torch.Tensor) else x_pred)
-            print(f"  [{i + 1:2d}/{args.n_attempts}] mmd={mmd:.4f}  l1={l1:.4f}  t={elapsed:.1f}s", flush=True)
+            print(
+                f"  [{i + 1:2d}/{args.n_attempts}] pred_x0:{x_pred_vals}  mmd={mmd:.4f}  l1={l1:.4f}  t={elapsed:.1f}s",
+                flush=True)
             if not args.no_wandb:
                 import wandb
                 wandb.log({f"{name.lower()}/mmd": mmd,
                            f"{name.lower()}/l1": l1, f"{name.lower()}/time": elapsed,
-                            f"{name.lower()}/x_pred": x_pred_list,
                            "attempt": i + 1},)
         return data
 

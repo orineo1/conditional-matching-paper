@@ -75,7 +75,9 @@ def parse_args():
     # Variations / eval
     p.add_argument("--num_variations", type=int, default=6)
     p.add_argument("--n_targets", type=int, default=20,
-                   help="Total target images (split evenly man/woman)")
+                   help="Total target images (split by male_ratio)")
+    p.add_argument("--male_ratio", type=float, default=0.5,
+                   help="Fraction of male targets (0.3 = 30%% male, 70%% female)")
     p.add_argument("--n_eval", type=int, default=10,
                    help="Sprinter photos per MMD evaluation")
     p.add_argument("--eval_interval", type=int, default=0,
@@ -152,17 +154,18 @@ def main():
 
     # ── 3. Generate initial target distributions ────────────────────────────────
     N = args.n_targets
-    n_half = N // 2
-    print(f"Generating {N} initial target images ({n_half} man + {n_half} woman)...", flush=True)
+    n_man = round(N * args.male_ratio)
+    n_woman = N - n_man
+    print(f"Generating {N} initial target images ({n_man} man + {n_woman} woman, ratio={args.male_ratio})...", flush=True)
 
     with torch.no_grad():
         man_images_init, _ = generate_and_store_cs(
             sprinter, args.sprinter_target_man_prompt,
-            sobel_cond_pil, n_half, batch_size=2, cn_scale=args.controlnet_scale,
+            sobel_cond_pil, n_man, batch_size=2, cn_scale=args.controlnet_scale,
         )
         woman_images_init, _ = generate_and_store_cs(
             sprinter, args.sprinter_target_woman_prompt,
-            sobel_cond_pil, n_half, batch_size=2, cn_scale=args.controlnet_scale,
+            sobel_cond_pil, n_woman, batch_size=2, cn_scale=args.controlnet_scale,
         )
 
     # ── 4. Extract HED scribble from one of the generated portraits ─────────────
@@ -181,11 +184,11 @@ def main():
     with torch.no_grad():
         man_images, _ = generate_and_store_cs(
             sprinter, args.sprinter_target_man_prompt,
-            sobel_cond_pil, n_half, batch_size=2, cn_scale=args.controlnet_scale,
+            sobel_cond_pil, n_man, batch_size=2, cn_scale=args.controlnet_scale,
         )
         woman_images, _ = generate_and_store_cs(
             sprinter, args.sprinter_target_woman_prompt,
-            sobel_cond_pil, n_half, batch_size=2, cn_scale=args.controlnet_scale,
+            sobel_cond_pil, n_woman, batch_size=2, cn_scale=args.controlnet_scale,
         )
 
     plot_row(man_images, "Man Portrait Samples",
@@ -217,8 +220,8 @@ def main():
     _pca = PCA(n_components=2)
     _coords = _pca.fit_transform(all_clip_embeddings.cpu().numpy())
     fig, ax = plt.subplots(figsize=(8, 6))
-    ax.scatter(_coords[:n_half, 0], _coords[:n_half, 1], c='dodgerblue', label='Man', alpha=0.7)
-    ax.scatter(_coords[n_half:, 0], _coords[n_half:, 1], c='crimson', label='Woman', alpha=0.7)
+    ax.scatter(_coords[:n_man, 0], _coords[:n_man, 1], c='dodgerblue', label=f'Man ({n_man})', alpha=0.7)
+    ax.scatter(_coords[n_man:, 0], _coords[n_man:, 1], c='crimson', label=f'Woman ({n_woman})', alpha=0.7)
     ax.set_title("PCA of Target CLIP Embeddings"); ax.legend(); ax.grid(True, alpha=0.3)
     pca_path = os.path.join(args.output_dir, "target_clip_pca.png")
     fig.savefig(pca_path, dpi=100, bbox_inches='tight'); plt.close(fig)
@@ -235,6 +238,9 @@ def main():
             "prompt":                       args.prompt,
             "negative_prompt":              args.negative_prompt,
             "n_targets":                    N,
+            "male_ratio":                   args.male_ratio,
+            "n_man":                        n_man,
+            "n_woman":                      n_woman,
             "n_steps":                      args.n_steps,
             "start_step":                   args.start_step,
             "strength":                     1 - args.start_step / args.n_steps,
@@ -609,13 +615,13 @@ def main():
     target_c  = coords[:n_target]
     regular_c = coords[n_target : n_target + n_ev]
     dps_c     = coords[n_target + n_ev :]
-    n_half_t  = n_target // 2
+    n_man_t = round(n_target * args.male_ratio)
 
     fig, ax = plt.subplots(figsize=(9, 7))
-    ax.scatter(target_c[:n_half_t, 0],  target_c[:n_half_t, 1],
-               c="royalblue", alpha=0.6, s=60, label="Target (man)")
-    ax.scatter(target_c[n_half_t:, 0],  target_c[n_half_t:, 1],
-               c="crimson",   alpha=0.6, s=60, label="Target (woman)")
+    ax.scatter(target_c[:n_man_t, 0],  target_c[:n_man_t, 1],
+               c="royalblue", alpha=0.6, s=60, label=f"Target (man, {n_man_t})")
+    ax.scatter(target_c[n_man_t:, 0],  target_c[n_man_t:, 1],
+               c="crimson",   alpha=0.6, s=60, label=f"Target (woman, {n_target - n_man_t})")
     ax.scatter(regular_c[:, 0], regular_c[:, 1],
                c="orange",    alpha=0.8, s=80, marker="s",
                label=f"Unguided eval (MMD={regular_mmd:.4f})")

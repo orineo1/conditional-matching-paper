@@ -20,8 +20,8 @@ echo "Job ID: $SLURM_JOB_ID"
 export HF_HOME=/sci/labs/orzuk/shaulytolk/.cache/huggingface
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-pip install -q matplotlib scikit-learn controlnet_aux
-pip install -q git+https://github.com/wendlerc/latent_clip.git@renamed
+# Dependencies pre-installed in scribble_env:
+# matplotlib, scikit-learn, controlnet_aux, latent_clip, open_clip_torch
 
 cd /sci/labs/orzuk/shaulytolk/conditional-matching-paper
 mkdir -p SD_cond_SD_controlnet/output

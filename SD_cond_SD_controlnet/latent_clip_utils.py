@@ -10,7 +10,7 @@ def load_latent_clip_model(device):
     """
     import latent_clip
 
-    model_name = "ViT-B-8"
+    model_name = "Latent-ViT-B-8-512"
     pretrained = "wendlerc/latent-clip-b-8-512-34b-80k"
 
     model, _ = latent_clip.create_model_and_transforms(
@@ -20,7 +20,7 @@ def load_latent_clip_model(device):
     for p in model.parameters():
         p.requires_grad_(False)
 
-    tokenizer = latent_clip.get_tokenizer(model_name)
+    tokenizer = latent_clip.get_tokenizer("Latent-ViT-B-8-512")
     return model, tokenizer
 
 

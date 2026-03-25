@@ -21,9 +21,9 @@ def load_latent_clip_model(device):
 
     # Load checkpoint manually with weights_only=False
     # (latent_clip's checkpoint contains numpy scalars, PyTorch 2.6+ rejects by default)
-    model, _ = latent_clip.create_model_and_transforms(
+    model = latent_clip.create_model_and_transforms(
         model_name, device=device
-    )
+    )[0]
     state_dict = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     if "state_dict" in state_dict:
         state_dict = state_dict["state_dict"]

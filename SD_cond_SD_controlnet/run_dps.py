@@ -334,25 +334,11 @@ def main():
         return f"alloc={a:.2f}GB  reserved={r:.2f}GB"
     print(f"[MEM] After prompt encoding: {gpu_mem()}", flush=True)
 
-    # Pre-encode sprinter variation prompt (same prompt used 100× per DPS step)
-    with torch.no_grad():
-        (
-            sprinter_prompt_embeds, _, sprinter_pooled_prompt_embeds, _,
-        ) = sprinter.encode_prompt(
-            prompt=args.sprinter_variation_prompt,
-            device=device,
-            do_classifier_free_guidance=False,
-            num_images_per_prompt=1,
-        )
-    print(f"[MEM] After sprinter prompt encoding: {gpu_mem()}", flush=True)
-
-    # Offload ALL text encoders — not needed during DPS loop (prompts pre-encoded)
+    # Offload architect text encoders — not needed during DPS loop (prompts pre-encoded)
     architect.text_encoder.to("cpu")
     architect.text_encoder_2.to("cpu")
-    sprinter.text_encoder.to("cpu")
-    sprinter.text_encoder_2.to("cpu")
     torch.cuda.empty_cache()
-    print(f"[MEM] After offloading all text encoders: {gpu_mem()}", flush=True)
+    print(f"[MEM] After offloading architect text encoders: {gpu_mem()}", flush=True)
 
     architect.scheduler.set_timesteps(n_steps, device=device)
     timesteps = architect.scheduler.timesteps
@@ -452,8 +438,21 @@ def main():
     visualize_step(sd_baseline, architect, sprinter, target_clip_np,
                    num_cond=4, save_path=baseline_save_path, pca_fixed=pca_fixed)
     print("✅ Baseline visualization saved.", flush=True)
+
+    # Pre-encode sprinter variation prompt + offload sprinter text encoders
+    with torch.no_grad():
+        (
+            sprinter_prompt_embeds, _, sprinter_pooled_prompt_embeds, _,
+        ) = sprinter.encode_prompt(
+            prompt=args.sprinter_variation_prompt,
+            device=device,
+            do_classifier_free_guidance=False,
+            num_images_per_prompt=1,
+        )
+    sprinter.text_encoder.to("cpu")
+    sprinter.text_encoder_2.to("cpu")
     gc.collect(); torch.cuda.empty_cache()
-    print(f"[MEM] Before DPS loop: {gpu_mem()}", flush=True)
+    print(f"[MEM] Before DPS loop (text encoders offloaded): {gpu_mem()}", flush=True)
 
     # ── 9. DPS loop ────────────────────────────────────────────────────────────
     for i, t in enumerate(timesteps_to_run):

@@ -435,19 +435,21 @@ def main():
         latents_step         = latents.detach().requires_grad_(True)
         latents_step_regular = latents_regular.detach()
 
-        # Noise prediction
-        noise_pred = predict_noise_cfg(
-            architect.unet, architect.scheduler,
-            latents_step, t, cfg_encoder_states, added_cond_kwargs, args.guidance_scale,
-        )
+        # Noise prediction (no_grad for UNet — gradient flows through pred_x0 formula)
         with torch.no_grad():
+            noise_pred = predict_noise_cfg(
+                architect.unet, architect.scheduler,
+                latents_step, t, cfg_encoder_states, added_cond_kwargs, args.guidance_scale,
+            )
             noise_pred_regular = predict_noise_cfg(
                 architect.unet, scheduler_regular,
                 latents_step_regular, t, cfg_encoder_states, added_cond_kwargs, args.guidance_scale,
             )
 
-        # pred_x0 — pure formula, no scheduler.step() side effects
-        pred_x0 = compute_pred_x0_direct(architect.scheduler, noise_pred, t, latents_step)
+        # pred_x0 — gradient flows through latents_step directly:
+        #   pred_x0 = (latents_step - sqrt(1-α) * noise_pred) / sqrt(α)
+        #   ∂pred_x0/∂latents_step = 1/sqrt(α)
+        pred_x0 = compute_pred_x0_direct(architect.scheduler, noise_pred.detach(), t, latents_step)
         with torch.no_grad():
             pred_x0_regular = compute_pred_x0_direct(
                 scheduler_regular, noise_pred_regular, t, latents_step_regular)
@@ -461,10 +463,6 @@ def main():
         pixel_x0 = torch.utils.checkpoint.checkpoint(
             vae_decode_checkpoint, pred_x0_scaled, use_reentrant=False)
         pixel_x0_norm = torch.clamp((pixel_x0 + 1.0) / 2.0, 0.0, 1.0)
-
-        # Offload architect UNet to CPU — frees ~5 GB for sprinter + CLIP forward
-        architect.unet.to("cpu")
-        torch.cuda.empty_cache()
 
         # CLIP-MMD + gradient
         grad, mmd_loss, zeta_i, loss_norm, vl_clip_flat = run_dps_step_clip(
@@ -486,9 +484,6 @@ def main():
             loss_scale=args.loss_scale,
             latent_clip_model=latent_clip_model,
         )
-
-        # Bring architect UNet back to GPU for denoising step
-        architect.unet.to(device)
 
         grad_norm = grad.norm().item()
         zeta_val  = zeta_i.item() if isinstance(zeta_i, torch.Tensor) else zeta_i

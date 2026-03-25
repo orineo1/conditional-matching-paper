@@ -163,8 +163,11 @@ def evaluate_distribution_mmd(latent, architect_vae, architect_image_processor,
                     eval_photos.append(TF.to_pil_image(var_pixels[j].cpu()))
 
             all_latents = torch.cat(latent_list, dim=0)
+            latent_clip_model.to(device)
             clip_embs = encode_latents_clip(
                 all_latents.float(), latent_clip_model, vae_scaling_factor)
+            latent_clip_model.to("cpu")
+            torch.cuda.empty_cache()
         sprinter.vae.to(dtype=original_vae_dtype)
     else:
         # Standard path: generate PIL photos → CLIP ViT-L/14

@@ -77,6 +77,7 @@ def encode_targets_latent_clip(pil_images, vae, model, device):
 
     scaling_factor = vae.config.scaling_factor
 
+    model.to(device)
     with torch.no_grad():
         # Encode in batches to avoid OOM
         emb_list = []
@@ -88,5 +89,7 @@ def encode_targets_latent_clip(pil_images, vae, model, device):
             emb = encode_latents_clip(latents.float(), model, scaling_factor)
             emb_list.append(emb)
         embeddings = torch.cat(emb_list, dim=0)
+    model.to("cpu")
+    torch.cuda.empty_cache()
 
     return embeddings

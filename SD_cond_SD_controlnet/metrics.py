@@ -114,7 +114,8 @@ def compute_swd(x, y, n_projections=None, tol=1e-3, min_projections=10, step=10,
 def evaluate_distribution_mmd(latent, architect_vae, architect_image_processor,
                                 sprinter, clip_model, clip_processor,
                                 all_clip_embeddings, eval_prompt, n_eval=10, device="cuda",
-                                latent_clip_model=None, vae_scaling_factor=None):
+                                latent_clip_model=None, vae_scaling_factor=None,
+                                sprinter_prompt_embeds=None, sprinter_pooled_prompt_embeds=None):
     """
     Decode latent -> scribble PIL -> generate n_eval sprinter photos
     -> encode to CLIP -> compute MMD vs target distribution.
@@ -146,13 +147,23 @@ def evaluate_distribution_mmd(latent, architect_vae, architect_image_processor,
             for start in range(0, n_eval, 2):
                 bs = min(2, n_eval - start)
                 # Get latents
-                result_lat = sprinter(
-                    prompt=[eval_prompt] * bs,
-                    image=[scribble_pil] * bs,
-                    num_inference_steps=2, guidance_scale=0.0,
-                    controlnet_conditioning_scale=0.8,
-                    output_type="latent", return_dict=True,
-                )
+                if sprinter_prompt_embeds is not None:
+                    result_lat = sprinter(
+                        prompt_embeds=sprinter_prompt_embeds.repeat(bs, 1, 1),
+                        pooled_prompt_embeds=sprinter_pooled_prompt_embeds.repeat(bs, 1),
+                        image=[scribble_pil] * bs,
+                        num_inference_steps=2, guidance_scale=0.0,
+                        controlnet_conditioning_scale=0.8,
+                        output_type="latent", return_dict=True,
+                    )
+                else:
+                    result_lat = sprinter(
+                        prompt=[eval_prompt] * bs,
+                        image=[scribble_pil] * bs,
+                        num_inference_steps=2, guidance_scale=0.0,
+                        controlnet_conditioning_scale=0.8,
+                        output_type="latent", return_dict=True,
+                    )
                 latent_list.append(result_lat.images)
                 # Decode to PIL for visualization
                 var_pixels = sprinter.vae.decode(
@@ -175,13 +186,23 @@ def evaluate_distribution_mmd(latent, architect_vae, architect_image_processor,
         with torch.no_grad():
             for start in range(0, n_eval, 2):
                 bs = min(2, n_eval - start)
-                result = sprinter(
-                    prompt=[eval_prompt] * bs,
-                    image=[scribble_pil] * bs,
-                    num_inference_steps=2, guidance_scale=0.0,
-                    controlnet_conditioning_scale=0.8,
-                    output_type="pil", return_dict=True,
-                )
+                if sprinter_prompt_embeds is not None:
+                    result = sprinter(
+                        prompt_embeds=sprinter_prompt_embeds.repeat(bs, 1, 1),
+                        pooled_prompt_embeds=sprinter_pooled_prompt_embeds.repeat(bs, 1),
+                        image=[scribble_pil] * bs,
+                        num_inference_steps=2, guidance_scale=0.0,
+                        controlnet_conditioning_scale=0.8,
+                        output_type="pil", return_dict=True,
+                    )
+                else:
+                    result = sprinter(
+                        prompt=[eval_prompt] * bs,
+                        image=[scribble_pil] * bs,
+                        num_inference_steps=2, guidance_scale=0.0,
+                        controlnet_conditioning_scale=0.8,
+                        output_type="pil", return_dict=True,
+                    )
                 eval_photos.extend(result.images)
         sprinter.vae.to(dtype=original_vae_dtype)
 

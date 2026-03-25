@@ -35,7 +35,8 @@ def plot_row(images, title, count=5, save_path=None):
     else:
         plt.show()
 
-def visualize_step(sd, architect, sprinter, target_clip_np, num_cond=4, save_path=None, pca_fixed=None):
+def visualize_step(sd, architect, sprinter, target_clip_np, num_cond=4, save_path=None, pca_fixed=None,
+                   sprinter_prompt_embeds=None, sprinter_pooled_prompt_embeds=None):
     i = sd['step']
     with torch.no_grad():
         img_xt_reg  = latent_to_pil(sd['latents_step_regular_cpu'].to(architect.device), architect.vae, architect.image_processor)
@@ -48,12 +49,22 @@ def visualize_step(sd, architect, sprinter, target_clip_np, num_cond=4, save_pat
         px_norm = torch.clamp((px + 1.0) / 2.0, 0.0, 1.0)
 
         sprinter.vae.to(dtype=torch.float16)
-        cond_imgs = [
-            sprinter(prompt="a superrealistic professional photograph of", image=px_norm,
-                     num_inference_steps=2, guidance_scale=0.0,
-                     controlnet_conditioning_scale=0.8, output_type="pil").images[0]
-            for _ in range(num_cond)
-        ]
+        if sprinter_prompt_embeds is not None:
+            cond_imgs = [
+                sprinter(prompt_embeds=sprinter_prompt_embeds,
+                         pooled_prompt_embeds=sprinter_pooled_prompt_embeds,
+                         image=px_norm,
+                         num_inference_steps=2, guidance_scale=0.0,
+                         controlnet_conditioning_scale=0.8, output_type="pil").images[0]
+                for _ in range(num_cond)
+            ]
+        else:
+            cond_imgs = [
+                sprinter(prompt="a superrealistic professional photograph of", image=px_norm,
+                         num_inference_steps=2, guidance_scale=0.0,
+                         controlnet_conditioning_scale=0.8, output_type="pil").images[0]
+                for _ in range(num_cond)
+            ]
         sprinter.vae.to(dtype=torch.float32)
 
         combined   = np.vstack([target_clip_np, sd['variation_clip_flat']])

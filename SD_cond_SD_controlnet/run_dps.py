@@ -554,6 +554,8 @@ def main():
                 n_eval=args.n_eval, device=device,
                 latent_clip_model=latent_clip_model,
                 vae_scaling_factor=sprinter.vae.config.scaling_factor,
+                sprinter_prompt_embeds=sprinter_prompt_embeds,
+                sprinter_pooled_prompt_embeds=sprinter_pooled_prompt_embeds,
             )
             wandb_log["intermediate/unguided_cond_mmd"] = unguided_mmd
             wandb_log["intermediate/guided_cond_mmd"]   = mmd_loss.item()
@@ -581,7 +583,9 @@ def main():
 
         step_save_path = os.path.join(steps_dir, f"step_{i:03d}.png")
         visualize_step(sd, architect, sprinter, target_clip_np,
-                       num_cond=5, save_path=step_save_path, pca_fixed=pca_fixed)
+                       num_cond=5, save_path=step_save_path, pca_fixed=pca_fixed,
+                       sprinter_prompt_embeds=sprinter_prompt_embeds,
+                       sprinter_pooled_prompt_embeds=sprinter_pooled_prompt_embeds)
 
         # Scheduler step
         latents = denoise_step(architect.scheduler, noise_pred, t, latents_step,
@@ -609,6 +613,8 @@ def main():
         n_eval=args.n_eval, device=device,
         latent_clip_model=latent_clip_model,
         vae_scaling_factor=sprinter.vae.config.scaling_factor,
+        sprinter_prompt_embeds=sprinter_prompt_embeds,
+        sprinter_pooled_prompt_embeds=sprinter_pooled_prompt_embeds,
     )
 
     print("Computing final MMD (DPS)...", flush=True)
@@ -619,6 +625,8 @@ def main():
         n_eval=args.n_eval, device=device,
         latent_clip_model=latent_clip_model,
         vae_scaling_factor=sprinter.vae.config.scaling_factor,
+        sprinter_prompt_embeds=sprinter_prompt_embeds,
+        sprinter_pooled_prompt_embeds=sprinter_pooled_prompt_embeds,
     )
 
     print(f"Regular MMD : {regular_mmd:.6f}", flush=True)

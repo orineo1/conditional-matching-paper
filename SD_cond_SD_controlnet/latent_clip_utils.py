@@ -25,8 +25,11 @@ def load_latent_clip_model(device):
         model_name, device=device
     )[0]
     state_dict = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    # Unwrap checkpoint wrapper (epoch, state_dict, optimizer, etc.)
     if "state_dict" in state_dict:
         state_dict = state_dict["state_dict"]
+    # Strip DDP "module." prefix
+    state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
     model.load_state_dict(state_dict)
     model.eval()
     for p in model.parameters():

@@ -138,11 +138,13 @@ def run_dps_step_clip(latents, latents_step, noise_pred, pixel_x0_norm,
                       sprinter, all_clip_embeddings, num_variations,
                       variation_batch_size, base_zeta_prime,
                       clip_model, clip_processor, vae, vae_scaling_factor, variation_prompt,
-                      loss_fn=compute_mmd,loss_scale=1.0):
+                      loss_fn=compute_mmd,loss_scale=1.0,
+                      latent_clip_model=None):
     from clip_utils import encode_images_clip
 
     device = pixel_x0_norm.device
-    clip_model.to(device)
+    if latent_clip_model is None:
+        clip_model.to(device)
 
     variation_clip_list = []
     for start_idx in range(0, num_variations, variation_batch_size):
@@ -150,23 +152,42 @@ def run_dps_step_clip(latents, latents_step, noise_pred, pixel_x0_norm,
         bs = end_idx - start_idx
         ctrl_batch = pixel_x0_norm[0].unsqueeze(0).repeat(bs, 1, 1, 1)
 
-        def sprinter_vae_clip_forward(ctrl):
-            var_latents = sprinter(
-                prompt=[variation_prompt] * ctrl.shape[0],
-                image=ctrl, num_inference_steps=2, guidance_scale=0.0,
-                controlnet_conditioning_scale=0.8,
-                output_type="latent", return_dict=True,
-            ).images
-            var_pixels = vae.decode(
-                (var_latents.float() / vae_scaling_factor).to(vae.dtype)
-            ).sample
-            var_pixels = torch.clamp((var_pixels.float() + 1.0) / 2.0, 0.0, 1.0)
-            # CLIP encode — disable autocast to prevent fp16 overflow in CLIP ViT
-            with torch.cuda.amp.autocast(enabled=False):
-                return encode_images_clip(var_pixels.float(), clip_model, clip_processor)
+        if latent_clip_model is not None:
+            # Latent-CLIP path: sprinter → latent → Latent-CLIP (skip VAE decode + CLIP)
+            from latent_clip_utils import encode_latents_clip
 
-        var_clip = torch.utils.checkpoint.checkpoint(
-            sprinter_vae_clip_forward, ctrl_batch, use_reentrant=False)
+            def sprinter_latent_clip_forward(ctrl):
+                var_latents = sprinter(
+                    prompt=[variation_prompt] * ctrl.shape[0],
+                    image=ctrl, num_inference_steps=2, guidance_scale=0.0,
+                    controlnet_conditioning_scale=0.8,
+                    output_type="latent", return_dict=True,
+                ).images
+                with torch.cuda.amp.autocast(enabled=False):
+                    return encode_latents_clip(
+                        var_latents.float(), latent_clip_model, vae_scaling_factor)
+
+            var_clip = torch.utils.checkpoint.checkpoint(
+                sprinter_latent_clip_forward, ctrl_batch, use_reentrant=False)
+        else:
+            # Standard path: sprinter → VAE decode → CLIP ViT-L/14
+            def sprinter_vae_clip_forward(ctrl):
+                var_latents = sprinter(
+                    prompt=[variation_prompt] * ctrl.shape[0],
+                    image=ctrl, num_inference_steps=2, guidance_scale=0.0,
+                    controlnet_conditioning_scale=0.8,
+                    output_type="latent", return_dict=True,
+                ).images
+                var_pixels = vae.decode(
+                    (var_latents.float() / vae_scaling_factor).to(vae.dtype)
+                ).sample
+                var_pixels = torch.clamp((var_pixels.float() + 1.0) / 2.0, 0.0, 1.0)
+                # CLIP encode — disable autocast to prevent fp16 overflow in CLIP ViT
+                with torch.cuda.amp.autocast(enabled=False):
+                    return encode_images_clip(var_pixels.float(), clip_model, clip_processor)
+
+            var_clip = torch.utils.checkpoint.checkpoint(
+                sprinter_vae_clip_forward, ctrl_batch, use_reentrant=False)
         variation_clip_list.append(var_clip)
 
     variation_clip_embs = torch.cat(variation_clip_list, dim=0)

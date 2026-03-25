@@ -103,6 +103,9 @@ def parse_args():
                    default="stabilityai/stable-diffusion-xl-base-1.0")
 
     p.add_argument("--seed", type=int, default=None)
+    p.add_argument("--use_latent_clip", action="store_true",
+                   help="Use Latent-CLIP (512-dim) instead of standard CLIP ViT-L/14. "
+                        "Skips VAE decode+CLIP encode in DPS loop.")
     return p.parse_args()
 
 
@@ -143,8 +146,19 @@ def main():
         sprinter_model_id=args.sprinter_model_id,
         architect_model_id=args.architect_model_id,
     )
-    clip_model, clip_processor = load_clip_model(device)
-    print("Models loaded.", flush=True)
+
+    latent_clip_model = None
+    latent_clip_tokenizer = None
+    if args.use_latent_clip:
+        from latent_clip_utils import load_latent_clip_model
+        print("Loading Latent-CLIP model...", flush=True)
+        latent_clip_model, latent_clip_tokenizer = load_latent_clip_model(device)
+        # Still load standard CLIP for final PCA visualization of PIL photos
+        clip_model, clip_processor = load_clip_model(device)
+        print("Latent-CLIP + standard CLIP loaded.", flush=True)
+    else:
+        clip_model, clip_processor = load_clip_model(device)
+        print("Models loaded.", flush=True)
 
     # ── 2. Base oval image + Sobel (used for initial target generation) ─────────
     base_image_pil, base_tensor = build_base_image(device)
@@ -196,15 +210,24 @@ def main():
     plot_row(woman_images, "Woman Portrait Samples",
              save_path=os.path.join(args.output_dir, "target_samples_woman.png"))
 
-    # ── 6. Encode targets to CLIP ──────────────────────────────────────────────
-    print("Encoding targets to CLIP...", flush=True)
-    with torch.no_grad():
-        man_clip_embs = encode_images_clip(
-            pil_images_to_tensor(man_images, device), clip_model, clip_processor)
-        woman_clip_embs = encode_images_clip(
-            pil_images_to_tensor(woman_images, device), clip_model, clip_processor)
+    # ── 6. Encode targets to CLIP (or Latent-CLIP) ──────────────────────────────
+    if args.use_latent_clip:
+        from latent_clip_utils import encode_targets_latent_clip
+        print("Encoding targets to Latent-CLIP (PIL → VAE encode → Latent-CLIP)...", flush=True)
+        with torch.no_grad():
+            man_clip_embs = encode_targets_latent_clip(
+                man_images, sprinter.vae, latent_clip_model, device)
+            woman_clip_embs = encode_targets_latent_clip(
+                woman_images, sprinter.vae, latent_clip_model, device)
+    else:
+        print("Encoding targets to CLIP...", flush=True)
+        with torch.no_grad():
+            man_clip_embs = encode_images_clip(
+                pil_images_to_tensor(man_images, device), clip_model, clip_processor)
+            woman_clip_embs = encode_images_clip(
+                pil_images_to_tensor(woman_images, device), clip_model, clip_processor)
     all_clip_embeddings = torch.cat([man_clip_embs, woman_clip_embs], dim=0)
-    print(f"Target CLIP embeddings: {all_clip_embeddings.shape}", flush=True)
+    print(f"Target embeddings: {all_clip_embeddings.shape}", flush=True)
 
     # Sanity checks
     norms = all_clip_embeddings.norm(dim=-1)
@@ -265,6 +288,7 @@ def main():
             "loss_scale":           args.loss_scale,
             "bandwidth_scale":      args.bandwidth_scale,
             "kernel_alpha": args.kernel_alpha,
+            "use_latent_clip": args.use_latent_clip,
         },
     )
     print(f"✅ wandb run: {run.name}", flush=True)
@@ -374,10 +398,16 @@ def main():
         ]
         sprinter.vae.to(dtype=torch.float32)
 
-        var_tensors = torch.cat([TF.to_tensor(img).unsqueeze(0) for img in baseline_var_images], dim=0).to(device)
-        clip_model.to(device)
-        baseline_clip_flat = encode_images_clip(var_tensors, clip_model, clip_processor).cpu().numpy()
-        clip_model.to("cpu")
+        if args.use_latent_clip:
+            from latent_clip_utils import encode_targets_latent_clip
+            baseline_clip_flat = encode_targets_latent_clip(
+                baseline_var_images, sprinter.vae, latent_clip_model, device
+            ).cpu().numpy()
+        else:
+            var_tensors = torch.cat([TF.to_tensor(img).unsqueeze(0) for img in baseline_var_images], dim=0).to(device)
+            clip_model.to(device)
+            baseline_clip_flat = encode_images_clip(var_tensors, clip_model, clip_processor).cpu().numpy()
+            clip_model.to("cpu")
 
         sd_baseline = {
             "step": 0,
@@ -450,7 +480,7 @@ def main():
             variation_prompt=args.sprinter_variation_prompt,
             loss_fn=loss_fn,
             loss_scale=args.loss_scale,
-
+            latent_clip_model=latent_clip_model,
         )
 
         grad_norm = grad.norm().item()
@@ -488,6 +518,8 @@ def main():
                 sprinter, clip_model, clip_processor,
                 all_clip_embeddings, args.sprinter_eval_prompt,
                 n_eval=args.n_eval, device=device,
+                latent_clip_model=latent_clip_model,
+                vae_scaling_factor=sprinter.vae.config.scaling_factor,
             )
             wandb_log["intermediate/unguided_cond_mmd"] = unguided_mmd
             wandb_log["intermediate/guided_cond_mmd"]   = mmd_loss.item()
@@ -541,6 +573,8 @@ def main():
         sprinter, clip_model, clip_processor,
         all_clip_embeddings, eval_prompt=args.sprinter_eval_prompt,
         n_eval=args.n_eval, device=device,
+        latent_clip_model=latent_clip_model,
+        vae_scaling_factor=sprinter.vae.config.scaling_factor,
     )
 
     print("Computing final MMD (DPS)...", flush=True)
@@ -549,6 +583,8 @@ def main():
         sprinter, clip_model, clip_processor,
         all_clip_embeddings, eval_prompt=args.sprinter_eval_prompt,
         n_eval=args.n_eval, device=device,
+        latent_clip_model=latent_clip_model,
+        vae_scaling_factor=sprinter.vae.config.scaling_factor,
     )
 
     print(f"Regular MMD : {regular_mmd:.6f}", flush=True)
@@ -594,14 +630,22 @@ def main():
     fig.savefig(curves_path, dpi=100, bbox_inches="tight"); plt.close(fig)
 
     # Final CLIP PCA comparison
-    def pil_list_to_clip(pil_list):
-        tensors = [TF.to_tensor(img).unsqueeze(0) for img in pil_list]
-        tensor = torch.cat(tensors, dim=0).to(device)
-        clip_model.to(device)
-        with torch.no_grad():
-            embs = encode_images_clip(tensor, clip_model, clip_processor)
-        clip_model.to("cpu")
-        return embs.cpu().numpy()
+    if args.use_latent_clip:
+        from latent_clip_utils import encode_targets_latent_clip
+        def pil_list_to_clip(pil_list):
+            with torch.no_grad():
+                embs = encode_targets_latent_clip(
+                    pil_list, sprinter.vae, latent_clip_model, device)
+            return embs.cpu().numpy()
+    else:
+        def pil_list_to_clip(pil_list):
+            tensors = [TF.to_tensor(img).unsqueeze(0) for img in pil_list]
+            tensor = torch.cat(tensors, dim=0).to(device)
+            clip_model.to(device)
+            with torch.no_grad():
+                embs = encode_images_clip(tensor, clip_model, clip_processor)
+            clip_model.to("cpu")
+            return embs.cpu().numpy()
 
     regular_eval_clip = pil_list_to_clip(regular_eval_photos)
     dps_eval_clip     = pil_list_to_clip(dps_eval_photos)

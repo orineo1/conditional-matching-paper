@@ -113,10 +113,16 @@ def compute_swd(x, y, n_projections=None, tol=1e-3, min_projections=10, step=10,
 
 def evaluate_distribution_mmd(latent, architect_vae, architect_image_processor,
                                 sprinter, clip_model, clip_processor,
-                                all_clip_embeddings,eval_prompt, n_eval=10, device="cuda",):
+                                all_clip_embeddings, eval_prompt, n_eval=10, device="cuda",
+                                latent_clip_model=None, vae_scaling_factor=None):
     """
     Decode latent -> scribble PIL -> generate n_eval sprinter photos
     -> encode to CLIP -> compute MMD vs target distribution.
+
+    When latent_clip_model is set, sprinter outputs latents directly into
+    Latent-CLIP (skipping VAE decode + standard CLIP). PIL photos are still
+    generated separately for visualization.
+
     Returns (mmd_scalar, eval_photos_list, clip_embs)
     """
     from clip_utils import encode_images_clip
@@ -126,32 +132,65 @@ def evaluate_distribution_mmd(latent, architect_vae, architect_image_processor,
     with torch.no_grad():
         scribble_pil = latent_to_pil(latent, architect_vae, architect_image_processor)
 
-    # 2. Generate sprinter photos from scribble
+    # 2. Generate sprinter outputs
     original_vae_dtype = sprinter.vae.dtype
-    sprinter.vae.to(dtype=torch.float16)
     eval_photos = []
-    with torch.no_grad():
-        for start in range(0, n_eval, 2):
-            bs = min(2, n_eval - start)
-            result = sprinter(
-                prompt=[eval_prompt] * bs,
-                image=[scribble_pil] * bs,
-                num_inference_steps=2, guidance_scale=0.0,
-                controlnet_conditioning_scale=0.8,
-                output_type="pil", return_dict=True,
-            )
-            eval_photos.extend(result.images)
-    sprinter.vae.to(dtype=original_vae_dtype)
 
-    # 3. Encode photos to CLIP
-    tensors = [TF.to_tensor(img).unsqueeze(0) for img in eval_photos]
-    photo_tensor = torch.cat(tensors, dim=0).to(device)
-    clip_model.to(device)
-    with torch.no_grad():
-        clip_embs = encode_images_clip(photo_tensor, clip_model, clip_processor)
-    clip_model.to("cpu")
+    if latent_clip_model is not None:
+        from latent_clip_utils import encode_latents_clip
 
-    # 4. MMD vs target
+        # Generate latents for Latent-CLIP encoding + PIL photos for visualization
+        sprinter.vae.to(dtype=torch.float32)
+        latent_list = []
+        with torch.no_grad():
+            for start in range(0, n_eval, 2):
+                bs = min(2, n_eval - start)
+                # Get latents
+                result_lat = sprinter(
+                    prompt=[eval_prompt] * bs,
+                    image=[scribble_pil] * bs,
+                    num_inference_steps=2, guidance_scale=0.0,
+                    controlnet_conditioning_scale=0.8,
+                    output_type="latent", return_dict=True,
+                )
+                latent_list.append(result_lat.images)
+                # Decode to PIL for visualization
+                var_pixels = sprinter.vae.decode(
+                    (result_lat.images.float() / vae_scaling_factor).to(sprinter.vae.dtype)
+                ).sample
+                var_pixels = torch.clamp((var_pixels.float() + 1.0) / 2.0, 0.0, 1.0)
+                for j in range(bs):
+                    eval_photos.append(TF.to_pil_image(var_pixels[j].cpu()))
+
+            all_latents = torch.cat(latent_list, dim=0)
+            clip_embs = encode_latents_clip(
+                all_latents.float(), latent_clip_model, vae_scaling_factor)
+        sprinter.vae.to(dtype=original_vae_dtype)
+    else:
+        # Standard path: generate PIL photos → CLIP ViT-L/14
+        sprinter.vae.to(dtype=torch.float16)
+        with torch.no_grad():
+            for start in range(0, n_eval, 2):
+                bs = min(2, n_eval - start)
+                result = sprinter(
+                    prompt=[eval_prompt] * bs,
+                    image=[scribble_pil] * bs,
+                    num_inference_steps=2, guidance_scale=0.0,
+                    controlnet_conditioning_scale=0.8,
+                    output_type="pil", return_dict=True,
+                )
+                eval_photos.extend(result.images)
+        sprinter.vae.to(dtype=original_vae_dtype)
+
+        # Encode photos to CLIP
+        tensors = [TF.to_tensor(img).unsqueeze(0) for img in eval_photos]
+        photo_tensor = torch.cat(tensors, dim=0).to(device)
+        clip_model.to(device)
+        with torch.no_grad():
+            clip_embs = encode_images_clip(photo_tensor, clip_model, clip_processor)
+        clip_model.to("cpu")
+
+    # MMD vs target
     mmd = compute_mmd(clip_embs, all_clip_embeddings).item()
 
     return mmd, eval_photos, clip_embs

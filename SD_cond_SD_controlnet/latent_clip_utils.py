@@ -9,18 +9,24 @@ def load_latent_clip_model(device):
     Returns (model, tokenizer).
     """
     import latent_clip
+    from huggingface_hub import hf_hub_download
 
     model_name = "Latent-ViT-B-8-512"
-    pretrained = "wendlerc/latent-clip-b-8-512-34b-80k"
+
+    # Download checkpoint from HF hub (cached after first download)
+    checkpoint_path = hf_hub_download(
+        repo_id="wendlerc/latent-clip-b-8-512-34b-80k",
+        filename="checkpoints/epoch_34.pt",
+    )
 
     model, _ = latent_clip.create_model_and_transforms(
-        model_name, pretrained=pretrained, device=device
+        model_name, pretrained=checkpoint_path, device=device
     )
     model.eval()
     for p in model.parameters():
         p.requires_grad_(False)
 
-    tokenizer = latent_clip.get_tokenizer("Latent-ViT-B-8-512")
+    tokenizer = latent_clip.get_tokenizer(model_name)
     return model, tokenizer
 
 

@@ -462,6 +462,10 @@ def main():
             vae_decode_checkpoint, pred_x0_scaled, use_reentrant=False)
         pixel_x0_norm = torch.clamp((pixel_x0 + 1.0) / 2.0, 0.0, 1.0)
 
+        # Offload architect UNet to CPU — frees ~5 GB for sprinter + CLIP forward
+        architect.unet.to("cpu")
+        torch.cuda.empty_cache()
+
         # CLIP-MMD + gradient
         grad, mmd_loss, zeta_i, loss_norm, vl_clip_flat = run_dps_step_clip(
             latents=latents,
@@ -482,6 +486,9 @@ def main():
             loss_scale=args.loss_scale,
             latent_clip_model=latent_clip_model,
         )
+
+        # Bring architect UNet back to GPU for denoising step
+        architect.unet.to(device)
 
         grad_norm = grad.norm().item()
         zeta_val  = zeta_i.item() if isinstance(zeta_i, torch.Tensor) else zeta_i

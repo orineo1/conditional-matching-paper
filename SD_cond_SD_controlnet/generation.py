@@ -139,7 +139,8 @@ def run_dps_step_clip(latents, latents_step, noise_pred, pixel_x0_norm,
                       variation_batch_size, base_zeta_prime,
                       clip_model, clip_processor, vae, vae_scaling_factor, variation_prompt,
                       loss_fn=compute_mmd,loss_scale=1.0,
-                      latent_clip_model=None):
+                      latent_clip_model=None,
+                      sprinter_prompt_embeds=None, sprinter_pooled_prompt_embeds=None):
     from clip_utils import encode_images_clip
 
     device = pixel_x0_norm.device
@@ -154,17 +155,30 @@ def run_dps_step_clip(latents, latents_step, noise_pred, pixel_x0_norm,
         bs = end_idx - start_idx
         ctrl_batch = pixel_x0_norm[0].unsqueeze(0).repeat(bs, 1, 1, 1)
 
+        # Build sprinter kwargs — use pre-encoded prompt_embeds if available
+        if sprinter_prompt_embeds is not None:
+            sp_kwargs = dict(
+                prompt_embeds=sprinter_prompt_embeds.repeat(bs, 1, 1),
+                pooled_prompt_embeds=sprinter_pooled_prompt_embeds.repeat(bs, 1),
+                image=ctrl_batch, num_inference_steps=2, guidance_scale=0.0,
+                controlnet_conditioning_scale=0.8,
+                output_type="latent", return_dict=True,
+            )
+        else:
+            sp_kwargs = dict(
+                prompt=[variation_prompt] * bs,
+                image=ctrl_batch, num_inference_steps=2, guidance_scale=0.0,
+                controlnet_conditioning_scale=0.8,
+                output_type="latent", return_dict=True,
+            )
+
         if latent_clip_model is not None:
             # Latent-CLIP path: sprinter → latent → Latent-CLIP (skip VAE decode + CLIP)
             from latent_clip_utils import encode_latents_clip
 
             def sprinter_latent_clip_forward(ctrl):
-                var_latents = sprinter(
-                    prompt=[variation_prompt] * ctrl.shape[0],
-                    image=ctrl, num_inference_steps=2, guidance_scale=0.0,
-                    controlnet_conditioning_scale=0.8,
-                    output_type="latent", return_dict=True,
-                ).images
+                kw = {**sp_kwargs, "image": ctrl}
+                var_latents = sprinter(**kw).images
                 with torch.cuda.amp.autocast(enabled=False):
                     return encode_latents_clip(
                         var_latents.float(), latent_clip_model, vae_scaling_factor)
@@ -174,12 +188,8 @@ def run_dps_step_clip(latents, latents_step, noise_pred, pixel_x0_norm,
         else:
             # Standard path: sprinter → VAE decode → CLIP ViT-L/14
             def sprinter_vae_clip_forward(ctrl):
-                var_latents = sprinter(
-                    prompt=[variation_prompt] * ctrl.shape[0],
-                    image=ctrl, num_inference_steps=2, guidance_scale=0.0,
-                    controlnet_conditioning_scale=0.8,
-                    output_type="latent", return_dict=True,
-                ).images
+                kw = {**sp_kwargs, "image": ctrl}
+                var_latents = sprinter(**kw).images
                 var_pixels = vae.decode(
                     (var_latents.float() / vae_scaling_factor).to(vae.dtype)
                 ).sample

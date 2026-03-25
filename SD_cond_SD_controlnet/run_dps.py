@@ -334,11 +334,25 @@ def main():
         return f"alloc={a:.2f}GB  reserved={r:.2f}GB"
     print(f"[MEM] After prompt encoding: {gpu_mem()}", flush=True)
 
-    # Offload architect text encoders — not needed during DPS loop (prompts pre-encoded)
+    # Pre-encode sprinter variation prompt (same prompt used 100× per DPS step)
+    with torch.no_grad():
+        (
+            sprinter_prompt_embeds, _, sprinter_pooled_prompt_embeds, _,
+        ) = sprinter.encode_prompt(
+            prompt=args.sprinter_variation_prompt,
+            device=device,
+            do_classifier_free_guidance=False,
+            num_images_per_prompt=1,
+        )
+    print(f"[MEM] After sprinter prompt encoding: {gpu_mem()}", flush=True)
+
+    # Offload ALL text encoders — not needed during DPS loop (prompts pre-encoded)
     architect.text_encoder.to("cpu")
     architect.text_encoder_2.to("cpu")
+    sprinter.text_encoder.to("cpu")
+    sprinter.text_encoder_2.to("cpu")
     torch.cuda.empty_cache()
-    print(f"[MEM] After offloading architect text encoders: {gpu_mem()}", flush=True)
+    print(f"[MEM] After offloading all text encoders: {gpu_mem()}", flush=True)
 
     architect.scheduler.set_timesteps(n_steps, device=device)
     timesteps = architect.scheduler.timesteps
@@ -500,6 +514,8 @@ def main():
             loss_fn=loss_fn,
             loss_scale=args.loss_scale,
             latent_clip_model=latent_clip_model,
+            sprinter_prompt_embeds=sprinter_prompt_embeds,
+            sprinter_pooled_prompt_embeds=sprinter_pooled_prompt_embeds,
         )
 
         grad_norm = grad.norm().item()

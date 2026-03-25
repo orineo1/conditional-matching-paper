@@ -327,6 +327,13 @@ def main():
             num_images_per_prompt=1,
         )
 
+    # ── GPU memory audit ──────────────────────────────────────────────────────
+    def gpu_mem():
+        a = torch.cuda.memory_allocated() / 1e9
+        r = torch.cuda.memory_reserved() / 1e9
+        return f"alloc={a:.2f}GB  reserved={r:.2f}GB"
+    print(f"[MEM] After prompt encoding: {gpu_mem()}", flush=True)
+
     architect.scheduler.set_timesteps(n_steps, device=device)
     timesteps = architect.scheduler.timesteps
 
@@ -425,12 +432,15 @@ def main():
     visualize_step(sd_baseline, architect, sprinter, target_clip_np,
                    num_cond=4, save_path=baseline_save_path, pca_fixed=pca_fixed)
     print("✅ Baseline visualization saved.", flush=True)
+    gc.collect(); torch.cuda.empty_cache()
+    print(f"[MEM] Before DPS loop: {gpu_mem()}", flush=True)
 
     # ── 9. DPS loop ────────────────────────────────────────────────────────────
     for i, t in enumerate(timesteps_to_run):
         print(f"\n{'='*60}", flush=True)
         print(f"Step {i+1}/{len(timesteps_to_run)}  (t={t})", flush=True)
         print(f"{'='*60}", flush=True)
+        print(f"  [MEM] start: {gpu_mem()}", flush=True)
 
         latents_step         = latents.detach().requires_grad_(True)
         latents_step_regular = latents_regular.detach()
@@ -463,6 +473,7 @@ def main():
         pixel_x0 = torch.utils.checkpoint.checkpoint(
             vae_decode_checkpoint, pred_x0_scaled, use_reentrant=False)
         pixel_x0_norm = torch.clamp((pixel_x0 + 1.0) / 2.0, 0.0, 1.0)
+        print(f"  [MEM] after VAE decode: {gpu_mem()}", flush=True)
 
         # CLIP-MMD + gradient
         grad, mmd_loss, zeta_i, loss_norm, vl_clip_flat = run_dps_step_clip(

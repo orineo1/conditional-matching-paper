@@ -52,10 +52,8 @@ def encode_latents_clip(latent_tensor, model, vae_scaling_factor):
     # Undo VAE scaling
     latents_raw = latent_tensor / vae_scaling_factor
 
-    # Channels-first [B,4,64,64] → channels-last [B,64,64,4]
-    latents_cl = latents_raw.permute(0, 2, 3, 1).contiguous()
-
-    emb = model.encode_image(latents_cl.float())
+    # Keep channels-first [B,4,64,64] — conv1 expects 4 input channels
+    emb = model.encode_image(latents_raw.float())
     emb = emb / emb.norm(dim=-1, keepdim=True)
     return emb  # [B, 512]
 

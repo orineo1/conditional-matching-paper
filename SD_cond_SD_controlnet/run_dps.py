@@ -153,8 +153,8 @@ def main():
         from latent_clip_utils import load_latent_clip_model
         print("Loading Latent-CLIP model...", flush=True)
         latent_clip_model, latent_clip_tokenizer = load_latent_clip_model(device)
-        # Still load standard CLIP for final PCA visualization of PIL photos
-        clip_model, clip_processor = load_clip_model(device)
+        # Load standard CLIP on CPU — only needed for final PCA visualization
+        clip_model, clip_processor = load_clip_model("cpu")
         print("Latent-CLIP + standard CLIP loaded.", flush=True)
     else:
         clip_model, clip_processor = load_clip_model(device)

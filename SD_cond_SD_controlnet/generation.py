@@ -143,7 +143,9 @@ def run_dps_step_clip(latents, latents_step, noise_pred, pixel_x0_norm,
     from clip_utils import encode_images_clip
 
     device = pixel_x0_norm.device
-    if latent_clip_model is None:
+    if latent_clip_model is not None:
+        latent_clip_model.to(device)
+    else:
         clip_model.to(device)
 
     variation_clip_list = []
@@ -211,5 +213,12 @@ def run_dps_step_clip(latents, latents_step, noise_pred, pixel_x0_norm,
 
     vl_clip_flat = variation_clip_embs.detach().cpu().numpy()
     del variation_clip_list, variation_clip_embs
+
+    # Offload CLIP model to CPU after gradient computation
+    if latent_clip_model is not None:
+        latent_clip_model.to("cpu")
+    else:
+        clip_model.to("cpu")
+    torch.cuda.empty_cache()
 
     return grad, loss_scaled , zeta_i, loss_norm, vl_clip_flat

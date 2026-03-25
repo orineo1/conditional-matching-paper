@@ -34,6 +34,8 @@ def load_latent_clip_model(device):
     model.eval()
     for p in model.parameters():
         p.requires_grad_(False)
+    # Keep on CPU by default — move to GPU only when encoding
+    model.to("cpu")
 
     tokenizer = latent_clip.get_tokenizer(model_name)
     return model, tokenizer
@@ -44,7 +46,7 @@ def encode_latents_clip(latent_tensor, model, vae_scaling_factor):
     Encode VAE latents directly through Latent-CLIP (no pixel decode).
 
     latent_tensor: [B, 4, 64, 64] — channels-first VAE latents (already × scaling_factor)
-    model: Latent-CLIP model
+    model: Latent-CLIP model (must already be on same device as latent_tensor)
     vae_scaling_factor: float — divide latents by this to get raw latent space
 
     Returns: [B, 512] L2-normalized embeddings (differentiable)

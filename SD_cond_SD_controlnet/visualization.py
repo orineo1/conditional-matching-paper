@@ -38,13 +38,15 @@ def plot_row(images, title, count=5, save_path=None):
 def visualize_step(sd, architect, sprinter, target_clip_np, num_cond=4, save_path=None, pca_fixed=None,
                    sprinter_prompt_embeds=None, sprinter_pooled_prompt_embeds=None):
     i = sd['step']
+    # Use VAE device directly — architect.device may return CPU after text encoder offload
+    dev = architect.vae.device
     with torch.no_grad():
-        img_xt_reg  = latent_to_pil(sd['latents_step_regular_cpu'].to(architect.device), architect.vae, architect.image_processor)
-        img_x0_reg  = latent_to_pil(sd['pred_x0_regular_cpu'].to(architect.device),      architect.vae, architect.image_processor)
-        img_xt_dps  = latent_to_pil(sd['latents_step_cpu'].to(architect.device),          architect.vae, architect.image_processor)
-        img_x0_dps  = latent_to_pil(sd['pred_x0_cpu'].to(architect.device),               architect.vae, architect.image_processor)
+        img_xt_reg  = latent_to_pil(sd['latents_step_regular_cpu'].to(dev), architect.vae, architect.image_processor)
+        img_x0_reg  = latent_to_pil(sd['pred_x0_regular_cpu'].to(dev),      architect.vae, architect.image_processor)
+        img_xt_dps  = latent_to_pil(sd['latents_step_cpu'].to(dev),          architect.vae, architect.image_processor)
+        img_x0_dps  = latent_to_pil(sd['pred_x0_cpu'].to(dev),               architect.vae, architect.image_processor)
 
-        pred_x0_dev = sd['pred_x0_cpu'].to(architect.device)
+        pred_x0_dev = sd['pred_x0_cpu'].to(dev)
         px = architect.vae.decode(pred_x0_dev.to(architect.vae.dtype) / architect.vae.config.scaling_factor).sample
         px_norm = torch.clamp((px + 1.0) / 2.0, 0.0, 1.0)
 

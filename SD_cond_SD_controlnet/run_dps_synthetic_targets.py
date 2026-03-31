@@ -136,6 +136,7 @@ def main():
 
     # ── wandb ──────────────────────────────────────────────────────────────────
     import wandb
+    os.environ["WANDB_MODE"] = "disabled"
 
     # ── 1. Load models ─────────────────────────────────────────────────────────
     print("Loading models...", flush=True)

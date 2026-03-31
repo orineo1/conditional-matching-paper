@@ -327,6 +327,11 @@ def main():
         print(f"\n── {name} ({args.n_attempts} attempts) ──", flush=True)
         data = {"mmd": [], "l1": [], "time": [], "x_pred": []}
         for i in range(args.n_attempts):
+            attempt_seed = args.seed + i
+            torch.manual_seed(attempt_seed)
+            np.random.seed(attempt_seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(attempt_seed)
             t0 = time.time()
             x_pred, _ = run_fn()
             elapsed = time.time() - t0
@@ -341,6 +346,7 @@ def main():
             data["time"].append(elapsed)
             data["x_pred"].append(
                 x_pred.detach().cpu().tolist() if isinstance(x_pred, torch.Tensor) else x_pred)
+            data.setdefault("seed", []).append(attempt_seed)
             print(
                 f"  [{i + 1:2d}/{args.n_attempts}] pred_x0:{x_pred_vals}  mmd={mmd:.4f}  l1={l1:.4f}  t={elapsed:.1f}s",
                 flush=True)
@@ -384,7 +390,7 @@ def main():
         json.dump(summary, f, indent=2)
 
     results_ser = {
-        m: {k: ([float(v) for v in vals] if k != "x_pred" else vals)
+        m: {k: ([float(v) for v in vals] if k not in ("x_pred", "seed") else vals)
             for k, vals in d.items()}
         for m, d in results.items()
     }

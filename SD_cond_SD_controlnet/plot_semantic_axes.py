@@ -4,7 +4,6 @@ Project age_gender_combined reference images onto semantic CLIP axes:
   y-axis: age axis     (old − young text embeddings, orthogonalized against gender)
 """
 
-import json
 import os
 import sys
 
@@ -38,17 +37,23 @@ def encode_text(texts, model, processor, device):
 
 
 def load_images_and_ages(folder, n, seed=42):
-    ages_path = os.path.join(folder, "ages.json")
-    with open(ages_path) as f:
-        ages_data = json.load(f)   # list of {filename, age}
+    # Parse age directly from filename: age_{age:03d}_idx_{idx:04d}.png
+    all_files = sorted([f for f in os.listdir(folder) if f.endswith(".png")])
+    file_ages = []
+    for fname in all_files:
+        try:
+            age = int(fname.split("_")[1])
+            file_ages.append((fname, age))
+        except (IndexError, ValueError):
+            continue
     rng = np.random.default_rng(seed)
-    idx = rng.choice(len(ages_data), size=min(n, len(ages_data)), replace=False)
-    selected = [ages_data[i] for i in idx]
+    idx = rng.choice(len(file_ages), size=min(n, len(file_ages)), replace=False)
     imgs, ages = [], []
-    for item in selected:
-        img = Image.open(os.path.join(folder, item["filename"])).convert("RGB")
+    for i in idx:
+        fname, age = file_ages[i]
+        img = Image.open(os.path.join(folder, fname)).convert("RGB")
         imgs.append(img)
-        ages.append(item["age"])
+        ages.append(age)
     return imgs, np.array(ages)
 
 

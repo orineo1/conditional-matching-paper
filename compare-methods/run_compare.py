@@ -234,11 +234,12 @@ def plot_results(results, output_dir):
 
 def print_summary(results):
     print("\n" + "=" * 65)
-    print(f"{'Method':<12} {'MMD mean':>10} {'±':>4} {'L1 mean':>9}")
-    print("=" * 45)
+    print(f"{'Method':<12} {'MMD (all)':>10} {'MMD (top10)':>12} {'L1 (top10)':>11}")
+    print("=" * 65)
     for method, data in results.items():
-        print(f"{method:<12} {np.mean(data['mmd']):>10.4f} {np.std(data['mmd']):>4.3f} "
-              f"{np.mean(data['l1']):>9.4f}")
+        print(f"{method:<12} {np.mean(data['mmd']):>10.4f} "
+              f"{np.mean(data['top10_mmd']):>12.4f} "
+              f"{np.mean(data['top10_l1']):>11.4f}")
     print("=" * 65)
 
 
@@ -325,7 +326,7 @@ def main():
 
     def _run_method(name, run_fn):
         print(f"\n── {name} ({args.n_attempts} attempts) ──", flush=True)
-        data = {"mmd": [], "l1": [], "time": [], "x_pred": []}
+        data = {"mmd": [], "l1": [], "time": [], "x_pred": [], "final_loss": [], "seed": []}
         for i in range(args.n_attempts):
             attempt_seed = args.seed + i
             torch.manual_seed(attempt_seed)
@@ -333,28 +334,32 @@ def main():
             if torch.cuda.is_available():
                 torch.cuda.manual_seed_all(attempt_seed)
             t0 = time.time()
-            x_pred, _ = run_fn()
+            x_pred, final_loss = run_fn()
             elapsed = time.time() - t0
             l1, mmd, _ = evaluate_result(
                 x_pred, mu_list, Sigma_list, alpha, mog_means, mog_variances, weights,
                 args.nsamples_swd, args.num_projections_swd,
             )
             x_pred_vals = x_pred.detach().cpu().flatten().tolist()
-
             data["mmd"].append(mmd)
             data["l1"].append(l1)
             data["time"].append(elapsed)
-            data["x_pred"].append(
-                x_pred.detach().cpu().tolist() if isinstance(x_pred, torch.Tensor) else x_pred)
-            data.setdefault("seed", []).append(attempt_seed)
+            data["final_loss"].append(final_loss.item() if isinstance(final_loss, torch.Tensor) else float(final_loss))
+            data["seed"].append(attempt_seed)
+            data["x_pred"].append(x_pred.detach().cpu().tolist() if isinstance(x_pred, torch.Tensor) else x_pred)
             print(
-                f"  [{i + 1:2d}/{args.n_attempts}] pred_x0:{x_pred_vals}  mmd={mmd:.4f}  l1={l1:.4f}  t={elapsed:.1f}s",
+                f"  [{i + 1:2d}/{args.n_attempts}] seed={attempt_seed}  pred_x0:{x_pred_vals}  mmd={mmd:.4f}  l1={l1:.4f}  loss={data['final_loss'][-1]:.4f}  t={elapsed:.1f}s",
                 flush=True)
-            if not args.no_wandb:
-                import wandb
-                wandb.log({f"{name.lower()}/mmd": mmd,
-                           f"{name.lower()}/l1": l1, f"{name.lower()}/time": elapsed,
-                           "attempt": i + 1},)
+
+        # ── Top-10 selection by final loss ────────────────────────────────────────
+        k = min(10, len(data["final_loss"]))
+        top10_idx = np.argsort(data["final_loss"])[:k]
+        print(f"\n  Top-{k} by final loss (indices): {top10_idx.tolist()}", flush=True)
+        data["top10_mmd"] = [data["mmd"][i] for i in top10_idx]
+        data["top10_l1"] = [data["l1"][i] for i in top10_idx]
+        data["top10_seed"] = [data["seed"][i] for i in top10_idx]
+        print(f"  Top-{k} MMD mean±std: {np.mean(data['top10_mmd']):.4f} ± {np.std(data['top10_mmd']):.4f}", flush=True)
+
         return data
 
     if not args.skip_lgd:

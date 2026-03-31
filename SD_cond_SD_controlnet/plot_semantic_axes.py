@@ -28,9 +28,11 @@ N_SAMPLE    = 50  # per gender
 
 
 def encode_text(texts, model, processor, device):
-    inputs = processor(text=texts, return_tensors="pt", padding=True).to(device)
+    inputs = processor.tokenizer(texts, return_tensors="pt", padding=True).to(device)
     with torch.no_grad():
         feats = model.get_text_features(**inputs)
+    if not isinstance(feats, torch.Tensor):
+        feats = feats.pooler_output
     feats = feats / feats.norm(dim=-1, keepdim=True)
     return feats.cpu().float().numpy()
 

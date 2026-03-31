@@ -28,12 +28,13 @@ echo "Models dir: $MODELS_DIR" | tee -a "$LOG_FILE"
 echo "Output dir: $OUTPUT_DIR" | tee -a "$LOG_FILE"
 echo "Log file: $LOG_FILE (deleted on success)" | tee -a "$LOG_FILE"
 
-pip install -q flow_matching POT
+$PYTHON -m pip install -q flow_matching POT
+
 
 mkdir -p compare-methods/output
 
 # ── Run comparison, capturing all output ──────────────────────────────────────
-python compare-methods/run_compare.py \
+$PYTHON compare-methods/run_compare.py \
     --models_dir "$MODELS_DIR" \
     --output_dir "$OUTPUT_DIR" \
     --n_attempts 25 \

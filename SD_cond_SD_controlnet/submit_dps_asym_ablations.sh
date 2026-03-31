@@ -1,13 +1,13 @@
 #!/bin/bash
-#SBATCH --job-name=dps-asym-abl
-#SBATCH --output=/sci/labs/orzuk/shaulytolk/conditional-matching-paper/dps_asym_abl_%A_%a.log
-#SBATCH --error=/sci/labs/orzuk/shaulytolk/conditional-matching-paper/dps_asym_abl_%A_%a.err
+#SBATCH --job-name=dps-slerp-abl
+#SBATCH --output=/sci/labs/orzuk/shaulytolk/conditional-matching-paper/dps_slerp_abl_%A_%a.log
+#SBATCH --error=/sci/labs/orzuk/shaulytolk/conditional-matching-paper/dps_slerp_abl_%A_%a.err
 #SBATCH --time=06:00:00
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=48G
 #SBATCH --partition=salmon
-#SBATCH --array=0-2
+#SBATCH --array=0-1
 
 # Conda setup
 export PATH="/usr/local/spack/opt/spack/linux-debian12-x86_64/gcc-12.2.0/miniconda3-24.3.0-iqeknetqo7ngpr57d6gmu3dg4rzlcgk6/bin:$PATH"
@@ -24,39 +24,36 @@ cd /sci/labs/orzuk/shaulytolk/conditional-matching-paper
 mkdir -p SD_cond_SD_controlnet/output
 
 # Ablation variants:
-#   0: zeta=2 (weaker guidance)
-#   1: start_step=150 (less noising, strength=0.4)
-#   2: seed=42 (different random seed)
+#   0: n_steps=250, start_step=125
+#   1: n_steps=500, start_step=250
 
 ZETA=5.0
-START=125
 SEED=1
-SUFFIX=""
 
 case $SLURM_ARRAY_TASK_ID in
-    0) ZETA=2.0;  SUFFIX="zeta2" ;;
-    1) START=150;  SUFFIX="lessnoise" ;;
-    2) SEED=42;    SUFFIX="seed42" ;;
+    0) N_STEPS=250; START=125; SUFFIX="steps250" ;;
+    1) N_STEPS=500; START=250; SUFFIX="steps500" ;;
 esac
 
-echo "Ablation $SLURM_ARRAY_TASK_ID: $SUFFIX (zeta=$ZETA, start=$START, seed=$SEED)"
+echo "Ablation $SLURM_ARRAY_TASK_ID: $SUFFIX (zeta=$ZETA, n_steps=$N_STEPS, start=$START, seed=$SEED)"
 echo "Job ID: ${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
 
-python SD_cond_SD_controlnet/run_dps.py \
-    --output_dir SD_cond_SD_controlnet/output/dps_asym_${SUFFIX}_${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID} \
+python SD_cond_SD_controlnet/run_dps_synthetic_targets.py \
+    --output_dir SD_cond_SD_controlnet/output/dps_slerp_${SUFFIX}_${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID} \
     --wandb_project "conditional-flow" \
-    --n_steps 250 \
+    --anchor_a_path SD_cond_SD_controlnet/assets/anchor_man.png \
+    --anchor_b_path SD_cond_SD_controlnet/assets/anchor_woman.png \
+    --scribble_path SD_cond_SD_controlnet/assets/scribble.png \
+    --target_mode slerp \
+    --n_targets 100 \
+    --n_steps $N_STEPS \
     --start_step $START \
     --num_variations 100 \
-    --n_targets 100 \
-    --male_ratio 0.3 \
     --base_zeta $ZETA \
     --guidance_scale 0.0 \
     --controlnet_scale 0.5 \
     --n_eval 100 \
     --sprinter_variation_prompt "a superrealistic professional photograph of" \
-    --sprinter_target_man_prompt "a superrealistic portrait photograph of a man, studio lighting" \
-    --sprinter_target_woman_prompt "a superrealistic portrait photograph of a woman, studio lighting" \
     --sprinter_eval_prompt "a superrealistic professional photograph of" \
     --architect_model_id "stabilityai/stable-diffusion-xl-base-1.0" \
     --sprinter_model_id "stabilityai/sdxl-turbo" \
@@ -67,4 +64,4 @@ python SD_cond_SD_controlnet/run_dps.py \
     --kernel_alpha 1.0 \
     --seed $SEED
 
-echo "Ablation $SUFFIX complete."
+echo "Slerp ablation $SUFFIX complete."

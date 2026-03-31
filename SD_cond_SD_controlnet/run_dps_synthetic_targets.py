@@ -348,12 +348,15 @@ def main():
     print(f"wandb run: {run.name}", flush=True)
 
     # Log input images
-    wandb.log({
-        "scribble":         wandb.Image(scribble_pil),
-        "anchor_a":         wandb.Image(anchor_a_pil),
-        "anchor_b":         wandb.Image(anchor_b_pil),
-        "target_clip_pca":  wandb.Image(pca_path),
-    })
+    wandb_log = {
+        "scribble":        wandb.Image(scribble_pil),
+        "target_clip_pca": wandb.Image(pca_path),
+    }
+    if anchor_a_pil is not None:
+        wandb_log["anchor_a"] = wandb.Image(anchor_a_pil)
+    if anchor_b_pil is not None:
+        wandb_log["anchor_b"] = wandb.Image(anchor_b_pil)
+    wandb.log(wandb_log)
     print("Input images logged to wandb.", flush=True)
 
     # ── 8. Prepare DPS ─────────────────────────────────────────────────────────

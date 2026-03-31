@@ -29,7 +29,8 @@ mkdir -p SD_cond_SD_controlnet/output
 
 python SD_cond_SD_controlnet/run_dps_synthetic_targets.py \
     --output_dir SD_cond_SD_controlnet/output/dps_interpolated_${SLURM_JOB_ID} \
-    --target_mode interpolated \
+#    --target_mode interpolated \
+    --target_mode slerp \
     --anchor_a_path manly_man.png \
     --anchor_b_path feminine_woman.png \
     --scribble_path scripts/assets/zeta5_final_guided.png \

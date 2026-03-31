@@ -60,7 +60,7 @@ def parse_args():
                    help="Path to anchor image A (e.g. manly_man.png)")
     p.add_argument("--anchor_b_path", type=str, required=True,
                    help="Path to anchor image B (e.g. feminine_woman.png)")
-    p.add_argument("--target_mode", type=str, required=True, choices=["binary", "interpolated"],
+    p.add_argument("--target_mode", type=str, required=True, choices=["binary", "interpolated", "slerp"],
                    help="binary: 50/50 copies of A,B; interpolated: geodesic interpolation")
     p.add_argument("--n_targets", type=int, default=100,
                    help="Total number of synthetic target embeddings")
@@ -177,11 +177,32 @@ def main():
         ], dim=0)
         print(f"  Binary target: {n_a}× A + {n_b}× B = {N} embeddings")
     elif args.target_mode == "interpolated":
-        # Geodesic interpolation: normalize(α·A + (1-α)·B) for evenly spaced α
-        alphas = torch.linspace(0.0, 1.0, N, device=device)
-        interp = alphas.unsqueeze(1) * e_a + (1.0 - alphas.unsqueeze(1)) * e_b  # [N, 768]
-        all_clip_embeddings = interp / interp.norm(dim=-1, keepdim=True)
-        print(f"  Interpolated target: {N} points along A→B geodesic")
+        a = e_a / e_a.norm(dim=-1, keepdim=True)  # [1, 768]
+        b = e_b / e_b.norm(dim=-1, keepdim=True)  # [1, 768]
+        dot = (a * b).sum().clamp(-1, 1)
+        omega = torch.acos(dot)
+        sin_omega = torch.sin(omega)
+        alphas = torch.linspace(0.0, 1.0, N, device=device)  # [N]
+
+        if sin_omega.abs() < 1e-6:
+            # nearly identical embeddings — fall back to lerp
+            print("  Warning: anchors nearly identical (sin_omega≈0), falling back to lerp", flush=True)
+            interp = (1 - alphas).unsqueeze(1) * a + alphas.unsqueeze(1) * b
+        else:
+            interp = (
+                    (torch.sin((1 - alphas) * omega) / sin_omega).unsqueeze(1) * a +
+                    (torch.sin(alphas * omega) / sin_omega).unsqueeze(1) * b
+            )  # [N, 768], already unit norm by slerp definition
+
+        all_clip_embeddings = interp / interp.norm(dim=-1, keepdim=True)  # renorm for fp safety
+        print(f"  omega={omega.item():.4f} rad ({omega.item() * 180 / 3.14159:.1f}°), sin_omega={sin_omega.item():.4f}")
+        print(f"  Slerp target: {N} points along A→B geodesic")
+    # elif args.target_mode == "interpolated":
+    #     # Geodesic interpolation: normalize(α·A + (1-α)·B) for evenly spaced α
+    #     alphas = torch.linspace(0.0, 1.0, N, device=device)
+    #     interp = alphas.unsqueeze(1) * e_a + (1.0 - alphas.unsqueeze(1)) * e_b  # [N, 768]
+    #     all_clip_embeddings = interp / interp.norm(dim=-1, keepdim=True)
+    #     print(f"  Interpolated target: {N} points along A→B geodesic")
 
     print(f"  Target embeddings shape: {all_clip_embeddings.shape}")
     norms = all_clip_embeddings.norm(dim=-1)

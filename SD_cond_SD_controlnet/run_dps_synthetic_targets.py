@@ -56,14 +56,24 @@ def parse_args():
     p.add_argument("--wandb_entity", type=str, default="conditional-matching")
 
     # Synthetic targets
-    p.add_argument("--anchor_a_path", type=str, required=True,
-                   help="Path to anchor image A (e.g. manly_man.png)")
-    p.add_argument("--anchor_b_path", type=str, required=True,
-                   help="Path to anchor image B (e.g. feminine_woman.png)")
-    p.add_argument("--target_mode", type=str, required=True, choices=["binary", "interpolated"],
-                   help="binary: 50/50 copies of A,B; interpolated: geodesic interpolation")
+    p.add_argument("--anchor_a_path", type=str, default=None,
+                   help="Path to anchor image A (required for binary/interpolated/gender_bimodal)")
+    p.add_argument("--anchor_b_path", type=str, default=None,
+                   help="Path to anchor image B (required for binary/interpolated/gender_bimodal)")
+    p.add_argument("--target_mode", type=str, required=True,
+                   choices=["binary", "interpolated",
+                            "age_continuous", "gender_bimodal", "age_gender_combined"],
+                   help=("binary/gender_bimodal: 50/50 copies of A,B; "
+                         "interpolated: geodesic A→B; "
+                         "age_continuous: real CLIP embeddings of age_* reference images; "
+                         "age_gender_combined: age_woman + age_man reference images"))
     p.add_argument("--n_targets", type=int, default=100,
                    help="Total number of synthetic target embeddings")
+    p.add_argument("--reference_images_dir", type=str, default="reference_images",
+                   help="Base dir for age reference images (contains age_man/ and age_woman/)")
+    p.add_argument("--reference_gender", type=str, default="woman",
+                   choices=["man", "woman"],
+                   help="Gender subdir to use for age_continuous mode")
     p.add_argument("--scribble_path", type=str, required=True,
                    help="Path to input scribble image for DPS")
 
@@ -147,41 +157,113 @@ def main():
     scribble_pil.save(os.path.join(args.output_dir, "scribble.png"))
     print("Scribble loaded.", flush=True)
 
-    # ── 3-6. Construct synthetic CLIP target embeddings from anchor images ────
-    print(f"Loading anchor images...", flush=True)
-    anchor_a_pil = Image.open(args.anchor_a_path).convert("RGB").resize((512, 512))
-    anchor_b_pil = Image.open(args.anchor_b_path).convert("RGB").resize((512, 512))
-    anchor_a_pil.save(os.path.join(args.output_dir, "anchor_a.png"))
-    anchor_b_pil.save(os.path.join(args.output_dir, "anchor_b.png"))
+    # ── 3-6. Construct target CLIP embeddings ─────────────────────────────────
+    anchor_a_pil = anchor_b_pil = None
+    e_a = e_b = None
+    anchor_sim = None
+    target_ages = None       # list[int] or None — set for age-based modes
+    target_genders = None    # list[int] 0/1 or None — set for combined mode
 
-    # Encode anchors to CLIP
-    with torch.no_grad():
-        anchor_a_tensor = TF.to_tensor(anchor_a_pil).unsqueeze(0).to(device)
-        anchor_b_tensor = TF.to_tensor(anchor_b_pil).unsqueeze(0).to(device)
-        e_a = encode_images_clip(anchor_a_tensor, clip_model, clip_processor)  # [1, 768]
-        e_b = encode_images_clip(anchor_b_tensor, clip_model, clip_processor)  # [1, 768]
+    anchor_modes = {"binary", "interpolated", "gender_bimodal"}
+    age_modes    = {"age_continuous", "age_gender_combined"}
 
-    anchor_sim = (e_a @ e_b.T).item()
-    print(f"  Anchor A: {args.anchor_a_path}")
-    print(f"  Anchor B: {args.anchor_b_path}")
-    print(f"  Anchor cosine similarity: {anchor_sim:.4f}")
+    if args.target_mode in anchor_modes:
+        if args.anchor_a_path is None or args.anchor_b_path is None:
+            raise ValueError(f"--anchor_a_path and --anchor_b_path are required "
+                             f"for target_mode={args.target_mode}")
+        print("Loading anchor images...", flush=True)
+        anchor_a_pil = Image.open(args.anchor_a_path).convert("RGB").resize((512, 512))
+        anchor_b_pil = Image.open(args.anchor_b_path).convert("RGB").resize((512, 512))
+        anchor_a_pil.save(os.path.join(args.output_dir, "anchor_a.png"))
+        anchor_b_pil.save(os.path.join(args.output_dir, "anchor_b.png"))
+
+        with torch.no_grad():
+            anchor_a_tensor = TF.to_tensor(anchor_a_pil).unsqueeze(0).to(device)
+            anchor_b_tensor = TF.to_tensor(anchor_b_pil).unsqueeze(0).to(device)
+            e_a = encode_images_clip(anchor_a_tensor, clip_model, clip_processor)
+            e_b = encode_images_clip(anchor_b_tensor, clip_model, clip_processor)
+
+        anchor_sim = (e_a @ e_b.T).item()
+        print(f"  Anchor A: {args.anchor_a_path}")
+        print(f"  Anchor B: {args.anchor_b_path}")
+        print(f"  Anchor cosine similarity: {anchor_sim:.4f}")
+
+    def _load_reference_dir(ref_dir):
+        """Load all PNG images from ref_dir, return (pil_list, age_list)."""
+        import re
+        pngs = sorted([f for f in os.listdir(ref_dir) if f.endswith(".png")])
+        pil_imgs, ages_list = [], []
+        for fname in pngs:
+            m = re.match(r"age_(\d+)_", fname)
+            if m is None:
+                continue
+            pil_imgs.append(Image.open(os.path.join(ref_dir, fname)).convert("RGB").resize((512, 512)))
+            ages_list.append(int(m.group(1)))
+        return pil_imgs, ages_list
+
+    def _encode_pil_list(pil_imgs):
+        """Encode a list of PIL images to CLIP embeddings [N, 768]."""
+        tensors = torch.cat(
+            [TF.to_tensor(img).unsqueeze(0) for img in pil_imgs], dim=0
+        ).to(device)
+        with torch.no_grad():
+            embs = encode_images_clip(tensors, clip_model, clip_processor)
+        return embs
 
     N = args.n_targets
-    if args.target_mode == "binary":
-        # Bimodal: N/2 copies of each anchor
+
+    if args.target_mode in ("binary", "gender_bimodal"):
         n_a = N // 2
         n_b = N - n_a
-        all_clip_embeddings = torch.cat([
-            e_a.repeat(n_a, 1),
-            e_b.repeat(n_b, 1),
-        ], dim=0)
-        print(f"  Binary target: {n_a}× A + {n_b}× B = {N} embeddings")
+        all_clip_embeddings = torch.cat([e_a.repeat(n_a, 1), e_b.repeat(n_b, 1)], dim=0)
+        print(f"  {args.target_mode} target: {n_a}× A + {n_b}× B = {N} embeddings")
+
     elif args.target_mode == "interpolated":
-        # Geodesic interpolation: normalize(α·A + (1-α)·B) for evenly spaced α
         alphas = torch.linspace(0.0, 1.0, N, device=device)
-        interp = alphas.unsqueeze(1) * e_a + (1.0 - alphas.unsqueeze(1)) * e_b  # [N, 768]
+        interp = alphas.unsqueeze(1) * e_a + (1.0 - alphas.unsqueeze(1)) * e_b
         all_clip_embeddings = interp / interp.norm(dim=-1, keepdim=True)
         print(f"  Interpolated target: {N} points along A→B geodesic")
+
+    elif args.target_mode == "age_continuous":
+        ref_dir = os.path.join(args.reference_images_dir, f"age_{args.reference_gender}")
+        if not os.path.isdir(ref_dir):
+            raise FileNotFoundError(f"Reference dir not found: {ref_dir}")
+        pil_imgs, target_ages = _load_reference_dir(ref_dir)
+        if len(pil_imgs) == 0:
+            raise RuntimeError(f"No age_*.png images found in {ref_dir}")
+        print(f"  age_continuous: loaded {len(pil_imgs)} images from {ref_dir}", flush=True)
+        all_clip_embeddings = _encode_pil_list(pil_imgs)
+        N = all_clip_embeddings.shape[0]
+        print(f"  Age range: [{min(target_ages)}, {max(target_ages)}]  mean={np.mean(target_ages):.1f}")
+
+    elif args.target_mode == "age_gender_combined":
+        half = N // 2
+        for gender_tag in ("woman", "man"):
+            ref_dir = os.path.join(args.reference_images_dir, f"age_{gender_tag}")
+            if not os.path.isdir(ref_dir):
+                raise FileNotFoundError(f"Reference dir not found: {ref_dir}")
+
+        ref_dir_w = os.path.join(args.reference_images_dir, "age_woman")
+        ref_dir_m = os.path.join(args.reference_images_dir, "age_man")
+        pil_w, ages_w = _load_reference_dir(ref_dir_w)
+        pil_m, ages_m = _load_reference_dir(ref_dir_m)
+
+        # Sample half from each; take first `half` after shuffle for reproducibility
+        rng_np = np.random.default_rng(42)
+        idx_w = rng_np.choice(len(pil_w), size=min(half, len(pil_w)), replace=False)
+        idx_m = rng_np.choice(len(pil_m), size=min(half, len(pil_m)), replace=False)
+        pil_w = [pil_w[i] for i in idx_w]
+        pil_m = [pil_m[i] for i in idx_m]
+        ages_w = [ages_w[i] for i in idx_w]
+        ages_m = [ages_m[i] for i in idx_m]
+
+        emb_w = _encode_pil_list(pil_w)
+        emb_m = _encode_pil_list(pil_m)
+        all_clip_embeddings = torch.cat([emb_w, emb_m], dim=0)
+        target_ages    = ages_w + ages_m
+        target_genders = [0] * len(ages_w) + [1] * len(ages_m)  # 0=woman, 1=man
+        N = all_clip_embeddings.shape[0]
+        print(f"  age_gender_combined: {len(ages_w)} women + {len(ages_m)} men = {N} embeddings")
 
     print(f"  Target embeddings shape: {all_clip_embeddings.shape}")
     norms = all_clip_embeddings.norm(dim=-1)
@@ -191,14 +273,33 @@ def main():
     _pca = PCA(n_components=2)
     _coords = _pca.fit_transform(all_clip_embeddings.cpu().numpy())
     fig, ax = plt.subplots(figsize=(8, 6))
-    if args.target_mode == "binary":
-        ax.scatter(_coords[:n_a, 0], _coords[:n_a, 1], c='dodgerblue', label=f'Anchor A ({n_a})', alpha=0.7)
-        ax.scatter(_coords[n_a:, 0], _coords[n_a:, 1], c='crimson', label=f'Anchor B ({n_b})', alpha=0.7)
-    else:
-        sc = ax.scatter(_coords[:, 0], _coords[:, 1], c=np.linspace(0, 1, N), cmap='coolwarm', alpha=0.7)
+    if args.target_mode in ("binary", "gender_bimodal"):
+        n_a_plot = N // 2
+        ax.scatter(_coords[:n_a_plot, 0], _coords[:n_a_plot, 1],
+                   c='dodgerblue', label=f'Anchor A ({n_a_plot})', alpha=0.7)
+        ax.scatter(_coords[n_a_plot:, 0], _coords[n_a_plot:, 1],
+                   c='crimson', label=f'Anchor B ({N - n_a_plot})', alpha=0.7)
+        ax.legend()
+    elif args.target_mode == "interpolated":
+        sc = ax.scatter(_coords[:, 0], _coords[:, 1],
+                        c=np.linspace(0, 1, N), cmap='coolwarm', alpha=0.7)
         plt.colorbar(sc, ax=ax, label='α (A→B)')
-    ax.set_title(f"PCA of Synthetic Target CLIP Embeddings ({args.target_mode})")
-    ax.legend(); ax.grid(True, alpha=0.3)
+    elif args.target_mode == "age_continuous":
+        sc = ax.scatter(_coords[:, 0], _coords[:, 1],
+                        c=target_ages, cmap='plasma', alpha=0.7)
+        plt.colorbar(sc, ax=ax, label='Age')
+    elif args.target_mode == "age_gender_combined":
+        n_w = sum(1 for g in target_genders if g == 0)
+        sc_w = ax.scatter(_coords[:n_w, 0], _coords[:n_w, 1],
+                          c=target_ages[:n_w], cmap='Blues', alpha=0.7,
+                          marker='o', label='Woman', vmin=20, vmax=80)
+        sc_m = ax.scatter(_coords[n_w:, 0], _coords[n_w:, 1],
+                          c=target_ages[n_w:], cmap='Reds', alpha=0.7,
+                          marker='^', label='Man', vmin=20, vmax=80)
+        plt.colorbar(sc_m, ax=ax, label='Age')
+        ax.legend()
+    ax.set_title(f"PCA of Target CLIP Embeddings ({args.target_mode})")
+    ax.grid(True, alpha=0.3)
     pca_path = os.path.join(args.output_dir, "target_clip_pca.png")
     fig.savefig(pca_path, dpi=100, bbox_inches='tight'); plt.close(fig)
     pca_fixed = _pca
@@ -215,6 +316,8 @@ def main():
             "anchor_a_path":                args.anchor_a_path,
             "anchor_b_path":                args.anchor_b_path,
             "anchor_cosine_sim":            anchor_sim,
+            "reference_images_dir":         args.reference_images_dir,
+            "reference_gender":             args.reference_gender,
             "scribble_path":                args.scribble_path,
             "prompt":                       args.prompt,
             "negative_prompt":              args.negative_prompt,
@@ -589,16 +692,29 @@ def main():
     dps_c     = coords[n_target + n_ev :]
 
     fig, ax = plt.subplots(figsize=(9, 7))
-    if args.target_mode == "binary":
-        n_a = N // 2
-        ax.scatter(target_c[:n_a, 0], target_c[:n_a, 1],
-                   c="royalblue", alpha=0.6, s=60, label=f"Target A ({n_a})")
-        ax.scatter(target_c[n_a:, 0], target_c[n_a:, 1],
-                   c="crimson", alpha=0.6, s=60, label=f"Target B ({N - n_a})")
-    else:
+    if args.target_mode in ("binary", "gender_bimodal"):
+        n_a_plot = n_target // 2
+        ax.scatter(target_c[:n_a_plot, 0], target_c[:n_a_plot, 1],
+                   c="royalblue", alpha=0.6, s=60, label=f"Target A ({n_a_plot})")
+        ax.scatter(target_c[n_a_plot:, 0], target_c[n_a_plot:, 1],
+                   c="crimson", alpha=0.6, s=60, label=f"Target B ({n_target - n_a_plot})")
+    elif args.target_mode == "interpolated":
         sc = ax.scatter(target_c[:, 0], target_c[:, 1],
                         c=np.linspace(0, 1, n_target), cmap='coolwarm', alpha=0.6, s=60)
         plt.colorbar(sc, ax=ax, label='α (A→B)')
+    elif args.target_mode == "age_continuous":
+        sc = ax.scatter(target_c[:, 0], target_c[:, 1],
+                        c=target_ages, cmap='plasma', alpha=0.6, s=60)
+        plt.colorbar(sc, ax=ax, label='Age')
+    elif args.target_mode == "age_gender_combined":
+        n_w = sum(1 for g in target_genders if g == 0)
+        ax.scatter(target_c[:n_w, 0], target_c[:n_w, 1],
+                   c=target_ages[:n_w], cmap='Blues', alpha=0.6, s=60,
+                   marker='o', label='Woman', vmin=20, vmax=80)
+        sc_m = ax.scatter(target_c[n_w:, 0], target_c[n_w:, 1],
+                          c=target_ages[n_w:], cmap='Reds', alpha=0.6, s=60,
+                          marker='^', label='Man', vmin=20, vmax=80)
+        plt.colorbar(sc_m, ax=ax, label='Age')
     ax.scatter(regular_c[:, 0], regular_c[:, 1],
                c="orange", alpha=0.8, s=80, marker="s",
                label=f"Unguided eval (MMD={regular_mmd:.4f})")

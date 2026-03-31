@@ -9,7 +9,8 @@
 # ── Conda setup ───────────────────────────────────────────────────────────────
 export PATH="/usr/local/spack/opt/spack/linux-debian12-x86_64/gcc-12.2.0/miniconda3-24.3.0-iqeknetqo7ngpr57d6gmu3dg4rzlcgk6/bin:$PATH"
 source /usr/local/spack/opt/spack/linux-debian12-x86_64/gcc-12.2.0/miniconda3-24.3.0-iqeknetqo7ngpr57d6gmu3dg4rzlcgk6/etc/profile.d/conda.sh
-conda activate /sci/labs/orzuk/shaulytolk/conditional-matching-paper/scribble_env
+conda activate /sci/labs/orzuk/ori_m/compare_env
+PYTHON=/sci/labs/orzuk/ori_m/compare_env/bin/python
 
 export WANDB_API_KEY=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
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True

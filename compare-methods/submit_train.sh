@@ -43,7 +43,7 @@ $PYTHON compare-methods/train_models.py \
     --nunits        128 \
     --diffusion_steps 100 \
     --nepochs_diff  40000 \
-    --nepochs_cm    1500 \
+    --nepochs_cm    15000 \
     --nepochs_fm    40000 \
     --batch_size_diff 512 \
     --batch_size_cm   1024 \

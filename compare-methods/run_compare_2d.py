@@ -17,7 +17,7 @@ import numpy as np
 
 # ── path setup ────────────────────────────────────────────────────────────────
 script_dir = os.path.dirname(os.path.abspath(__file__))
-compare_dir = os.path.join(script_dir, "compare-methods")
+compare_dir = script_dir
 sys.path.insert(0, compare_dir)
 
 from dist_utils import compute_conditionals, compute_alpha, filter_and_normalize

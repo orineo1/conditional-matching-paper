@@ -296,11 +296,17 @@ def run_scenario(scenario_name, split_cfg_json, split_dir,
         # Top-10 by final loss
         k = min(10, len(data["final_loss"]))
         top10_idx = np.argsort(data["final_loss"])[:k]
-        data["top10_mmd"] = [data["mmd"][i] for i in top10_idx]
-        data["top10_l1"]  = [data["l1"][i]  for i in top10_idx]
-        data["top10_seed"]= [data["seed"][i] for i in top10_idx]
-        print(f"  Top-{k} MMD mean±std: "
+        data["top10_mmd"]  = [data["mmd"][i]         for i in top10_idx]
+        data["top10_l1"]   = [data["l1"][i]           for i in top10_idx]
+        data["top10_seed"] = [data["seed"][i]         for i in top10_idx]
+        data["top10_loss"] = [data["final_loss"][i]   for i in top10_idx]
+        data["top10_time"] = [data["time"][i]         for i in top10_idx]
+        print(f"  Top-{k} MMD mean±std:  "
               f"{np.mean(data['top10_mmd']):.4f} ± {np.std(data['top10_mmd']):.4f}", flush=True)
+        print(f"  Top-{k} loss mean±std: "
+              f"{np.mean(data['top10_loss']):.4f} ± {np.std(data['top10_loss']):.4f}", flush=True)
+        print(f"  Top-{k} time mean±std: "
+              f"{np.mean(data['top10_time']):.2f}s ± {np.std(data['top10_time']):.2f}s", flush=True)
 
         if wandb_run is not None:
             import wandb
@@ -467,13 +473,18 @@ def main():
     for scenario_name, results in all_results.items():
         summary[scenario_name] = {
             method: {
-                "mmd_mean":       float(np.mean(d["mmd"])),
-                "mmd_std":        float(np.std(d["mmd"])),
-                "top10_mmd_mean": float(np.mean(d["top10_mmd"])),
-                "top10_mmd_std":  float(np.std(d["top10_mmd"])),
-                "l1_mean":        float(np.mean(d["l1"])),
-                "l1_std":         float(np.std(d["l1"])),
-                "time_mean":      float(np.mean(d["time"])),
+                "mmd_mean":        float(np.mean(d["mmd"])),
+                "mmd_std":         float(np.std(d["mmd"])),
+                "l1_mean":         float(np.mean(d["l1"])),
+                "l1_std":          float(np.std(d["l1"])),
+                "time_mean":       float(np.mean(d["time"])),
+                "time_std":        float(np.std(d["time"])),
+                "top10_mmd_mean":  float(np.mean(d["top10_mmd"])),
+                "top10_mmd_std":   float(np.std(d["top10_mmd"])),
+                "top10_l1_mean":   float(np.mean(d["top10_l1"])),
+                "top10_l1_std":    float(np.std(d["top10_l1"])),
+                "top10_time_mean": float(np.mean(d["top10_time"])),
+                "top10_time_std":  float(np.std(d["top10_time"])),
             }
             for method, d in results.items()
         }

@@ -1,26 +1,21 @@
 """
-run_compare.py — Load trained models and run D-Flow / LGD / LGD-CM comparison.
+run_compare.py — Load trained models and run LGD / LGD-CM comparison.
 
 Supports:
   - 2D: x* read from JSON (x_star=[-5.0])
-  - 10D: two splits (cond1_y9, cond9_y1), x* fixed in JSON (from one sampled joint point).
+  - 10D: two splits (cond1_y9, cond9_y1), x* fixed in JSON.
     Models for each split live in <models_dir>/<split_name>/.
 
 Results for all splits are saved together in one results.json keyed by scenario.
 
 Usage (no wandb):
-    python compare_methods/run_compare.py \
-        --models_dir compare_methods/output/models_2d \
-        --output_dir compare_methods/output/compare_2d \
-        --no_wandb
-
-    python compare_methods/run_compare.py \
-        --models_dir compare_methods/output/models_10d \
-        --output_dir compare_methods/output/compare_10d \
+    python compare-methods/run_compare.py \
+        --models_dir compare-methods/output/models_2d \
+        --output_dir compare-methods/output/compare_2d \
         --no_wandb
 
 Usage (cluster):
-    sbatch compare_methods/submit_compare.sh compare_methods/output/models_2d_<JOB_ID>
+    sbatch compare-methods/submit_compare.sh compare-methods/output/models_2d_<JOB_ID>
 """
 
 import argparse
@@ -48,7 +43,6 @@ from dist_utils import (
     compute_alpha,
     filter_and_normalize,
     mog_covariance,
-    warpper_L1_distance,
 )
 
 
@@ -93,21 +87,6 @@ def load_cm_model(split_cfg, split_dir, device):
     return model
 
 
-def load_fm_model(split_cfg, split_dir, device):
-    from FlowMatching import FMModel
-    model = FMModel(
-        nfeatures=split_cfg["nfeatures_y"],
-        condition_on=split_cfg["condition_on"],
-        nunits=split_cfg["nunits"],
-        nblocks=split_cfg["nblocks"],
-        device=device,
-    )
-    model.load_state_dict(
-        torch.load(os.path.join(split_dir, "model_fm.pt"), map_location=device))
-    model.to(device).eval()
-    return model
-
-
 # ── x* helpers ────────────────────────────────────────────────────────────────
 
 def get_x_star(split_cfg_json, device):
@@ -138,16 +117,19 @@ def compute_mmd_eval(x_pred, mu_list, Sigma_list, alpha,
     return float(mmd_val), float(mmd_val)
 
 
-def evaluate_result(x_pred, mu_list, Sigma_list, alpha,
+def evaluate_result(x_pred, x_star, mu_list, Sigma_list, alpha,
                     mog_means, mog_variances, weights, condition_on,
                     nsamples_eval=10_000):
-    l1 = warpper_L1_distance(x_pred, mu_list, Sigma_list, alpha,
-                             mog_means, mog_variances, weights)
+    # L2 distance between predicted x and the true optimal x*
+    x_pred_t = (x_pred.float().view(-1) if isinstance(x_pred, torch.Tensor)
+                else torch.tensor(x_pred, dtype=torch.float32).view(-1))
+    l2 = (x_pred_t - x_star.to(x_pred_t.device)).pow(2).sum().sqrt().item()
+
     mmd, norm_mmd = compute_mmd_eval(
         x_pred, mu_list, Sigma_list, alpha, mog_means, mog_variances, weights,
         condition_on=condition_on, nsamples=nsamples_eval,
     )
-    return l1, mmd, norm_mmd
+    return l2, mmd, norm_mmd
 
 
 # ── algorithm runners ─────────────────────────────────────────────────────────
@@ -176,26 +158,10 @@ def run_lgd_cm(model_uncond, model_cm, mog_means, mog_variances, weights,
     return best_x_t, final_loss
 
 
-def run_dflow(model_fm, mog_means, mog_variances, weights,
-              mu_list, Sigma_list, alpha, nsamples, device):
-    from Optimization import optimize_DFLOW
-    best_x1, final_loss = optimize_DFLOW(
-        vf_y_cond_x=model_fm, vf_X=model_fm,
-        device=device,
-        mog_means=mog_means, mog_variances=mog_variances, weights=weights,
-        n_sample=nsamples, loss_method="MMD", FLAG=False,
-    )
-    return best_x1.detach(), final_loss
-
-
 # ── run one split scenario ────────────────────────────────────────────────────
 
 def run_scenario(scenario_name, split_cfg_json, split_dir,
                  mu_list, Sigma_list, alpha, args, device, wandb_run):
-    """
-    Run all methods for one split scenario and return a dict of per-method results.
-    x* is determined from split_cfg_json (fixed list or sampled).
-    """
     print(f"\n{'='*65}", flush=True)
     print(f"Scenario: {scenario_name}", flush=True)
     print(f"  {split_cfg_json.get('description','')}", flush=True)
@@ -203,7 +169,6 @@ def run_scenario(scenario_name, split_cfg_json, split_dir,
 
     condition_on = split_cfg_json["condition_on"]
     dim          = len(mu_list[0])
-    nfeatures_y  = dim - condition_on
 
     # ── x* ────────────────────────────────────────────────────────────────────
     x_star = get_x_star(split_cfg_json, device)
@@ -212,10 +177,8 @@ def run_scenario(scenario_name, split_cfg_json, split_dir,
     # ── MoG view for this split ───────────────────────────────────────────────
     # For cond9_y1: conditioning dims are 1..9, target dim is 0.
     # compute_conditionals always treats the first condition_on dims as x,
-    # so we reorder the MoG (as in the notebook) when condition_on == dim-1
-    # and the target is dim0 (not the natural last block).
+    # so we reorder the MoG when condition_on == dim-1.
     if condition_on == dim - 1:
-        # x=dims1..9, y=dim0 → reorder so y (dim0) is last
         mu_list_view    = [torch.cat([m[1:], m[:1]])    for m in mu_list]
         Sigma_list_view = [
             torch.cat([
@@ -225,7 +188,6 @@ def run_scenario(scenario_name, split_cfg_json, split_dir,
             for S in Sigma_list
         ]
     else:
-        # Natural order: x=first condition_on dims, y=remaining (2D and cond1_y9)
         mu_list_view    = mu_list
         Sigma_list_view = Sigma_list
 
@@ -236,30 +198,23 @@ def run_scenario(scenario_name, split_cfg_json, split_dir,
         mu_temp, Sigma_temp, alpha_temp, threshold=0.01)
     print(f"Target conditional: {len(mog_means)} active components", flush=True)
 
-    # ── load split config (has nblocks, nunits, etc.) ─────────────────────────
+    # ── load split config ─────────────────────────────────────────────────────
     with open(os.path.join(split_dir, "split_config.json")) as f:
         split_cfg = json.load(f)
 
     # ── load models ───────────────────────────────────────────────────────────
     print("Loading models...", flush=True)
-    model_uncond = model_cond = model_cm = model_fm = None
-
-    if not (args.skip_lgd and args.skip_lgdcm):
-        model_uncond, model_cond = load_diffusion_models(split_cfg, split_dir, device)
-        print("  Diffusion loaded.", flush=True)
-    if not args.skip_lgdcm:
-        model_cm = load_cm_model(split_cfg, split_dir, device)
-        print("  CM loaded.", flush=True)
-    if not args.skip_dflow:
-        model_fm = load_fm_model(split_cfg, split_dir, device)
-        print("  FM loaded.", flush=True)
+    model_uncond, model_cond = load_diffusion_models(split_cfg, split_dir, device)
+    print("  Diffusion loaded.", flush=True)
+    model_cm = load_cm_model(split_cfg, split_dir, device)
+    print("  CM loaded.", flush=True)
 
     # ── method runner helper ──────────────────────────────────────────────────
     scenario_results = {}
 
     def _run_method(name, run_fn):
         print(f"\n── {name} ({args.n_attempts} attempts) ──", flush=True)
-        data = {"mmd": [], "l1": [], "time": [], "x_pred": [], "final_loss": [], "seed": []}
+        data = {"mmd": [], "l2": [], "time": [], "x_pred": [], "final_loss": [], "seed": []}
         for i in range(args.n_attempts):
             attempt_seed = args.seed + i
             torch.manual_seed(attempt_seed)
@@ -271,8 +226,8 @@ def run_scenario(scenario_name, split_cfg_json, split_dir,
             x_pred, final_loss = run_fn()
             elapsed = time.time() - t0
 
-            l1, mmd, _ = evaluate_result(
-                x_pred, mu_list_view, Sigma_list_view, alpha,
+            l2, mmd, _ = evaluate_result(
+                x_pred, x_star, mu_list_view, Sigma_list_view, alpha,
                 mog_means, mog_variances, weights,
                 condition_on=condition_on,
                 nsamples_eval=args.nsamples_eval,
@@ -281,7 +236,7 @@ def run_scenario(scenario_name, split_cfg_json, split_dir,
             x_pred_vals = x_pred.detach().cpu().flatten().tolist()
 
             data["mmd"].append(mmd)
-            data["l1"].append(l1)
+            data["l2"].append(l2)
             data["time"].append(elapsed)
             data["final_loss"].append(fl)
             data["seed"].append(attempt_seed)
@@ -289,20 +244,22 @@ def run_scenario(scenario_name, split_cfg_json, split_dir,
                                    if isinstance(x_pred, torch.Tensor) else x_pred)
             print(
                 f"  [{i+1:2d}/{args.n_attempts}] seed={attempt_seed}  "
-                f"pred_x0:{x_pred_vals}  mmd={mmd:.4f}  l1={l1:.4f}  "
+                f"pred_x0:{x_pred_vals}  mmd={mmd:.4f}  l2={l2:.4f}  "
                 f"loss={fl:.4f}  t={elapsed:.1f}s",
                 flush=True)
 
         # Top-10 by final loss
         k = min(10, len(data["final_loss"]))
         top10_idx = np.argsort(data["final_loss"])[:k]
-        data["top10_mmd"]  = [data["mmd"][i]         for i in top10_idx]
-        data["top10_l1"]   = [data["l1"][i]           for i in top10_idx]
-        data["top10_seed"] = [data["seed"][i]         for i in top10_idx]
-        data["top10_loss"] = [data["final_loss"][i]   for i in top10_idx]
-        data["top10_time"] = [data["time"][i]         for i in top10_idx]
+        data["top10_mmd"]  = [data["mmd"][i]       for i in top10_idx]
+        data["top10_l2"]   = [data["l2"][i]         for i in top10_idx]
+        data["top10_seed"] = [data["seed"][i]       for i in top10_idx]
+        data["top10_loss"] = [data["final_loss"][i] for i in top10_idx]
+        data["top10_time"] = [data["time"][i]       for i in top10_idx]
         print(f"  Top-{k} MMD mean±std:  "
               f"{np.mean(data['top10_mmd']):.4f} ± {np.std(data['top10_mmd']):.4f}", flush=True)
+        print(f"  Top-{k} L2  mean±std:  "
+              f"{np.mean(data['top10_l2']):.4f} ± {np.std(data['top10_l2']):.4f}", flush=True)
         print(f"  Top-{k} loss mean±std: "
               f"{np.mean(data['top10_loss']):.4f} ± {np.std(data['top10_loss']):.4f}", flush=True)
         print(f"  Top-{k} time mean±std: "
@@ -311,26 +268,19 @@ def run_scenario(scenario_name, split_cfg_json, split_dir,
         if wandb_run is not None:
             import wandb
             wandb_run.log({
-                f"{scenario_name}/{name}/mmd_mean":      float(np.mean(data["mmd"])),
+                f"{scenario_name}/{name}/mmd_mean":       float(np.mean(data["mmd"])),
                 f"{scenario_name}/{name}/top10_mmd_mean": float(np.mean(data["top10_mmd"])),
-                f"{scenario_name}/{name}/l1_mean":       float(np.mean(data["l1"])),
+                f"{scenario_name}/{name}/l2_mean":        float(np.mean(data["l2"])),
             })
         return data
 
-    if not args.skip_lgd:
-        scenario_results["LGD"] = _run_method("LGD", lambda: run_lgd(
-            model_uncond, model_cond, mog_means, mog_variances, weights,
-            mu_list_view, Sigma_list_view, alpha, args.nsamples_mmd, args.num_x_t, device))
+    scenario_results["LGD"] = _run_method("LGD", lambda: run_lgd(
+        model_uncond, model_cond, mog_means, mog_variances, weights,
+        mu_list_view, Sigma_list_view, alpha, args.nsamples_mmd, args.num_x_t, device))
 
-    if not args.skip_lgdcm:
-        scenario_results["LGD-CM"] = _run_method("LGD-CM", lambda: run_lgd_cm(
-            model_uncond, model_cm, mog_means, mog_variances, weights,
-            mu_list_view, Sigma_list_view, alpha, args.nsamples_mmd, args.num_x_t, device))
-
-    if not args.skip_dflow:
-        scenario_results["D-Flow"] = _run_method("D-Flow", lambda: run_dflow(
-            model_fm, mog_means, mog_variances, weights,
-            mu_list_view, Sigma_list_view, alpha, args.nsamples_mmd, device))
+    scenario_results["LGD-CM"] = _run_method("LGD-CM", lambda: run_lgd_cm(
+        model_uncond, model_cm, mog_means, mog_variances, weights,
+        mu_list_view, Sigma_list_view, alpha, args.nsamples_mmd, args.num_x_t, device))
 
     return scenario_results, x_star.tolist()
 
@@ -338,14 +288,13 @@ def run_scenario(scenario_name, split_cfg_json, split_dir,
 # ── plots ─────────────────────────────────────────────────────────────────────
 
 def plot_results(all_results, output_dir):
-    """One boxplot figure per scenario."""
-    colors = ["#4C72B0", "#DD8452", "#55A868", "#C44E52"]
+    colors = ["#4C72B0", "#DD8452"]
     for scenario_name, results in all_results.items():
         methods = list(results.keys())
         fig, axes = plt.subplots(1, 2, figsize=(10, 5))
         fig.suptitle(f"Method Comparison — {scenario_name}", fontsize=13, fontweight="bold")
 
-        for ax, metric, label in zip(axes, ["mmd", "l1"], ["MMD", "L1 to optimal"]):
+        for ax, metric, label in zip(axes, ["mmd", "l2"], ["MMD", "L2 to x*"]):
             data = [results[m][metric] for m in methods]
             bp = ax.boxplot(data, labels=methods, patch_artist=True, showmeans=True,
                             meanprops=dict(marker="D", markerfacecolor="red", markersize=6))
@@ -363,35 +312,30 @@ def print_summary(all_results):
     for scenario_name, results in all_results.items():
         print(f"\n{'='*65}")
         print(f"Scenario: {scenario_name}")
-        print(f"{'Method':<12} {'MMD (all)':>10} {'MMD (top10)':>12} {'L1 (top10)':>11}")
+        print(f"{'Method':<12} {'MMD (all)':>10} {'MMD (top10)':>12} {'L2 (top10)':>11}")
         print("=" * 65)
         for method, data in results.items():
             print(f"{method:<12} {np.mean(data['mmd']):>10.4f} "
                   f"{np.mean(data['top10_mmd']):>12.4f} "
-                  f"{np.mean(data['top10_l1']):>11.4f}")
+                  f"{np.mean(data['top10_l2']):>11.4f}")
         print("=" * 65)
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Compare D-Flow / LGD / LGD-CM on MoG")
-    p.add_argument("--models_dir",   type=str, required=True,
-                   help="Output dir from train_models.py")
-    p.add_argument("--output_dir",   type=str, default="compare_methods/output/compare")
-    p.add_argument("--scenarios",    type=str, nargs="*", default=None,
-                   help="Which splits/scenarios to run (default: all from config.json)")
-    p.add_argument("--n_attempts",   type=int, default=25)
-    p.add_argument("--nsamples_mmd", type=int, default=250)
-    p.add_argument("--num_x_t",      type=int, default=3)
+    p = argparse.ArgumentParser(description="Compare LGD / LGD-CM on MoG")
+    p.add_argument("--models_dir",    type=str, required=True)
+    p.add_argument("--output_dir",    type=str, default="compare-methods/output/compare")
+    p.add_argument("--scenarios",     type=str, nargs="*", default=None)
+    p.add_argument("--n_attempts",    type=int, default=25)
+    p.add_argument("--nsamples_mmd",  type=int, default=250)
+    p.add_argument("--num_x_t",       type=int, default=3)
     p.add_argument("--nsamples_eval", type=int, default=10_000)
-    p.add_argument("--skip_lgd",   action="store_true")
-    p.add_argument("--skip_lgdcm", action="store_true")
-    p.add_argument("--skip_dflow", action="store_true")
     p.add_argument("--wandb_project", type=str, default="compare-methods")
     p.add_argument("--wandb_entity",  type=str, default="conditional-matching")
     p.add_argument("--no_wandb",      action="store_true")
-    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--seed",          type=int, default=42)
     return p.parse_args()
 
 
@@ -404,7 +348,7 @@ def main():
     np.random.seed(args.seed)
     os.makedirs(args.output_dir, exist_ok=True)
 
-    # ── load top-level config + MoG ───────────────────────────────────────────
+    # ── load config + MoG ─────────────────────────────────────────────────────
     with open(os.path.join(args.models_dir, "config.json")) as f:
         cfg = json.load(f)
 
@@ -413,7 +357,7 @@ def main():
     Sigma_list = [s.to(device) for s in mog_data["Sigma_list"]]
     alpha      = mog_data["alpha"].to(device)
 
-    all_splits = cfg["splits"]  # from JSON, e.g. {"cond1_y1": {...}} or {"cond1_y9":..., "cond9_y1":...}
+    all_splits = cfg["splits"]
     scenarios_to_run = args.scenarios if args.scenarios else list(all_splits.keys())
     print(f"Scenarios to run: {scenarios_to_run}", flush=True)
 
@@ -433,7 +377,6 @@ def main():
         if scenario_name not in all_splits:
             print(f"WARNING: scenario '{scenario_name}' not in config, skipping.", flush=True)
             continue
-
         split_dir = os.path.join(args.models_dir, scenario_name)
         if not os.path.isdir(split_dir):
             print(f"WARNING: no model dir found at {split_dir}, skipping.", flush=True)
@@ -443,8 +386,8 @@ def main():
             scenario_name, all_splits[scenario_name], split_dir,
             mu_list, Sigma_list, alpha, args, device, wandb_run,
         )
-        all_results[scenario_name]  = scenario_results
-        all_x_stars[scenario_name]  = x_star_used
+        all_results[scenario_name] = scenario_results
+        all_x_stars[scenario_name] = x_star_used
 
     # ── summary + plots ───────────────────────────────────────────────────────
     print_summary(all_results)
@@ -452,22 +395,14 @@ def main():
 
     # ── save results.json ─────────────────────────────────────────────────────
     def _serialize(d):
-        if isinstance(d, dict):
-            return {k: _serialize(v) for k, v in d.items()}
-        if isinstance(d, list):
-            return [_serialize(v) for v in d]
-        if isinstance(d, (np.floating, np.integer)):
-            return float(d)
+        if isinstance(d, dict):  return {k: _serialize(v) for k, v in d.items()}
+        if isinstance(d, list):  return [_serialize(v) for v in d]
+        if isinstance(d, (np.floating, np.integer)): return float(d)
         return d
 
-    output_payload = {
-        "args":    vars(args),
-        "cfg":     cfg,
-        "x_stars": all_x_stars,
-        "results": _serialize(all_results),
-    }
     with open(os.path.join(args.output_dir, "results.json"), "w") as f:
-        json.dump(output_payload, f, indent=2)
+        json.dump({"args": vars(args), "cfg": cfg,
+                   "x_stars": all_x_stars, "results": _serialize(all_results)}, f, indent=2)
 
     summary = {}
     for scenario_name, results in all_results.items():
@@ -475,14 +410,14 @@ def main():
             method: {
                 "mmd_mean":        float(np.mean(d["mmd"])),
                 "mmd_std":         float(np.std(d["mmd"])),
-                "l1_mean":         float(np.mean(d["l1"])),
-                "l1_std":          float(np.std(d["l1"])),
+                "l2_mean":         float(np.mean(d["l2"])),
+                "l2_std":          float(np.std(d["l2"])),
                 "time_mean":       float(np.mean(d["time"])),
                 "time_std":        float(np.std(d["time"])),
                 "top10_mmd_mean":  float(np.mean(d["top10_mmd"])),
                 "top10_mmd_std":   float(np.std(d["top10_mmd"])),
-                "top10_l1_mean":   float(np.mean(d["top10_l1"])),
-                "top10_l1_std":    float(np.std(d["top10_l1"])),
+                "top10_l2_mean":   float(np.mean(d["top10_l2"])),
+                "top10_l2_std":    float(np.std(d["top10_l2"])),
                 "top10_time_mean": float(np.mean(d["top10_time"])),
                 "top10_time_std":  float(np.std(d["top10_time"])),
             }

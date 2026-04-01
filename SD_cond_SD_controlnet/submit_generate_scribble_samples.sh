@@ -53,7 +53,7 @@ for i in range(n):
     img = pipe(
         prompt=prompt,
         image=scribble,
-        num_inference_steps=4,
+        num_inference_steps=2,
         guidance_scale=0.0,
         controlnet_conditioning_scale=0.5,
         height=512, width=512,

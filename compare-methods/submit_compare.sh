@@ -17,35 +17,33 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 cd /sci/labs/orzuk/ori_m/conditional-matching-paper
 
-# ── Required arg: path to models directory ────────────────────────────────────
-MODELS_DIR=${1:?"Usage: sbatch submit_compare_logged.sh <models_dir>"}
+# ── Required arg: path to models directory (from submit_train.sh) ─────────────
+MODELS_DIR=${1:?"Usage: sbatch submit_compare.sh <models_dir>  e.g. compare-methods/output/models_2d_<JOB_ID>"}
+
 OUTPUT_DIR="compare-methods/output/compare_${SLURM_JOB_ID}"
 LOG_FILE="/sci/labs/orzuk/ori_m/conditional-matching-paper/compare_run_${SLURM_JOB_ID}.log"
 
 echo "Starting compare-methods run on $(hostname)" | tee "$LOG_FILE"
-echo "Job ID: $SLURM_JOB_ID" | tee -a "$LOG_FILE"
-echo "Models dir: $MODELS_DIR" | tee -a "$LOG_FILE"
-echo "Output dir: $OUTPUT_DIR" | tee -a "$LOG_FILE"
-echo "Log file: $LOG_FILE (deleted on success)" | tee -a "$LOG_FILE"
+echo "Job ID:     $SLURM_JOB_ID"   | tee -a "$LOG_FILE"
+echo "Models dir: $MODELS_DIR"     | tee -a "$LOG_FILE"
+echo "Output dir: $OUTPUT_DIR"     | tee -a "$LOG_FILE"
+echo "Log file:   $LOG_FILE (deleted on success)" | tee -a "$LOG_FILE"
 
 $PYTHON -m pip install -q flow_matching POT
 
-
 mkdir -p compare-methods/output
 
-# ── Run comparison, capturing all output ──────────────────────────────────────
+# ── Run comparison ────────────────────────────────────────────────────────────
 $PYTHON compare-methods/run_compare.py \
-    --models_dir "$MODELS_DIR" \
-    --output_dir "$OUTPUT_DIR" \
-    --n_attempts 25 \
-    --nsamples_mmd 250 \
-    --num_x_t 3 \
-    --nsamples_swd 10000 \
-    --num_projections_swd 500 \
-    --x_star -5.0 \
+    --models_dir    "$MODELS_DIR" \
+    --output_dir    "$OUTPUT_DIR" \
+    --n_attempts    25 \
+    --nsamples_mmd  250 \
+    --num_x_t       3 \
+    --nsamples_eval  10000 \
     --wandb_project compare-methods \
-    --wandb_entity conditional-matching \
-    --seed 42 \
+    --wandb_entity  conditional-matching \
+    --seed          42 \
     >> "$LOG_FILE" 2>&1
 EXIT_CODE=$?
 

@@ -275,7 +275,7 @@ def run_scenario(scenario_name, split_cfg_json, split_dir,
                 x_pred, mu_list_view, Sigma_list_view, alpha,
                 mog_means, mog_variances, weights,
                 condition_on=condition_on,
-                nsamples_eval=args.nsamples_swd,
+                nsamples_eval=args.nsamples_eval,
             )
             fl = final_loss.item() if isinstance(final_loss, torch.Tensor) else float(final_loss)
             x_pred_vals = x_pred.detach().cpu().flatten().tolist()
@@ -378,7 +378,7 @@ def parse_args():
     p.add_argument("--n_attempts",   type=int, default=25)
     p.add_argument("--nsamples_mmd", type=int, default=250)
     p.add_argument("--num_x_t",      type=int, default=3)
-    p.add_argument("--nsamples_swd", type=int, default=10_000)
+    p.add_argument("--nsamples_eval", type=int, default=10_000)
     p.add_argument("--skip_lgd",   action="store_true")
     p.add_argument("--skip_lgdcm", action="store_true")
     p.add_argument("--skip_dflow", action="store_true")

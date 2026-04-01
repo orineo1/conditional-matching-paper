@@ -17,38 +17,40 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 cd /sci/labs/orzuk/ori_m/conditional-matching-paper
 
-# ── Log file setup ────────────────────────────────────────────────────────────
-DIM=${1:-2}
-OUTPUT_DIR="compare-methods/output/models_${DIM}d_${SLURM_JOB_ID}"
+# ── Required arg: mog_json path (e.g. compare-methods/mog_2d.json) ────────────
+MOG_JSON=${1:?"Usage: sbatch submit_train.sh <mog_json_path>  e.g. compare-methods/mog_2d.json"}
+
+# Derive a label from the json filename (e.g. mog_2d.json -> 2d)
+LABEL=$(basename "$MOG_JSON" .json | sed 's/mog_//')
+OUTPUT_DIR="compare-methods/output/models_${LABEL}_${SLURM_JOB_ID}"
 LOG_FILE="/sci/labs/orzuk/ori_m/conditional-matching-paper/compare_train_${SLURM_JOB_ID}.log"
 
 echo "Starting compare-methods training on $(hostname)" | tee "$LOG_FILE"
-echo "Job ID: $SLURM_JOB_ID" | tee -a "$LOG_FILE"
-echo "Output dir: $OUTPUT_DIR" | tee -a "$LOG_FILE"
-echo "Log file: $LOG_FILE (deleted on success)" | tee -a "$LOG_FILE"
+echo "Job ID:     $SLURM_JOB_ID"  | tee -a "$LOG_FILE"
+echo "MoG JSON:   $MOG_JSON"      | tee -a "$LOG_FILE"
+echo "Output dir: $OUTPUT_DIR"    | tee -a "$LOG_FILE"
+echo "Log file:   $LOG_FILE (deleted on success)" | tee -a "$LOG_FILE"
 
 pip install -q flow_matching POT
 
 mkdir -p compare-methods/output
 
-# ── Run training, capturing all output ───────────────────────────────────────
-python compare-methods/train_models.py \
-    --output_dir "$OUTPUT_DIR" \
-    --dim "$DIM" \
-    --condition_on 1 \
-    --nblocks 3 \
-    --nunits 128 \
+# ── Run training ──────────────────────────────────────────────────────────────
+$PYTHON compare-methods/train_models.py \
+    --mog_json      "$MOG_JSON" \
+    --output_dir    "$OUTPUT_DIR" \
+    --nblocks       4 \
+    --nunits        128 \
     --diffusion_steps 100 \
-    --nepochs_diff 20000 \
-    --nepochs_cm 7500 \
-    --nepochs_fm 10000 \
+    --nepochs_diff  40000 \
+    --nepochs_cm    1500 \
+    --nepochs_fm    40000 \
     --batch_size_diff 512 \
-    --batch_size_cm 1024 \
-    --batch_size_fm 1024 \
-    --seed 42 \
+    --batch_size_cm   1024 \
+    --batch_size_fm   512 \
+    --seed          42 \
     >> "$LOG_FILE" 2>&1
 EXIT_CODE=$?
-
 
 # ── On success: remove log. On failure: keep it. ──────────────────────────────
 if [ $EXIT_CODE -eq 0 ]; then

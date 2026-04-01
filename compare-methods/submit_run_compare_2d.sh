@@ -20,7 +20,7 @@ LOG_FILE="/sci/labs/orzuk/ori_m/conditional-matching-paper/run_compare_2d_${SLUR
 
 echo "models_dir: $MODELS_DIR" | tee "$LOG_FILE"
 
-$PYTHON compare-methods/run_compare_2d.py \
+$PYTHON -u compare-methods/run_compare_2d.py \
     --models_dir "$MODELS_DIR" \
     --n_attempts 25 \
     --nsamples   250 \

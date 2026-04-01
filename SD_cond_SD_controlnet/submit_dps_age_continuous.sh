@@ -24,16 +24,16 @@ pip install -q matplotlib scikit-learn controlnet_aux
 cd /sci/labs/orzuk/shaulytolk/conditional-matching-paper
 mkdir -p SD_cond_SD_controlnet/output scripts/assets
 
-# Extract HED scribble from age-72 woman reference image
+# Extract HED scribble from age-40 woman reference image
 echo "Extracting HED scribble..."
 python3 -c "
 from controlnet_aux import HEDdetector
 from PIL import Image
 hed = HEDdetector.from_pretrained('lllyasviel/Annotators')
-img = Image.open('reference_images/age_woman/age_072_idx_0038.png').convert('RGB').resize((512, 512))
+img = Image.open('reference_images/age_woman/age_040_idx_0051.png').convert('RGB').resize((512, 512))
 scribble = hed(img, scribble=True)
-scribble.save('scripts/assets/age72_woman_hed.png')
-print('Saved scripts/assets/age72_woman_hed.png')
+scribble.save('scripts/assets/age40_woman_hed.png')
+print('Saved scripts/assets/age40_woman_hed.png')
 "
 
 python SD_cond_SD_controlnet/run_dps_synthetic_targets.py \
@@ -41,7 +41,7 @@ python SD_cond_SD_controlnet/run_dps_synthetic_targets.py \
     --target_mode age_continuous \
     --reference_images_dir reference_images \
     --reference_gender woman \
-    --scribble_path scripts/assets/age72_woman_hed.png \
+    --scribble_path scripts/assets/age40_woman_hed.png \
     --n_targets 100 \
     --n_steps 500 \
     --start_step 300 \

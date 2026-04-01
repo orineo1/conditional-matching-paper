@@ -141,7 +141,7 @@ def run_lgd(model_uncond, model_cond, mog_means, mog_variances, weights,
         model_uncond, model_cond, mog_means, mog_variances, weights,
         mu_list, Sigma_list, alpha,
         nsamples=nsamples, num_x_t=num_x_t, loss="MMD", CM=False,
-        device=device, FLAG=False,
+        device=device, FLAG=True,
     )
     return best_x_t, final_loss
 
@@ -153,7 +153,7 @@ def run_lgd_cm(model_uncond, model_cm, mog_means, mog_variances, weights,
         model_uncond, model_cm, mog_means, mog_variances, weights,
         mu_list, Sigma_list, alpha,
         nsamples=nsamples, num_x_t=num_x_t, loss="MMD", CM=True,
-        device=device, FLAG=False,
+        device=device, FLAG=True,
     )
     return best_x_t, final_loss
 

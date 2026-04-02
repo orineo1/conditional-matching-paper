@@ -894,3 +894,30 @@ def wasserstein_1d_torch(x_vals, pdf1, pdf2):
         return torch.tensor(99.0)  # Return large distance instead of NaN
 
     return result
+
+def gmm_l2_distance(mu_p, Sigma_p, w_p, mu_q, Sigma_q, w_q):
+    """
+    Exact L2 distance between two GMMs:
+    ||p - q||^2 = <p,p> - 2<p,q> + <q,q>
+    where <f,g> = integral f(x)g(x)dx, closed form for Gaussians.
+    """
+    import torch
+
+    def gaussian_inner_product(mu1, S1, w1_list, mu2, S2, w2_list):
+        # sum_{i,j} w1_i * w2_j * N(mu1_i; mu2_j, S1_i + S2_j)
+        total = 0.0
+        for mu_i, S_i, w_i in zip(mu1, S1, w1_list):
+            for mu_j, S_j, w_j in zip(mu2, S2, w2_list):
+                S_sum = S_i + S_j
+                diff  = mu_i - mu_j
+                d     = mu_i.shape[0]
+                sign, logdet = torch.linalg.slogdet(S_sum)
+                log_val = -0.5 * (d * torch.log(torch.tensor(2 * 3.14159265)) + logdet
+                                  + diff @ torch.linalg.inv(S_sum) @ diff)
+                total += w_i.item() * w_j.item() * torch.exp(log_val).item()
+        return total
+
+    pp = gaussian_inner_product(mu_p, Sigma_p, w_p, mu_p, Sigma_p, w_p)
+    qq = gaussian_inner_product(mu_q, Sigma_q, w_q, mu_q, Sigma_q, w_q)
+    pq = gaussian_inner_product(mu_p, Sigma_p, w_p, mu_q, Sigma_q, w_q)
+    return pp - 2 * pq + qq

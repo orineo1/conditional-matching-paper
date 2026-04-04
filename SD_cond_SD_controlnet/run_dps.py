@@ -226,11 +226,11 @@ def main():
         ("Andro-masculine",
          "a superrealistic portrait photograph of an androgynous person, white shirt, "
          "masculine bone structure, sharp jawline, studio lighting",
-         48, "limegreen", "^"),
+         39, "limegreen", "^"),
         ("Mostly masculine",
          "a superrealistic portrait photograph of a masculine man, white shirt, "
          "androgynous softness and minor characteristics, studio lighting",
-         1, "orange", "s"),
+         10, "orange", "s"),
         ("Man",
          "a superrealistic portrait photograph of a man, studio lighting, white shirt",
          25, "dodgerblue", "D"),

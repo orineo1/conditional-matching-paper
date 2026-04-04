@@ -318,44 +318,20 @@ def plot_portrait_grid(run_data, condition="lgd_cm",
 def compare_scribbles_heatmap(lgd_cm_pil, regular_pil, save_path=None,
                                input_pil=None):
     """
-    4-panel figure: input scribble (optional), unguided, guided, difference heatmap.
-    Each scribble is shown in its own panel for clear comparison.
+    Save only the pixel-wise absolute difference heatmap.
     """
     lgd_cm_np  = np.array(lgd_cm_pil).astype(float)
     regular_np = np.array(regular_pil).astype(float)
     diff       = np.abs(lgd_cm_np - regular_np).mean(axis=2)
     diff_norm  = diff / (diff.max() + 1e-8)
 
-    n_panels = 4 if input_pil is not None else 3
-    fig, axes = plt.subplots(1, n_panels, figsize=(5 * n_panels, 5))
-
-    idx = 0
-    if input_pil is not None:
-        axes[idx].imshow(input_pil)
-        axes[idx].set_title("Input scribble", fontsize=12)
-        axes[idx].axis("off")
-        idx += 1
-
-    axes[idx].imshow(regular_pil)
-    axes[idx].set_title("Unguided", fontsize=12)
-    axes[idx].axis("off")
-    idx += 1
-
-    axes[idx].imshow(lgd_cm_pil)
-    axes[idx].set_title("LGD-CM (guided)", fontsize=12)
-    axes[idx].axis("off")
-    idx += 1
-
-    im = axes[idx].imshow(diff_norm, cmap="hot")
-    axes[idx].set_title("Difference", fontsize=12)
-    axes[idx].axis("off")
-    plt.colorbar(im, ax=axes[idx], fraction=0.046)
-
-    plt.suptitle(
-        f"Scribble comparison — Max diff: {diff.max():.1f}  "
-        f"Mean diff: {diff.mean():.2f}",
-        fontsize=12,
-    )
+    fig, ax = plt.subplots(figsize=(5, 5))
+    im = ax.imshow(diff_norm, cmap="hot")
+    ax.set_title(f"Scribble difference\n"
+                 f"Max: {diff.max():.1f}  Mean: {diff.mean():.2f}",
+                 fontsize=12)
+    ax.axis("off")
+    plt.colorbar(im, ax=ax, fraction=0.046)
     plt.tight_layout()
     _save_or_show(fig, save_path)
     return fig

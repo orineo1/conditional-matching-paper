@@ -22,7 +22,9 @@ import numpy as np
 from PIL import Image
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
-
+import matplotlib.pyplot as plt
+import numpy as np
+from matplotlib.patches import Patch
 
 # ── Data loading ──────────────────────────────────────────────────────────────
 
@@ -302,25 +304,12 @@ def plot_boxplot(run_data, save_path=None):
     make_boxplot(lgd_cm_male, lgd_cm_female, "LGD-CM",  lgd_cm_path)
 
 
-import matplotlib.pyplot as plt
-import numpy as np
-from matplotlib.patches import Patch
-
-import matplotlib.pyplot as plt
-import numpy as np
-from matplotlib.patches import Patch
-
-
 def plot_boxplot_combined(run_data, save_path=None):
     m = run_data.get("metrics", {})
 
-    # Data extraction
+    # ... [Data extraction logic stays the same] ...
     lgd_cm_per_image = m.get("lgd_cm_gender", {}).get("per_image", [])
     regular_per_image = m.get("regular_gender", {}).get("per_image", [])
-
-    if not lgd_cm_per_image or not regular_per_image:
-        print("⚠️ Missing data — skipping.")
-        return
 
     def split_by_gender(per_image):
         male_conf = [x["p_male"] for x in per_image if x["label"] == "male"]
@@ -330,7 +319,6 @@ def plot_boxplot_combined(run_data, save_path=None):
     reg_male, reg_female = split_by_gender(regular_per_image)
     lgd_cm_male, lgd_cm_female = split_by_gender(lgd_cm_per_image)
 
-    # Positions and Setup
     positions = [1, 1.8, 3.5, 4.3]
     data = [reg_male, lgd_cm_male, reg_female, lgd_cm_female]
     counts = [len(reg_male), len(lgd_cm_male), len(reg_female), len(lgd_cm_female)]
@@ -338,50 +326,51 @@ def plot_boxplot_combined(run_data, save_path=None):
 
     fig, ax = plt.subplots(figsize=(8, 5))
 
-    for i, (pts, pos, col) in enumerate(zip(data, positions, colors)):
+    for pts, pos, col in zip(data, positions, colors):
         if len(pts) > 0:
-            # Boxplot - Light alpha with black edges
             ax.boxplot(pts, positions=[pos], patch_artist=True, widths=0.5,
                        showfliers=False,
                        medianprops=dict(color="black", linewidth=1.5),
                        boxprops=dict(facecolor=col, alpha=0.3, edgecolor='black'))
 
-            # Scatter - Jittered dots
             jitter = np.random.uniform(-0.1, 0.1, size=len(pts))
             ax.scatter(np.full(len(pts), pos) + jitter, pts,
-                       color=col, alpha=0.6, s=30, zorder=3,
+                       color=col, alpha=0.6, s=35, zorder=3,
                        edgecolors='black', linewidth=0.5)
 
-    # 1. Place n= labels in the "Safe Gutter" (y=0.46)
+    # --- THE FIX FOR ANNOTATIONS & LEGEND ---
+
+    # 1. n= labels: Placed in the margin using Axes Transform
+    # y=-0.1 means "10% of the plot height below the axis line"
     for pos, count, col in zip(positions, counts, colors):
-        ax.text(pos, 0.46, f"n={count}", ha='center', va='center',
-                color=col, fontsize=9)
+        ax.text(pos, -0.1, f"n={count}",
+                transform=ax.get_xaxis_transform(),  # This is key!
+                ha='center', va='top', color=col, fontsize=10)
 
-    # 2. Place Legend in the "Safe Gutter" (y=0.42)
+    # 2. Legend: Centered horizontally (x=0.5) in the gap between Male and Female
+    # y=-0.22 puts it neatly below the n= labels
     legend_elements = [
-        Patch(facecolor="steelblue", alpha=0.4, edgecolor='black', label="Regular"),
-        Patch(facecolor="darkorange", alpha=0.4, edgecolor='black', label="LGD-CM"),
+        Patch(facecolor="steelblue", alpha=0.3, edgecolor='black', label="Regular"),
+        Patch(facecolor="darkorange", alpha=0.3, edgecolor='black', label="LGD-CM"),
     ]
-    ax.legend(handles=legend_elements, loc="lower center",
-              bbox_to_anchor=(0.5, 0.01),  # Anchored to the bottom of the axis
-              ncol=2, frameon=True, fontsize=10, handletextpad=0.5)
+    ax.legend(handles=legend_elements, loc="upper center",
+              bbox_to_anchor=(0.5, -0.18),  # Center of the chart, below the axis
+              ncol=2, frameon=True, fontsize=10, handletextpad=0.4)
 
-    # 3. Formatting - Regular fonts (No Bold)
+    # 3. Male/Female Labels: Pushed further down (pad=55) to make room for everything
     ax.set_xticks([1.4, 3.9])
     ax.set_xticklabels(["Male", "Female"], fontsize=12)
+    ax.tick_params(axis='x', pad=55)
 
-    # Set limits so the 0.4-0.5 range is visible but empty of dots
+    # Final visual tweaks
     ax.set_xlim(0, 5.5)
-    ax.set_ylim(0.4, 1.02)
-
+    ax.set_ylim(0.5, 1.02)  # Focused on the data range
     ax.set_ylabel("Confidence", fontsize=11)
-    ax.set_title("CLIP Softmax Confidence: Regular vs LGD-CM", fontsize=13)
-
+    ax.set_title("CLIP Softmax Confidence: Regular vs LGD-CM", fontsize=13, pad=10)
     ax.grid(True, alpha=0.15, axis="y")
     ax.axvline(2.65, color="gray", lw=0.8, linestyle="--", alpha=0.3)
 
     plt.tight_layout()
-
     if save_path:
         plt.savefig(save_path, bbox_inches='tight')
     plt.show()

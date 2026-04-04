@@ -37,10 +37,10 @@ def plot_row(images, title, count=5, save_path=None):
 
 def visualize_step(sd, architect, sprinter, target_clip_np, num_cond=4,
                    save_path=None, pca_fixed=None,
-                   n_groups=4,
-                   group_names=("woman", "man", "andro_masc", "mostly_masc"),
-                   group_colors=("#4169E1", "#9B59B6", "#E67E22", "#E74C3C"),
-                   group_markers=("o", "D", "^", "s")):
+                   n_groups=2,
+                   group_names=("masc", "fem"),
+                   group_colors=("#4169E1", "#E74C3C"),
+                   group_markers=("o", "o")):
     i = sd['step']
     with torch.no_grad():
         img_xt_reg  = latent_to_pil(sd['latents_step_regular_cpu'].to(architect.device), architect.vae, architect.image_processor)
@@ -72,7 +72,12 @@ def visualize_step(sd, architect, sprinter, target_clip_np, num_cond=4,
 
         target_pca = pca_coords[:target_clip_np.shape[0]]
         gen_pca    = pca_coords[target_clip_np.shape[0]:]
-        n_per_group = target_clip_np.shape[0] // n_groups
+
+        # split target into groups — use equal slices as fallback
+        n_total_target = target_clip_np.shape[0]
+        base_size      = n_total_target // n_groups
+        remainder      = n_total_target % n_groups
+        group_sizes    = [base_size + (1 if g < remainder else 0) for g in range(n_groups)]
 
     n_cols = 2 + num_cond + 1
     fig, axes = plt.subplots(2, n_cols, figsize=(4 * n_cols, 8))
@@ -92,21 +97,21 @@ def visualize_step(sd, architect, sprinter, target_clip_np, num_cond=4,
 
     # ── PCA scatter ───────────────────────────────────────────────────────────
     ax = axes[1, n_cols - 1]
+    offset = 0
     for g in range(n_groups):
-        start = g * n_per_group
-        end   = start + n_per_group
-        ax.scatter(target_pca[start:end, 0], target_pca[start:end, 1],
+        size   = group_sizes[g]
+        coords = target_pca[offset:offset + size]
+        offset += size
+        ax.scatter(coords[:, 0], coords[:, 1],
                    c=group_colors[g], marker=group_markers[g],
-                   alpha=0.7, s=50, label=group_names[g])
-        cx = target_pca[start:end, 0].mean()
-        cy = target_pca[start:end, 1].mean()
-        ax.scatter(cx, cy, c=group_colors[g], marker='*', s=180,
+                   alpha=0.6, s=40, label=group_names[g])
+        cx, cy = coords[:, 0].mean(), coords[:, 1].mean()
+        ax.scatter(cx, cy, c=group_colors[g], marker='*', s=150,
                    edgecolors='black', linewidths=0.6, zorder=5)
 
     ax.scatter(gen_pca[:, 0], gen_pca[:, 1],
-               c='limegreen', alpha=0.9, s=60, marker='x',
+               c='limegreen', alpha=0.9, s=50, marker='x',
                linewidths=1.5, label='Generated', zorder=6)
-
     ax.set_title(f"CLIP PCA  Var={pca_var:.1%}")
     ax.legend(fontsize=6, loc='best')
     ax.grid(True, alpha=0.3)

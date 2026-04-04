@@ -277,7 +277,7 @@ def plot_boxplot(run_data, save_path=None):
             real_pts = [p for p in pts if not np.isnan(p)]
             if real_pts:
                 ax.scatter([idx] * len(real_pts), real_pts,
-                           color=color, alpha=0.8, s=40, zorder=3)
+                           alpha=0.5, s=30, zorder=3)
 
         ax.set_ylim(0.5, 1.0)
         ax.set_ylabel("Confidence")
@@ -420,9 +420,10 @@ def plot_portrait_grid(run_data, condition="lgd_cm",
     return fig
 
 def plot_portrait_sample(run_data, condition="lgd_cm",
-                         n_sample=20, save_path=None):
+                         n_sample=100, n_cols=10, save_path=None):
     """
     Sample up to n_sample portraits in two rows: Male (top) / Female (bottom).
+    n_cols controls columns per row.
     Confidence score shown above each portrait.
     If one gender is missing, shows empty row with message.
     """
@@ -442,7 +443,7 @@ def plot_portrait_sample(run_data, condition="lgd_cm",
     females = sorted([(img, p) for img, p in paired if p.get("label") == "female"],
                      key=lambda x: x[1].get("p_female", 0), reverse=True)
 
-    # proportional sampling
+    # proportional sampling up to n_sample
     n_male_sample   = min(len(males),   n_sample // 2)
     n_female_sample = min(len(females), n_sample - n_male_sample)
     n_male_sample   = min(len(males),   n_sample - n_female_sample)
@@ -450,15 +451,18 @@ def plot_portrait_sample(run_data, condition="lgd_cm",
     males_sampled   = males[:n_male_sample]
     females_sampled = females[:n_female_sample]
 
-    # number of columns = max of the two rows, at least 1
-    n_cols = max(n_male_sample, n_female_sample, 1)
+    # rows needed for each gender given n_cols
+    n_rows_male   = max(1, (n_male_sample   + n_cols - 1) // n_cols)
+    n_rows_female = max(1, (n_female_sample + n_cols - 1) // n_cols)
+    n_rows_total  = n_rows_male + n_rows_female
 
-    fig, axes = plt.subplots(2, n_cols, figsize=(2.5 * n_cols, 6))
-    if n_cols == 1:
-        axes = axes.reshape(2, 1)
+    fig, axes = plt.subplots(n_rows_total, n_cols,
+                             figsize=(2.5 * n_cols, 3 * n_rows_total))
+    axes = np.array(axes).reshape(n_rows_total, n_cols)
 
-    def draw_row(row_axes, samples, gender_label, conf_key):
-        for col, ax in enumerate(row_axes):
+    def draw_rows(row_start, row_end, samples, gender_label, conf_key):
+        flat_axes = axes[row_start:row_end, :].flatten()
+        for col, ax in enumerate(flat_axes):
             ax.set_xticks([])
             ax.set_yticks([])
             for spine in ax.spines.values():
@@ -466,8 +470,8 @@ def plot_portrait_sample(run_data, condition="lgd_cm",
             if col < len(samples):
                 img, p = samples[col]
                 ax.imshow(img)
-                ax.set_title(f"{p.get(conf_key, 0):.2f}",
-                             fontsize=8, color="black")
+                ax.set_title(f"p: {p.get(conf_key, 0):.2f}",
+                             fontsize=7, color="black")
             else:
                 ax.set_facecolor("#f5f5f5")
                 if col == 0 and len(samples) == 0:
@@ -476,12 +480,12 @@ def plot_portrait_sample(run_data, condition="lgd_cm",
                             transform=ax.transAxes,
                             fontsize=9, color="gray")
 
-    draw_row(axes[0], males_sampled,   "male",   "p_male")
-    draw_row(axes[1], females_sampled, "female", "p_female")
+    draw_rows(0,          n_rows_male,   males_sampled,   "male",   "p_male")
+    draw_rows(n_rows_male, n_rows_total, females_sampled, "female", "p_female")
 
-    # row labels on left
+    # row section labels
     axes[0, 0].set_ylabel("Male",   fontsize=11, color="black", labelpad=8)
-    axes[1, 0].set_ylabel("Female", fontsize=11, color="black", labelpad=8)
+    axes[n_rows_male, 0].set_ylabel("Female", fontsize=11, color="black", labelpad=8)
 
     condition_label = "LGD-CM" if condition == "lgd_cm" else "Regular"
     fig.suptitle(
@@ -493,21 +497,21 @@ def plot_portrait_sample(run_data, condition="lgd_cm",
     return fig
 def compare_scribbles_heatmap(lgd_cm_pil, regular_pil, save_path=None,
                                input_pil=None):
-    """
-    Save only the pixel-wise absolute difference heatmap.
-    """
     lgd_cm_np  = np.array(lgd_cm_pil).astype(float)
     regular_np = np.array(regular_pil).astype(float)
     diff       = np.abs(lgd_cm_np - regular_np).mean(axis=2)
     diff_norm  = diff / (diff.max() + 1e-8)
 
     dpi = 100
-    fig, ax = plt.subplots(figsize=(512 / dpi, 512 / dpi), dpi=dpi)
+    fig, ax = plt.subplots(figsize=(6, 5), dpi=dpi)
     im = ax.imshow(diff_norm, cmap="hot")
     ax.axis("off")
-    plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
+    cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label("Normalized pixel difference", fontsize=9)
+    cbar.ax.tick_params(labelsize=8)
+    plt.tight_layout()
     if save_path:
-        fig.savefig(save_path, dpi=dpi, bbox_inches=None)
+        fig.savefig(save_path, dpi=dpi, bbox_inches="tight")
         plt.close(fig)
     else:
         plt.show()
@@ -548,9 +552,9 @@ def make_all_plots(run_dir, plots_dir=None):
     plot_portrait_grid(run, condition="regular",
                        save_path=os.path.join(plots_dir, "portraits_regular.png"))
     print("Generating portrait samples...", flush=True)
-    plot_portrait_sample(run, condition="lgd_cm",
+    plot_portrait_sample(run, condition="lgd_cm", n_sample=100, n_cols=10,
                          save_path=os.path.join(plots_dir, "portrait_sample_lgd_cm.png"))
-    plot_portrait_sample(run, condition="regular",
+    plot_portrait_sample(run, condition="regular", n_sample=100, n_cols=10,
                          save_path=os.path.join(plots_dir, "portrait_sample_regular.png"))
 
     print("Generating scribble heatmap...", flush=True)

@@ -238,52 +238,74 @@ def main():
 
     # ── 5. Regenerate targets conditioned on the HED scribble ──────────────────
     print(f"Regenerating {N} target images conditioned on HED scribble...", flush=True)
-    with torch.no_grad():
-        man_images, _ = generate_and_store_cs(
-            sprinter, args.sprinter_target_man_prompt,
-            sobel_cond_pil, n_half, batch_size=2, cn_scale=args.controlnet_scale,
-        )
-        woman_images, _ = generate_and_store_cs(
-            sprinter, args.sprinter_target_woman_prompt,
-            sobel_cond_pil, n_half, batch_size=2, cn_scale=args.controlnet_scale,
-        )
+    n_groups = 4
+    n_per_group = N // n_groups  # divide N equally across 4 groups
+    print(f"Regenerating {N} target images ({n_per_group} per group × {n_groups} groups)...", flush=True)
 
-    plot_row(man_images, "Man Portrait Samples",
-             save_path=os.path.join(args.output_dir, "target_samples_man.png"))
-    plot_row(woman_images, "Woman Portrait Samples",
-             save_path=os.path.join(args.output_dir, "target_samples_woman.png"))
+    target_prompts = [
+        ("woman", "a superrealistic portrait photograph of a woman, studio lighting, white shirt"),
+        ("androgynous", "a superrealistic portrait photograph of an androgynous person, studio lighting, white shirt"),
+        ("andro_masc", "a superrealistic portrait photograph of an androgynous person, white shirt, "
+                       "masculine bone structure, sharp jawline, studio lighting"),
+        ("mostly_masc", "a superrealistic portrait photograph of a masculine man, white shirt, "
+                        "androgynous softness and minor characteristics, studio lighting"),
+    ]
+
+    target_images_per_group = {}
+    with torch.no_grad():
+        for group_name, prompt in target_prompts:
+            imgs, _ = generate_and_store_cs(
+                sprinter, prompt,
+                sobel_cond_pil, n_per_group, batch_size=2, cn_scale=args.controlnet_scale,
+            )
+            target_images_per_group[group_name] = imgs
+            plot_row(imgs, f"Target: {group_name}",
+                     save_path=os.path.join(args.output_dir, f"target_samples_{group_name}.png"))
+            print(f"  ✅ {group_name}: {len(imgs)} images", flush=True)
+
+    # convenience aliases used later in npy saving / wandb logging
+    woman_images = target_images_per_group["woman"]
+    man_images = target_images_per_group["mostly_masc"]  # closest to "man" for legacy keys
 
     # ── 6. Encode targets to CLIP ──────────────────────────────────────────────
     print("Encoding targets to CLIP...", flush=True)
+    clip_model.to(device)
+    clip_embs_per_group = {}
     with torch.no_grad():
-        man_clip_embs = encode_images_clip(
-            pil_images_to_tensor(man_images, device), clip_model, clip_processor)
-        woman_clip_embs = encode_images_clip(
-            pil_images_to_tensor(woman_images, device), clip_model, clip_processor)
-    all_clip_embeddings = torch.cat([man_clip_embs, woman_clip_embs], dim=0)
-    print(f"Target CLIP embeddings: {all_clip_embeddings.shape}", flush=True)
+        for group_name, imgs in target_images_per_group.items():
+            clip_embs_per_group[group_name] = encode_images_clip(
+                pil_images_to_tensor(imgs, device), clip_model, clip_processor)
+    clip_model.to("cpu")
 
-    # Sanity checks
+    all_clip_embeddings = torch.cat(list(clip_embs_per_group.values()), dim=0)
+    N_total = all_clip_embeddings.shape[0]
+    print(f"Target CLIP embeddings: {all_clip_embeddings.shape}  "
+          f"({n_per_group} × {n_groups} = {N_total})", flush=True)
+
+    # Sanity check
     norms = all_clip_embeddings.norm(dim=-1)
-    intra_sim = (man_clip_embs @ man_clip_embs.T).mean().item()
-    inter_sim = (man_clip_embs @ woman_clip_embs.T).mean().item()
+    assert torch.allclose(norms, torch.ones(N_total, device=device), atol=1e-3), "Not normalized!"
     print(f"  Norms min/max: {norms.min():.4f} / {norms.max():.4f}")
-    print(f"  Intra-class sim (man↔man):   {intra_sim:.4f}")
-    print(f"  Inter-class sim (man↔woman): {inter_sim:.4f}")
-    assert intra_sim > inter_sim, "Classes not separated in CLIP space!"
-    print("✅ Classes separable in CLIP space.", flush=True)
+    print("✅ all_clip_embeddings ready.", flush=True)
 
-    # Target CLIP PCA
+    # PCA
     _pca = PCA(n_components=2)
-    _coords = _pca.fit_transform(all_clip_embeddings.cpu().numpy())
+    _all_coords = _pca.fit_transform(all_clip_embeddings.cpu().numpy())
+    colors = ["crimson", "mediumorchid", "limegreen", "dodgerblue"]
     fig, ax = plt.subplots(figsize=(8, 6))
-    ax.scatter(_coords[:n_half, 0], _coords[:n_half, 1], c='dodgerblue', label='Man', alpha=0.7)
-    ax.scatter(_coords[n_half:, 0], _coords[n_half:, 1], c='crimson', label='Woman', alpha=0.7)
-    ax.set_title("PCA of Target CLIP Embeddings"); ax.legend(); ax.grid(True, alpha=0.3)
+    for idx, (group_name, _) in enumerate(target_prompts):
+        start = idx * n_per_group
+        ax.scatter(_all_coords[start:start + n_per_group, 0],
+                   _all_coords[start:start + n_per_group, 1],
+                   c=colors[idx], label=group_name, alpha=0.7)
+    ax.set_title("PCA of Target CLIP Embeddings (4 groups)")
+    ax.legend();
+    ax.grid(True, alpha=0.3)
     pca_path = os.path.join(args.output_dir, "target_clip_pca.png")
-    fig.savefig(pca_path, dpi=100, bbox_inches='tight'); plt.close(fig)
+    fig.savefig(pca_path, dpi=100, bbox_inches='tight');
+    plt.close(fig)
     pca_fixed = _pca
-    del _coords
+    del _all_coords
 
     # ── 7. wandb init (after we have config details) ───────────────────────────
     eval_interval = args.eval_interval if args.eval_interval > 0 else max(1, (args.n_steps - args.start_step) // 5)

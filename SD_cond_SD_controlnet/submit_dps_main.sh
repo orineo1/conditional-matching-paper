@@ -8,37 +8,43 @@
 #SBATCH --mem=48G
 #SBATCH --partition=salmon
 
-# ── 1. Environment & Path Setup ──────────────────────────────────────────────
+# ── 1. Environment Setup ─────────────────────────────────────────────────────
 export ENV_PATH="/sci/labs/orzuk/shaulytolk/conditional-matching-paper/scribble_env"
 export PATH="$ENV_PATH/bin:$PATH"
 PYTHON="$ENV_PATH/bin/python"
 
-# ── 2. Redirect Caches to Lab (Fixes "No space left on device") ──────────────
+# Redirect Caches to Lab
 export LAB_ROOT="/sci/labs/orzuk/ori_m"
 export HF_HOME="$LAB_ROOT/hf_cache"
 export MPLCONFIGDIR="$LAB_ROOT/.matplotlib_cache"
 export XDG_CACHE_HOME="$LAB_ROOT/.cache"
-
-# Ensure these directories exist
 mkdir -p "$HF_HOME" "$MPLCONFIGDIR" "$XDG_CACHE_HOME"
 
-# ── 3. Verification (Prints to your .log file) ───────────────────────────────
-echo "=== JOB STARTING ON $(hostname) ==="
-echo "Python Executable: $($PYTHON -c 'import sys; print(sys.executable)')"
+# ── 2. Force Repair Transformers ─────────────────────────────────────────────
+echo "Checking/Repairing dependencies..."
+# --force-reinstall ensures we fix the "unknown location" issue
+$PYTHON -m pip install --upgrade --force-reinstall -q transformers accelerate diffusers
+
+# ── 3. Verification ──────────────────────────────────────────────────────────
+echo "=== DEBUG INFO ==="
+echo "Node: $(hostname)"
+$PYTHON -c "import transformers; print(f'Transformers version: {transformers.__version__}'); print(f'Location: {transformers.__file__}')"
 $PYTHON -c "import torch; print(f'GPU Check: {torch.cuda.is_available()}')"
-echo "==================================="
+echo "=================="
 
 # ── 4. Runtime Configs ───────────────────────────────────────────────────────
 export WANDB_API_KEY=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
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-# Navigate to project
 cd /sci/labs/orzuk/ori_m/conditional-matching-paper
-mkdir -p SD_cond_SD_controlnet/output
+
+# CRITICAL: Create the output directory NOW so rclone always finds it
+OUTPUT_DIR="SD_cond_SD_controlnet/output/dps_main_${SLURM_JOB_ID}"
+mkdir -p "$OUTPUT_DIR"
 
 # ── 5. Run the Pipeline ──────────────────────────────────────────────────────
 $PYTHON SD_cond_SD_controlnet/run_dps.py \
-    --output_dir SD_cond_SD_controlnet/output/dps_main_${SLURM_JOB_ID} \
+    --output_dir "$OUTPUT_DIR" \
     --n_steps 30 \
     --start_step 15 \
     --num_variations 6 \
@@ -61,8 +67,7 @@ $PYTHON SD_cond_SD_controlnet/run_dps.py \
     --seed 1
 
 # ── 6. Sync to GDrive ────────────────────────────────────────────────────────
-OUTPUT_DIR=SD_cond_SD_controlnet/output/dps_main_${SLURM_JOB_ID}
 echo "Syncing $OUTPUT_DIR to Google Drive..."
 rclone copy "$OUTPUT_DIR" "gdrive:conditional-matching/runs/dps_main_${SLURM_JOB_ID}" \
     --tpslimit 10 --cache-rps 50 --transfers 4
-echo "✅ Job Complete."
+echo "✅ Job Process Finished."

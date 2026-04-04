@@ -264,7 +264,7 @@ def plot_boxplot(run_data, save_path=None):
                   female_conf if female_conf else [float("nan")]]
         labels = [f"Male\n(n={len(male_conf)})",
                   f"Female\n(n={len(female_conf)})"]
-        colors = ["royalblue", "crimson"]
+        colors = ["black", "black"]
 
         bp = ax.boxplot(data, labels=labels, patch_artist=True,
                         medianprops=dict(color="black", linewidth=2))
@@ -419,7 +419,78 @@ def plot_portrait_grid(run_data, condition="lgd_cm",
     _save_or_show(fig, save_path)
     return fig
 
+def plot_portrait_sample(run_data, condition="lgd_cm",
+                         n_sample=20, save_path=None):
+    """
+    Sample up to n_sample portraits in two rows: Male (top) / Female (bottom).
+    Confidence score shown above each portrait.
+    If one gender is missing, shows empty row with message.
+    """
+    photos = run_data.get(f"photos_{condition}", [])
+    if not photos:
+        print(f"⚠️  No photos found for condition '{condition}'")
+        return
 
+    m         = run_data["metrics"]
+    stats_key = f"{condition}_gender"
+    stats     = m.get(stats_key, {})
+    per_image = stats.get("per_image", [{}] * len(photos))
+
+    paired  = list(zip(photos, per_image))
+    males   = sorted([(img, p) for img, p in paired if p.get("label") == "male"],
+                     key=lambda x: x[1].get("p_male", 0), reverse=True)
+    females = sorted([(img, p) for img, p in paired if p.get("label") == "female"],
+                     key=lambda x: x[1].get("p_female", 0), reverse=True)
+
+    # proportional sampling
+    n_male_sample   = min(len(males),   n_sample // 2)
+    n_female_sample = min(len(females), n_sample - n_male_sample)
+    n_male_sample   = min(len(males),   n_sample - n_female_sample)
+
+    males_sampled   = males[:n_male_sample]
+    females_sampled = females[:n_female_sample]
+
+    # number of columns = max of the two rows, at least 1
+    n_cols = max(n_male_sample, n_female_sample, 1)
+
+    fig, axes = plt.subplots(2, n_cols, figsize=(2.5 * n_cols, 6))
+    if n_cols == 1:
+        axes = axes.reshape(2, 1)
+
+    def draw_row(row_axes, samples, gender_label, conf_key):
+        for col, ax in enumerate(row_axes):
+            ax.set_xticks([])
+            ax.set_yticks([])
+            for spine in ax.spines.values():
+                spine.set_visible(False)
+            if col < len(samples):
+                img, p = samples[col]
+                ax.imshow(img)
+                ax.set_title(f"{p.get(conf_key, 0):.2f}",
+                             fontsize=8, color="black")
+            else:
+                ax.set_facecolor("#f5f5f5")
+                if col == 0 and len(samples) == 0:
+                    ax.text(0.5, 0.5, f"No {gender_label}\nimages",
+                            ha="center", va="center",
+                            transform=ax.transAxes,
+                            fontsize=9, color="gray")
+
+    draw_row(axes[0], males_sampled,   "male",   "p_male")
+    draw_row(axes[1], females_sampled, "female", "p_female")
+
+    # row labels on left
+    axes[0, 0].set_ylabel("Male",   fontsize=11, color="black", labelpad=8)
+    axes[1, 0].set_ylabel("Female", fontsize=11, color="black", labelpad=8)
+
+    condition_label = "LGD-CM" if condition == "lgd_cm" else "Regular"
+    fig.suptitle(
+        f"{condition_label} — {n_male_sample}M / {n_female_sample}F",
+        fontsize=13, fontweight="bold"
+    )
+    plt.tight_layout()
+    _save_or_show(fig, save_path)
+    return fig
 def compare_scribbles_heatmap(lgd_cm_pil, regular_pil, save_path=None,
                                input_pil=None):
     """
@@ -476,6 +547,11 @@ def make_all_plots(run_dir, plots_dir=None):
                        save_path=os.path.join(plots_dir, "portraits_lgd_cm.png"))
     plot_portrait_grid(run, condition="regular",
                        save_path=os.path.join(plots_dir, "portraits_regular.png"))
+    print("Generating portrait samples...", flush=True)
+    plot_portrait_sample(run, condition="lgd_cm",
+                         save_path=os.path.join(plots_dir, "portrait_sample_lgd_cm.png"))
+    plot_portrait_sample(run, condition="regular",
+                         save_path=os.path.join(plots_dir, "portrait_sample_regular.png"))
 
     print("Generating scribble heatmap...", flush=True)
     lgd_cm_pil  = run.get("final_scribble_lgd_cm")

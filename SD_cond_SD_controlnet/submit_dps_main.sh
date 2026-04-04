@@ -60,8 +60,14 @@ python SD_cond_SD_controlnet/run_dps.py \
     --bandwidth_scale 1.0 \
     --kernel_alpha 1.0 \
     --seed 1
+# ── 6. Run offline analysis (PCA, t-SNE, KDE, boxplot, heatmap) ──────────────
+echo "Running analysis..."
+python SD_cond_SD_controlnet/analysis.py \
+    --run_dir "$OUTPUT_DIR" \
+    --plots_dir "$OUTPUT_DIR/plots"
+echo "✅ Analysis complete."
 
-# ── 6. Sync to GDrive ────────────────────────────────────────────────────────
+# ── 7. Sync to GDrive ────────────────────────────────────────────────────────
 echo "Syncing $OUTPUT_DIR to Google Drive..."
 rclone copy "$OUTPUT_DIR" "gdrive:conditional-matching/runs/dps_main_${SLURM_JOB_ID}" \
     --tpslimit 10 --cache-rps 50 --transfers 4

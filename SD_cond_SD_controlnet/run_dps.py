@@ -128,6 +128,11 @@ def compute_clip_softmax(pil_list, clip_model, clip_processor,
             input_ids=text_inputs["input_ids"],
             attention_mask=text_inputs["attention_mask"],
         )
+        print(f"  [softmax] text_features type: {type(text_features)}  "
+              f"hasattr pooler_output: {hasattr(text_features, 'pooler_output')}",
+              flush=True)
+        if hasattr(text_features, "pooler_output"):
+            text_features = text_features.pooler_output
         text_features = text_features / text_features.norm(dim=-1, keepdim=True)
     print(f"  [softmax] text_features shape: {text_features.shape}  "
           f"dtype: {text_features.dtype}", flush=True)

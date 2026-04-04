@@ -8,36 +8,36 @@
 #SBATCH --mem=48G
 #SBATCH --partition=salmon
 
-# Conda setup
-#export PATH="/usr/local/spack/opt/spack/linux-debian12-x86_64/gcc-12.2.0/miniconda3-24.3.0-iqeknetqo7ngpr57d6gmu3dg4rzlcgk6/bin:$PATH"
-#source /usr/local/spack/opt/spack/linux-debian12-x86_64/gcc-12.2.0/miniconda3-24.3.0-iqeknetqo7ngpr57d6gmu3dg4rzlcgk6/etc/profile.d/conda.sh
-#conda activate /sci/labs/orzuk/shaulytolk/conditional-matching-paper/scribble_env
-# ── NEW ENVIRONMENT SETUP (Replaces broken Spack lines) ──────────────────────
-# We point directly to your environment to bypass the 'conda command not found' error
-ENV_PATH="/sci/labs/orzuk/shaulytolk/conditional-matching-paper/scribble_env"
+# ── 1. Environment & Path Setup ──────────────────────────────────────────────
+export ENV_PATH="/sci/labs/orzuk/shaulytolk/conditional-matching-paper/scribble_env"
 export PATH="$ENV_PATH/bin:$PATH"
 PYTHON="$ENV_PATH/bin/python"
 
-# Verify in log
-echo "Using Python: $($PYTHON --version) at $PYTHON"
+# ── 2. Redirect Caches to Lab (Fixes "No space left on device") ──────────────
+export LAB_ROOT="/sci/labs/orzuk/ori_m"
+export HF_HOME="$LAB_ROOT/hf_cache"
+export MPLCONFIGDIR="$LAB_ROOT/.matplotlib_cache"
+export XDG_CACHE_HOME="$LAB_ROOT/.cache"
 
+# Ensure these directories exist
+mkdir -p "$HF_HOME" "$MPLCONFIGDIR" "$XDG_CACHE_HOME"
+
+# ── 3. Verification (Prints to your .log file) ───────────────────────────────
+echo "=== JOB STARTING ON $(hostname) ==="
+echo "Python Executable: $($PYTHON -c 'import sys; print(sys.executable)')"
+$PYTHON -c "import torch; print(f'GPU Check: {torch.cuda.is_available()}')"
+echo "==================================="
+
+# ── 4. Runtime Configs ───────────────────────────────────────────────────────
 export WANDB_API_KEY=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
-
-echo "Starting DPS main pipeline on $(hostname) with GPU: $CUDA_VISIBLE_DEVICES"
-echo "Job ID: $SLURM_JOB_ID"
-
-# Point HF cache to lab storage (home dir is full)
-export HF_HOME=/sci/labs/orzuk/ori_m/hf_cache
-mkdir -p /sci/labs/orzuk/ori_m/hf_cache
-
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-pip install -q matplotlib scikit-learn controlnet_aux
-
+# Navigate to project
 cd /sci/labs/orzuk/ori_m/conditional-matching-paper
 mkdir -p SD_cond_SD_controlnet/output
 
-python SD_cond_SD_controlnet/run_dps.py \
+# ── 5. Run the Pipeline ──────────────────────────────────────────────────────
+$PYTHON SD_cond_SD_controlnet/run_dps.py \
     --output_dir SD_cond_SD_controlnet/output/dps_main_${SLURM_JOB_ID} \
     --n_steps 30 \
     --start_step 15 \
@@ -60,14 +60,9 @@ python SD_cond_SD_controlnet/run_dps.py \
     --kernel_alpha 1.0 \
     --seed 1
 
-# ── sync to Google Drive regardless of job exit code ──
+# ── 6. Sync to GDrive ────────────────────────────────────────────────────────
 OUTPUT_DIR=SD_cond_SD_controlnet/output/dps_main_${SLURM_JOB_ID}
 echo "Syncing $OUTPUT_DIR to Google Drive..."
-rclone copy "$OUTPUT_DIR" \
-    "gdrive:conditional-matching/runs/dps_main_${SLURM_JOB_ID}" \
-    --tpslimit 10 \
-    --cache-rps 50 \
-    --transfers 4
-echo "✅ Sync complete."
-
-echo "DPS main pipeline complete."
+rclone copy "$OUTPUT_DIR" "gdrive:conditional-matching/runs/dps_main_${SLURM_JOB_ID}" \
+    --tpslimit 10 --cache-rps 50 --transfers 4
+echo "✅ Job Complete."

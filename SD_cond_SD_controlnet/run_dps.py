@@ -279,25 +279,16 @@ def main():
     print("✅ all_clip_embeddings ready.", flush=True)
 
     # ── 5. PCA: fit on man + woman, project the rest ───────────────────────────
-    man_clip_embs = clip_embs_per_group["Man"]
-    woman_clip_embs = clip_embs_per_group["Woman"]
     _pca = PCA(n_components=2)
-    _coords_fit = _pca.fit_transform(
-        torch.cat([man_clip_embs, woman_clip_embs], dim=0).cpu().numpy()
-    )
-    n_man = man_clip_embs.shape[0]
+    _all_coords = _pca.fit_transform(all_clip_embeddings.cpu().numpy())
 
     fig, ax = plt.subplots(figsize=(9, 7))
-    ax.scatter(_coords_fit[n_man:, 0], _coords_fit[n_man:, 1],
-               c="crimson", label="Woman", alpha=0.7, marker="o")
-    ax.scatter(_coords_fit[:n_man, 0], _coords_fit[:n_man, 1],
-               c="dodgerblue", label="Man", alpha=0.7, marker="D")
-    for group_name, _, _, color, marker in target_prompts:
-        if group_name in ("Man", "Woman"):
-            continue
-        coords = _pca.transform(clip_embs_per_group[group_name].cpu().numpy())
+    offset = 0
+    for group_name, _, n, color, marker in target_prompts:
+        coords = _all_coords[offset:offset + n]
+        offset += n
         ax.scatter(coords[:, 0], coords[:, 1], c=color, label=group_name,
-                   alpha=0.8, marker=marker, s=80)
+                   alpha=0.7, marker=marker, s=60)
         cx, cy = coords[:, 0].mean(), coords[:, 1].mean()
         ax.scatter(cx, cy, c=color, marker='*', s=200,
                    edgecolors='black', linewidths=0.6, zorder=5)

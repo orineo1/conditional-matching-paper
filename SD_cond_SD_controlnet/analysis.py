@@ -306,6 +306,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Patch
 
+import matplotlib.pyplot as plt
+import numpy as np
+from matplotlib.patches import Patch
+
 
 def plot_boxplot_combined(run_data, save_path=None):
     m = run_data.get("metrics", {})
@@ -326,57 +330,58 @@ def plot_boxplot_combined(run_data, save_path=None):
     reg_male, reg_female = split_by_gender(regular_per_image)
     lgd_cm_male, lgd_cm_female = split_by_gender(lgd_cm_per_image)
 
-    # Use tight grouping: [Male_Reg, Male_LGD, (gap), Female_Reg, Female_LGD]
+    # Positions and Setup
     positions = [1, 1.8, 3.5, 4.3]
     data = [reg_male, lgd_cm_male, reg_female, lgd_cm_female]
     counts = [len(reg_male), len(lgd_cm_male), len(reg_female), len(lgd_cm_female)]
     colors = ["steelblue", "darkorange", "steelblue", "darkorange"]
-    labels = ["Regular", "LGD-CM", "Regular", "LGD-CM"]
 
     fig, ax = plt.subplots(figsize=(8, 5))
 
-    # Plot boxes only if data exists
     for i, (pts, pos, col) in enumerate(zip(data, positions, colors)):
         if len(pts) > 0:
-            # Boxplot
-            bp = ax.boxplot(pts, positions=[pos], patch_artist=True, widths=0.6,
-                            showfliers=False,  # We show them with scatter anyway
-                            medianprops=dict(color="black", linewidth=2),
-                            boxprops=dict(facecolor=col, alpha=0.5, edgecolor=col))
+            # Boxplot - Light alpha with black edges
+            ax.boxplot(pts, positions=[pos], patch_artist=True, widths=0.5,
+                       showfliers=False,
+                       medianprops=dict(color="black", linewidth=1.5),
+                       boxprops=dict(facecolor=col, alpha=0.3, edgecolor='black'))
 
-            # Individual points with jitter
-            jitter = np.random.uniform(-0.15, 0.15, size=len(pts))
+            # Scatter - Jittered dots
+            jitter = np.random.uniform(-0.1, 0.1, size=len(pts))
             ax.scatter(np.full(len(pts), pos) + jitter, pts,
-                       color=col, alpha=0.7, s=30, zorder=3, edgecolors='black', linewidth=0.5)
+                       color=col, alpha=0.6, s=30, zorder=3,
+                       edgecolors='black', linewidth=0.5)
 
-    # Fix: Alignment of n= labels
+    # 1. Place n= labels in the "Safe Gutter" (y=0.46)
     for pos, count, col in zip(positions, counts, colors):
-        ax.text(pos, 0.44, f"n={count}", ha='center', va='top',
-                color=col, fontsize=9, fontweight='bold')
+        ax.text(pos, 0.46, f"n={count}", ha='center', va='center',
+                color=col, fontsize=9)
 
-    # Formatting
-    ax.set_xticks([1.4, 3.9])  # Midpoints of the groups
-    ax.set_xticklabels(["Male", "Female"], fontsize=12, fontweight='bold')
-
-    ax.set_xlim(0, 5.5)
-    ax.set_ylim(0.45, 1.02)  # Adjusted to fit n= labels at the bottom
-    ax.set_ylabel("Confidence", fontsize=11)
-    ax.set_title("CLIP Softmax Confidence: Regular vs LGD-CM", fontsize=14, pad=20)
-
-    ax.grid(True, alpha=0.2, axis="y")
-    ax.axvline(2.65, color="black", lw=1, linestyle="--", alpha=0.2)  # Middle divider
-
-    # Legend
+    # 2. Place Legend in the "Safe Gutter" (y=0.42)
     legend_elements = [
-        Patch(facecolor="steelblue", alpha=0.5, label="Regular"),
-        Patch(facecolor="darkorange", alpha=0.5, label="LGD-CM"),
+        Patch(facecolor="steelblue", alpha=0.4, edgecolor='black', label="Regular"),
+        Patch(facecolor="darkorange", alpha=0.4, edgecolor='black', label="LGD-CM"),
     ]
-    ax.legend(handles=legend_elements, loc="upper center",
-              bbox_to_anchor=(0.5, 1.1), ncol=2, frameon=True)
+    ax.legend(handles=legend_elements, loc="lower center",
+              bbox_to_anchor=(0.5, 0.01),  # Anchored to the bottom of the axis
+              ncol=2, frameon=True, fontsize=10, handletextpad=0.5)
+
+    # 3. Formatting - Regular fonts (No Bold)
+    ax.set_xticks([1.4, 3.9])
+    ax.set_xticklabels(["Male", "Female"], fontsize=12)
+
+    # Set limits so the 0.4-0.5 range is visible but empty of dots
+    ax.set_xlim(0, 5.5)
+    ax.set_ylim(0.4, 1.02)
+
+    ax.set_ylabel("Confidence", fontsize=11)
+    ax.set_title("CLIP Softmax Confidence: Regular vs LGD-CM", fontsize=13)
+
+    ax.grid(True, alpha=0.15, axis="y")
+    ax.axvline(2.65, color="gray", lw=0.8, linestyle="--", alpha=0.3)
 
     plt.tight_layout()
 
-    # Custom save/show logic
     if save_path:
         plt.savefig(save_path, bbox_inches='tight')
     plt.show()

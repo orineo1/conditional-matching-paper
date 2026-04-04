@@ -35,7 +35,12 @@ def plot_row(images, title, count=5, save_path=None):
     else:
         plt.show()
 
-def visualize_step(sd, architect, sprinter, target_clip_np, num_cond=4, save_path=None, pca_fixed=None):
+def visualize_step(sd, architect, sprinter, target_clip_np, num_cond=4,
+                   save_path=None, pca_fixed=None,
+                   n_groups=4,
+                   group_names=("woman", "man", "andro_masc", "mostly_masc"),
+                   group_colors=("#4169E1", "#9B59B6", "#E67E22", "#E74C3C"),
+                   group_markers=("o", "D", "^", "s")):
     i = sd['step']
     with torch.no_grad():
         img_xt_reg  = latent_to_pil(sd['latents_step_regular_cpu'].to(architect.device), architect.vae, architect.image_processor)
@@ -56,7 +61,7 @@ def visualize_step(sd, architect, sprinter, target_clip_np, num_cond=4, save_pat
         ]
         sprinter.vae.to(dtype=torch.float32)
 
-        combined   = np.vstack([target_clip_np, sd['variation_clip_flat']])
+        combined = np.vstack([target_clip_np, sd['variation_clip_flat']])
         if pca_fixed is not None:
             pca_coords = pca_fixed.transform(combined)
             pca_var = pca_fixed.explained_variance_ratio_.sum()
@@ -67,10 +72,7 @@ def visualize_step(sd, architect, sprinter, target_clip_np, num_cond=4, save_pat
 
         target_pca = pca_coords[:target_clip_np.shape[0]]
         gen_pca    = pca_coords[target_clip_np.shape[0]:]
-
-        n_per_mode  = target_clip_np.shape[0] // 2
-        masc_pca    = target_pca[:n_per_mode]
-        fem_pca     = target_pca[n_per_mode:]
+        n_per_group = target_clip_np.shape[0] // n_groups
 
     n_cols = 2 + num_cond + 1
     fig, axes = plt.subplots(2, n_cols, figsize=(4 * n_cols, 8))
@@ -88,12 +90,25 @@ def visualize_step(sd, architect, sprinter, target_clip_np, num_cond=4, save_pat
     for j, ci in enumerate(cond_imgs):
         axes[1, j+2].imshow(ci); axes[1, j+2].set_title(f"Cond {j+1}")
 
+    # ── PCA scatter ───────────────────────────────────────────────────────────
     ax = axes[1, n_cols - 1]
-    ax.scatter(masc_pca[:, 0], masc_pca[:, 1], c='royalblue', alpha=0.6, s=40, label='Target masc')
-    ax.scatter(fem_pca[:, 0],  fem_pca[:, 1],  c='crimson',   alpha=0.6, s=40, label='Target fem')
-    ax.scatter(gen_pca[:, 0],  gen_pca[:, 1],  c='limegreen', alpha=0.8, s=50, marker='x', label='Generated')
+    for g in range(n_groups):
+        start = g * n_per_group
+        end   = start + n_per_group
+        ax.scatter(target_pca[start:end, 0], target_pca[start:end, 1],
+                   c=group_colors[g], marker=group_markers[g],
+                   alpha=0.7, s=50, label=group_names[g])
+        cx = target_pca[start:end, 0].mean()
+        cy = target_pca[start:end, 1].mean()
+        ax.scatter(cx, cy, c=group_colors[g], marker='*', s=180,
+                   edgecolors='black', linewidths=0.6, zorder=5)
+
+    ax.scatter(gen_pca[:, 0], gen_pca[:, 1],
+               c='limegreen', alpha=0.9, s=60, marker='x',
+               linewidths=1.5, label='Generated', zorder=6)
+
     ax.set_title(f"CLIP PCA  Var={pca_var:.1%}")
-    ax.legend(fontsize=7)
+    ax.legend(fontsize=6, loc='best')
     ax.grid(True, alpha=0.3)
 
     for row in axes:
@@ -102,12 +117,9 @@ def visualize_step(sd, architect, sprinter, target_clip_np, num_cond=4, save_pat
     axes[1, n_cols - 1].axis("on")
 
     plt.tight_layout()
-
     wandb.log({"step_visualization": wandb.Image(fig)}, step=i+1, commit=True)
-
     if save_path:
         fig.savefig(save_path, dpi=100, bbox_inches='tight')
-
     plt.close(fig)
 
 def compare_scribbles_heatmap(dps_pil, regular_pil, save_path=None):

@@ -222,15 +222,15 @@ def main():
         ("Androgynous",
          "a superrealistic portrait photograph of an androgynous person, "
          "slight masculine features, studio lighting, white shirt",
-         15, "mediumorchid", "x"),
+         1, "mediumorchid", "x"),
         ("Andro-masculine",
          "a superrealistic portrait photograph of an androgynous person, white shirt, "
          "masculine bone structure, sharp jawline, studio lighting",
-         25, "limegreen", "^"),
+         48, "limegreen", "^"),
         ("Mostly masculine",
          "a superrealistic portrait photograph of a masculine man, white shirt, "
          "androgynous softness and minor characteristics, studio lighting",
-         15, "orange", "s"),
+         1, "orange", "s"),
         ("Man",
          "a superrealistic portrait photograph of a man, studio lighting, white shirt",
          25, "dodgerblue", "D"),

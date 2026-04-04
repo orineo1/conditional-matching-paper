@@ -237,7 +237,11 @@ def plot_kde(run_data, save_path=None):
 
 
 def plot_boxplot(run_data, save_path=None):
-    """Boxplot of CLIP softmax p(male) — LGD-CM vs Regular, same y-axis."""
+    """
+    Two separate boxplot figures (Regular and LGD-CM).
+    Each has Male and Female boxes with individual points overlaid.
+    Y-axis: confidence of the predicted gender (always > 0.5).
+    """
     m = run_data["metrics"]
 
     lgd_cm_per_image  = m.get("lgd_cm_gender",  {}).get("per_image", [])
@@ -247,28 +251,141 @@ def plot_boxplot(run_data, save_path=None):
         print("⚠️  Missing softmax data for boxplot — skipping.")
         return
 
-    lgd_cm_p_male  = [x["p_male"] for x in lgd_cm_per_image]
-    regular_p_male = [x["p_male"] for x in regular_per_image]
+    def split_by_gender(per_image):
+        male_conf   = [x["p_male"]   for x in per_image if x["label"] == "male"]
+        female_conf = [x["p_female"] for x in per_image if x["label"] == "female"]
+        return male_conf, female_conf
 
-    fig, ax = plt.subplots(figsize=(5, 5))
-    bp = ax.boxplot(
-        [regular_p_male, lgd_cm_p_male],
-        labels=["Regular", "LGD-CM"],
-        patch_artist=True,
-        medianprops=dict(color="black", linewidth=2),
-    )
-    bp["boxes"][0].set_facecolor("steelblue")
-    bp["boxes"][1].set_facecolor("darkorange")
-    ax.set_ylim(0, 1)
-    ax.axhline(0.5, color="gray", lw=1, linestyle="--", alpha=0.6)
-    ax.set_ylabel("p(male) — CLIP softmax")
-    ax.set_title("CLIP softmax p(male) distribution")
+    def make_boxplot(male_conf, female_conf, title, save_path):
+        fig, ax = plt.subplots(figsize=(5, 5))
+
+        data   = []
+        labels = []
+        colors = []
+        if male_conf:
+            data.append(male_conf)
+            labels.append(f"Male\n(n={len(male_conf)})")
+            colors.append("royalblue")
+        if female_conf:
+            data.append(female_conf)
+            labels.append(f"Female\n(n={len(female_conf)})")
+            colors.append("crimson")
+
+        if not data:
+            ax.text(0.5, 0.5, "No data", ha="center", va="center",
+                    transform=ax.transAxes)
+        else:
+            bp = ax.boxplot(data, labels=labels, patch_artist=True,
+                            medianprops=dict(color="black", linewidth=2))
+            for patch, color in zip(bp["boxes"], colors):
+                patch.set_facecolor(color)
+                patch.set_alpha(0.6)
+            # overlay individual points
+            for idx, (pts, color) in enumerate(zip(data, colors), start=1):
+                ax.scatter([idx] * len(pts), pts, color=color,
+                           alpha=0.8, s=40, zorder=3)
+
+        ax.set_ylim(0.5, 1.0)
+        ax.set_ylabel("Confidence")
+        ax.set_title(title, fontsize=13, fontweight="bold")
+        ax.grid(True, alpha=0.3, axis="y")
+        plt.tight_layout()
+        _save_or_show(fig, save_path)
+        return fig
+
+    reg_male,    reg_female    = split_by_gender(regular_per_image)
+    lgd_cm_male, lgd_cm_female = split_by_gender(lgd_cm_per_image)
+
+    # save_path is used as base — e.g. "boxplot.png" → "boxplot_regular.png"
+    if save_path:
+        base, ext = os.path.splitext(save_path)
+        reg_path    = f"{base}_regular{ext}"
+        lgd_cm_path = f"{base}_lgd_cm{ext}"
+    else:
+        reg_path = lgd_cm_path = None
+
+    make_boxplot(reg_male,    reg_female,    "Regular", reg_path)
+    make_boxplot(lgd_cm_male, lgd_cm_female, "LGD-CM",  lgd_cm_path)
+
+def plot_boxplot_combined(run_data, save_path=None):
+    """
+    Single figure with two groups on x-axis: Male and Female.
+    Within each group: two boxes — Regular (blue) and LGD-CM (orange).
+    Y-axis: confidence of the predicted gender.
+    """
+    m = run_data["metrics"]
+
+    lgd_cm_per_image  = m.get("lgd_cm_gender",  {}).get("per_image", [])
+    regular_per_image = m.get("regular_gender", {}).get("per_image", [])
+
+    if not lgd_cm_per_image or not regular_per_image:
+        print("⚠️  Missing softmax data for combined boxplot — skipping.")
+        return
+
+    def split_by_gender(per_image):
+        male_conf   = [x["p_male"]   for x in per_image if x["label"] == "male"]
+        female_conf = [x["p_female"] for x in per_image if x["label"] == "female"]
+        return male_conf, female_conf
+
+    reg_male,    reg_female    = split_by_gender(regular_per_image)
+    lgd_cm_male, lgd_cm_female = split_by_gender(lgd_cm_per_image)
+
+    fig, ax = plt.subplots(figsize=(7, 5))
+
+    # positions: Male group at 1,2 — Female group at 4,5
+    positions   = [1, 2, 4, 5]
+    data        = [reg_male, lgd_cm_male, reg_female, lgd_cm_female]
+    colors      = ["steelblue", "darkorange", "steelblue", "darkorange"]
+    group_labels = ["Male", "Female"]
+
+    # filter out empty lists
+    plot_data  = []
+    plot_pos   = []
+    plot_colors = []
+    for d, p, c in zip(data, positions, colors):
+        if d:
+            plot_data.append(d)
+            plot_pos.append(p)
+            plot_colors.append(c)
+
+    if plot_data:
+        bp = ax.boxplot(plot_data, positions=plot_pos, patch_artist=True,
+                        widths=0.6,
+                        medianprops=dict(color="black", linewidth=2))
+        for patch, color in zip(bp["boxes"], plot_colors):
+            patch.set_facecolor(color)
+            patch.set_alpha(0.6)
+
+        # overlay individual points with jitter
+        import numpy as np
+        for pts, pos, color in zip(plot_data, plot_pos, plot_colors):
+            jitter = np.random.uniform(-0.1, 0.1, size=len(pts))
+            ax.scatter(np.array([pos] * len(pts)) + jitter, pts,
+                       color=color, alpha=0.8, s=40, zorder=3)
+
+    # x-axis group labels
+    ax.set_xticks([1.5, 4.5])
+    ax.set_xticklabels(group_labels, fontsize=12)
+    ax.set_xlim(0, 6)
+    ax.set_ylim(0.5, 1.0)
+    ax.set_ylabel("Confidence")
+    ax.set_title("CLIP softmax confidence — Regular vs LGD-CM", fontsize=13)
     ax.grid(True, alpha=0.3, axis="y")
+
+    # legend
+    from matplotlib.patches import Patch
+    legend_elements = [
+        Patch(facecolor="steelblue",  alpha=0.6, label="Regular"),
+        Patch(facecolor="darkorange", alpha=0.6, label="LGD-CM"),
+    ]
+    ax.legend(handles=legend_elements, loc="lower right")
+
+    # vertical separator between groups
+    ax.axvline(3, color="gray", lw=0.8, linestyle="--", alpha=0.4)
+
     plt.tight_layout()
     _save_or_show(fig, save_path)
     return fig
-
-
 def plot_portrait_grid(run_data, condition="lgd_cm",
                        n_cols=5, save_path=None):
     """
@@ -363,6 +480,9 @@ def make_all_plots(run_dir, plots_dir=None):
     print("Generating boxplot...", flush=True)
     plot_boxplot(run, save_path=os.path.join(plots_dir, "boxplot.png"))
 
+    print("Generating combined boxplot...", flush=True)
+    plot_boxplot_combined(run,
+                          save_path=os.path.join(plots_dir, "boxplot_combined.png"))
     print("Generating portrait grids...", flush=True)
     plot_portrait_grid(run, condition="lgd_cm",
                        save_path=os.path.join(plots_dir, "portraits_lgd_cm.png"))

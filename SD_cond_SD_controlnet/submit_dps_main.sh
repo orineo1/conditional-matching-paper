@@ -44,7 +44,7 @@ python SD_cond_SD_controlnet/run_dps.py \
     --start_step 15 \
     --num_variations 6 \
     --n_targets 6 \
-    --base_zeta 2.0 \
+    --base_zeta 5.0 \
     --guidance_scale 0.0 \
     --controlnet_scale 0.5 \
     --n_eval 6 \
@@ -55,9 +55,9 @@ python SD_cond_SD_controlnet/run_dps.py \
     --architect_model_id "stabilityai/sdxl-turbo" \
     --sprinter_model_id "stabilityai/sdxl-turbo" \
     --controlnet_model_id "xinsir/controlnet-scribble-sdxl-1.0" \
-    --loss_fn swd \
-    --loss_scale 100.0 \
-    --bandwidth_scale 0.3 \
+    --loss_fn mmd \
+    --loss_scale 1.0 \
+    --bandwidth_scale 1.0 \
     --kernel_alpha 1.0 \
     --seed 1
 

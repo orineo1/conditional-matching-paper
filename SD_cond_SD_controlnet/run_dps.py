@@ -44,8 +44,8 @@ from generation import (
 from image_utils import build_base_image, latent_to_pil, sobel_proxy
 from metrics import compute_mmd, evaluate_distribution_mmd, compute_swd
 from models import load_models, setup_gradient_checkpointing
-from visualization import plot_row, visualize_step, compare_scribbles_heatmap
-
+from visualization import plot_row, visualize_step
+from analysis import compare_scribbles_heatmap
 LOSS_FNS = {"mmd": compute_mmd, "swd": compute_swd}
 
 def parse_args():
@@ -105,6 +105,56 @@ def parse_args():
     p.add_argument("--seed", type=int, default=None)
     return p.parse_args()
 
+
+def compute_clip_softmax(pil_list, clip_model, clip_processor,
+                         man_prompt, woman_prompt, device):
+    """
+    For each PIL image compute softmax probability over [man_prompt, woman_prompt].
+    Returns a list of dicts: [{"p_male": float, "p_female": float, "label": str}, ...]
+    label = "male" if p_male > 0.5 else "female"
+    """
+    import torch.nn.functional as F
+
+    # encode text prompts once
+    text_inputs = clip_processor(
+        text=[man_prompt, woman_prompt],
+        return_tensors="pt",
+        padding=True,
+    ).to(device)
+
+    clip_model.to(device)
+    with torch.no_grad():
+        text_features = clip_model.get_text_features(**text_inputs)
+        text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+
+    results = []
+    # encode images in batches of 8
+    batch_size = 8
+    all_image_features = []
+    for start in range(0, len(pil_list), batch_size):
+        batch = pil_list[start:start + batch_size]
+        tensors = torch.cat(
+            [TF.to_tensor(img).unsqueeze(0) for img in batch], dim=0
+        ).to(device)
+        with torch.no_grad():
+            img_features = encode_images_clip(tensors, clip_model, clip_processor)
+        all_image_features.append(img_features)
+
+    image_features = torch.cat(all_image_features, dim=0)  # [N, 768]
+
+    # cosine similarity → softmax
+    logits = (image_features @ text_features.T) * 100.0  # scale like CLIP
+    probs = F.softmax(logits, dim=-1).cpu().numpy()       # [N, 2]
+
+    for p_male, p_female in probs:
+        results.append({
+            "p_male":   float(p_male),
+            "p_female": float(p_female),
+            "label":    "male" if p_male > 0.5 else "female",
+        })
+
+    clip_model.to("cpu")
+    return results, image_features.cpu().numpy()  # also return embeddings
 
 def pil_images_to_tensor(pil_list, device):
     tensors = [TF.to_tensor(img).unsqueeze(0) for img in pil_list]
@@ -560,7 +610,7 @@ def main():
         final_dps_pil     = latent_to_pil(latents,         architect.vae, architect.image_processor)
         final_regular_pil = latent_to_pil(latents_regular, architect.vae, architect.image_processor)
 
-    final_dps_pil.save(os.path.join(args.output_dir, "final_scribble_dps.png"))
+    final_dps_pil.save(os.path.join(args.output_dir, "final_scribble_lgd_cm.png"))
     final_regular_pil.save(os.path.join(args.output_dir, "final_scribble_regular.png"))
     heatmap_path = os.path.join(args.output_dir, "scribble_heatmap.png")
     compare_scribbles_heatmap(final_dps_pil, final_regular_pil, save_path=heatmap_path)
@@ -568,26 +618,56 @@ def main():
     # Save eval photo rows
     plot_row(regular_eval_photos, f"Regular final photos  (MMD={regular_mmd:.4f})",
              save_path=os.path.join(args.output_dir, "final_photos_regular.png"))
-    plot_row(dps_eval_photos, f"DPS final photos      (MMD={dps_mmd:.4f})",
-             save_path=os.path.join(args.output_dir, "final_photos_dps.png"))
+    plot_row(dps_eval_photos, f"LGD-CM final photos   (MMD={dps_mmd:.4f})",
+             save_path=os.path.join(args.output_dir, "final_photos_lgd_cm.png"))
 
     # Save individual photos for downstream evaluation (e.g. gender classifier)
     for folder, photos in [("photos_regular", regular_eval_photos),
-                           ("photos_dps", dps_eval_photos)]:
+                           ("photos_lgd_cm", dps_eval_photos)]:
         photo_dir = os.path.join(args.output_dir, folder)
         os.makedirs(photo_dir, exist_ok=True)
         for idx, photo in enumerate(photos):
             photo.save(os.path.join(photo_dir, f"photo_{idx:03d}.png"))
-    # ── Save image arrays as .npy for offline plotting ────────────────────
+
+
+
+
+
+
+    # ── 12. wandb final logs ───────────────────────────────────────────────────
+    wandb.log({
+        "final_dps_mmd":            dps_mmd,
+        "final_regular_mmd":        regular_mmd,
+        "mmd_delta":                regular_mmd - dps_mmd,
+        "mmd_relative_improvement": (regular_mmd - dps_mmd) / (regular_mmd + 1e-8),
+        "final_scribble_lgd_cm":    wandb.Image(final_dps_pil),
+        "final_scribble_regular":   wandb.Image(final_regular_pil),
+        "lgd_cm_eval_photos":       [wandb.Image(p) for p in dps_eval_photos],
+        "regular_eval_photos":      [wandb.Image(p) for p in regular_eval_photos],
+        "scribble_heatmap": wandb.Image(heatmap_path),
+    })
+
+    wandb.summary["final_dps_mmd"]            = dps_mmd
+    wandb.summary["final_regular_mmd"]        = regular_mmd
+    wandb.summary["mmd_delta"]                = regular_mmd - dps_mmd
+    wandb.summary["final_grad_norm"]          = step_gradients[-1]["gradient_norm"]
+
+    # ── Save image arrays (.npy) ───────────────────────────────────────
     npy_dir = os.path.join(args.output_dir, "npy")
     os.makedirs(npy_dir, exist_ok=True)
 
-    save_image_list_npy(dps_eval_photos, os.path.join(npy_dir, "photos_dps.npy"))
-    save_image_list_npy(regular_eval_photos, os.path.join(npy_dir, "photos_regular.npy"))
-    save_image_list_npy(man_images, os.path.join(npy_dir, "targets_man.npy"))
-    save_image_list_npy(woman_images, os.path.join(npy_dir, "targets_woman.npy"))
-    save_image_list_npy([source_image], os.path.join(npy_dir, "source_portrait.npy"))
-    save_image_list_npy([scribble_pil], os.path.join(npy_dir, "scribble.npy"))
+    save_image_list_npy(dps_eval_photos,
+                        os.path.join(npy_dir, "photos_lgd_cm.npy"))
+    save_image_list_npy(regular_eval_photos,
+                        os.path.join(npy_dir, "photos_regular.npy"))
+    save_image_list_npy(man_images,
+                        os.path.join(npy_dir, "targets_man.npy"))
+    save_image_list_npy(woman_images,
+                        os.path.join(npy_dir, "targets_woman.npy"))
+    save_image_list_npy([source_image],
+                        os.path.join(npy_dir, "source_portrait.npy"))
+    save_image_list_npy([scribble_pil],
+                        os.path.join(npy_dir, "scribble.npy"))
     print("✅ Image arrays saved to npy/", flush=True)
 
     # save individual target portraits
@@ -599,94 +679,123 @@ def main():
             photo.save(os.path.join(photo_dir, f"photo_{idx:03d}.png"))
     print("✅ Individual target portraits saved.", flush=True)
 
-    # Training curves
-    steps_list = [d["step"]          for d in step_gradients]
-    mmd_vals   = [d["mmd_loss"]      for d in step_gradients]
-    grad_norms = [d["gradient_norm"] for d in step_gradients]
-    zetas      = [d["zeta_i"]        for d in step_gradients]
+    # ── CLIP softmax probabilities ─────────────────────────────────────
+    print("Computing CLIP softmax probabilities...", flush=True)
+    clip_model.to(device)
 
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
-    fig.suptitle("CLIP-MMD DPS Training Curves", fontsize=14, fontweight="bold")
-    axes[0].plot(steps_list, mmd_vals,   color="royalblue"); axes[0].set_title("MMD Loss");      axes[0].set_xlabel("Step"); axes[0].grid(True, alpha=0.3)
-    axes[1].plot(steps_list, grad_norms, color="crimson");   axes[1].set_title("Gradient Norm"); axes[1].set_xlabel("Step"); axes[1].grid(True, alpha=0.3)
-    axes[2].plot(steps_list, zetas,      color="seagreen");  axes[2].set_title("Zeta (ζ)");      axes[2].set_xlabel("Step"); axes[2].grid(True, alpha=0.3)
-    curves_path = os.path.join(args.output_dir, "training_curves.png")
-    fig.savefig(curves_path, dpi=100, bbox_inches="tight"); plt.close(fig)
+    lgd_cm_softmax, lgd_cm_clip_embs = compute_clip_softmax(
+        dps_eval_photos, clip_model, clip_processor,
+        args.sprinter_target_man_prompt,
+        args.sprinter_target_woman_prompt,
+        device,
+    )
+    regular_softmax, regular_clip_embs = compute_clip_softmax(
+        regular_eval_photos, clip_model, clip_processor,
+        args.sprinter_target_man_prompt,
+        args.sprinter_target_woman_prompt,
+        device,
+    )
+    target_softmax, target_clip_embs = compute_clip_softmax(
+        man_images + woman_images, clip_model, clip_processor,
+        args.sprinter_target_man_prompt,
+        args.sprinter_target_woman_prompt,
+        device,
+    )
+    clip_model.to("cpu")
+    print("✅ CLIP softmax done.", flush=True)
 
-    # Final CLIP PCA comparison
-    def pil_list_to_clip(pil_list):
-        tensors = [TF.to_tensor(img).unsqueeze(0) for img in pil_list]
-        tensor = torch.cat(tensors, dim=0).to(device)
-        clip_model.to(device)
-        with torch.no_grad():
-            embs = encode_images_clip(tensor, clip_model, clip_processor)
-        clip_model.to("cpu")
-        return embs.cpu().numpy()
+    # save CLIP embeddings as .npy
+    np.save(os.path.join(npy_dir, "clip_lgd_cm.npy"), lgd_cm_clip_embs)
+    np.save(os.path.join(npy_dir, "clip_regular.npy"), regular_clip_embs)
+    np.save(os.path.join(npy_dir, "clip_targets.npy"), target_clip_embs)
+    np.save(os.path.join(npy_dir, "clip_targets_man.npy"),
+            target_clip_embs[:len(man_images)])
+    np.save(os.path.join(npy_dir, "clip_targets_woman.npy"),
+            target_clip_embs[len(man_images):])
+    print("✅ CLIP embeddings saved to npy/", flush=True)
 
-    regular_eval_clip = pil_list_to_clip(regular_eval_photos)
-    dps_eval_clip     = pil_list_to_clip(dps_eval_photos)
-    target_clip_np_   = all_clip_embeddings.cpu().numpy()
+    # ── Gender counts + mean confidence ───────────────────────────────
+    def gender_stats(softmax_list):
+        males = [x for x in softmax_list if x["label"] == "male"]
+        females = [x for x in softmax_list if x["label"] == "female"]
+        return {
+            "n_male": len(males),
+            "n_female": len(females),
+            "mean_conf_male": float(np.mean([x["p_male"] for x in males]))
+            if males else None,
+            "mean_conf_female": float(np.mean([x["p_female"] for x in females]))
+            if females else None,
+            "per_image": softmax_list,
+        }
 
-    combined = np.vstack([target_clip_np_, regular_eval_clip, dps_eval_clip])
-    coords = pca_fixed.transform(combined)  # use fixed PCA
+    lgd_cm_stats = gender_stats(lgd_cm_softmax)
+    regular_stats = gender_stats(regular_softmax)
 
-    n_target  = target_clip_np_.shape[0]
-    n_ev      = regular_eval_clip.shape[0]
-    target_c  = coords[:n_target]
-    regular_c = coords[n_target : n_target + n_ev]
-    dps_c     = coords[n_target + n_ev :]
-    n_half_t  = n_target // 2
+    print(f"  LGD-CM  : {lgd_cm_stats['n_male']} male, "
+          f"{lgd_cm_stats['n_female']} female", flush=True)
+    print(f"  Regular : {regular_stats['n_male']} male, "
+          f"{regular_stats['n_female']} female", flush=True)
 
-    fig, ax = plt.subplots(figsize=(9, 7))
-    ax.scatter(target_c[:n_half_t, 0],  target_c[:n_half_t, 1],
-               c="royalblue", alpha=0.6, s=60, label="Target (man)")
-    ax.scatter(target_c[n_half_t:, 0],  target_c[n_half_t:, 1],
-               c="crimson",   alpha=0.6, s=60, label="Target (woman)")
-    ax.scatter(regular_c[:, 0], regular_c[:, 1],
-               c="orange",    alpha=0.8, s=80, marker="s",
-               label=f"Unguided eval (MMD={regular_mmd:.4f})")
-    ax.scatter(dps_c[:, 0],     dps_c[:, 1],
-               c="limegreen", alpha=0.8, s=80, marker="x",
-               label=f"DPS eval     (MMD={dps_mmd:.4f})")
-    ax.set_title(f"Final CLIP PCA — Target vs Unguided vs DPS\n"
-                 f"Var explained: {pca_fixed.explained_variance_ratio_.sum():.1%}")
-    ax.legend(); ax.grid(True, alpha=0.3)
-    plt.tight_layout()
-    pca_final_path = os.path.join(args.output_dir, "final_pca_comparison.png")
-    fig.savefig(pca_final_path, dpi=120, bbox_inches="tight"); plt.close(fig)
+    # ── SWD to target ──────────────────────────────────────────────────
+    print("Computing SWD to target...", flush=True)
+    lgd_cm_clip_t = torch.from_numpy(lgd_cm_clip_embs).float()
+    regular_clip_t = torch.from_numpy(regular_clip_embs).float()
+    target_clip_t = torch.from_numpy(target_clip_embs).float()
 
-    # ── 12. wandb final logs ───────────────────────────────────────────────────
-    wandb.log({
-        "final_dps_mmd":            dps_mmd,
-        "final_regular_mmd":        regular_mmd,
-        "mmd_delta":                regular_mmd - dps_mmd,
-        "mmd_relative_improvement": (regular_mmd - dps_mmd) / (regular_mmd + 1e-8),
-        "final_scribble_dps":       wandb.Image(final_dps_pil),
-        "final_scribble_regular":   wandb.Image(final_regular_pil),
-        "dps_eval_photos":          [wandb.Image(p) for p in dps_eval_photos],
-        "regular_eval_photos":      [wandb.Image(p) for p in regular_eval_photos],
-        "final_pca_comparison":     wandb.Image(pca_final_path),
-        "training_curves":          wandb.Image(curves_path),
-        "scribble_heatmap": wandb.Image(heatmap_path),
-    })
+    with torch.no_grad():
+        swd_lgd_cm = compute_swd(lgd_cm_clip_t, target_clip_t).item()
+        swd_regular = compute_swd(regular_clip_t, target_clip_t).item()
+    print(f"  SWD LGD-CM : {swd_lgd_cm:.6f}", flush=True)
+    print(f"  SWD Regular: {swd_regular:.6f}", flush=True)
 
-    wandb.summary["final_dps_mmd"]            = dps_mmd
-    wandb.summary["final_regular_mmd"]        = regular_mmd
-    wandb.summary["mmd_delta"]                = regular_mmd - dps_mmd
-    wandb.summary["final_grad_norm"]          = step_gradients[-1]["gradient_norm"]
-
-    # Save metrics JSON
+    # ── Timing ────────────────────────────────────────────────────────
     dps_end_time = time.time()
+    optimization_time_sec = dps_end_time - dps_start_time
+
+    # ── Save enriched metrics.json ─────────────────────────────────────
     metrics_path = os.path.join(args.output_dir, "metrics.json")
     with open(metrics_path, "w") as f:
         json.dump({
+            # run config
             "args": vars(args),
+
+            # per-step DPS metrics
             "steps": step_gradients,
-            "final_dps_mmd": dps_mmd,
+
+            # final MMD
+            "final_lgd_cm_mmd": dps_mmd,
             "final_regular_mmd": regular_mmd,
             "mmd_delta": regular_mmd - dps_mmd,
-            "optimization_time_sec": dps_end_time - dps_start_time,
+
+            # final SWD
+            "final_lgd_cm_swd": swd_lgd_cm,
+            "final_regular_swd": swd_regular,
+            "swd_delta": swd_regular - swd_lgd_cm,
+
+            # timing
+            "optimization_time_sec": optimization_time_sec,
+
+            # gender stats (counts + mean confidence + per-image probs)
+            "lgd_cm_gender": lgd_cm_stats,
+            "regular_gender": regular_stats,
+
+            # paths to saved arrays (relative to output_dir)
+            "npy": {
+                "photos_lgd_cm": "npy/photos_lgd_cm.npy",
+                "photos_regular": "npy/photos_regular.npy",
+                "targets_man": "npy/targets_man.npy",
+                "targets_woman": "npy/targets_woman.npy",
+                "source_portrait": "npy/source_portrait.npy",
+                "scribble": "npy/scribble.npy",
+                "clip_lgd_cm": "npy/clip_lgd_cm.npy",
+                "clip_regular": "npy/clip_regular.npy",
+                "clip_targets": "npy/clip_targets.npy",
+                "clip_targets_man": "npy/clip_targets_man.npy",
+                "clip_targets_woman": "npy/clip_targets_woman.npy",
+            },
         }, f, indent=2)
+    print(f"✅ metrics.json saved.", flush=True)
+    print(f"   Optimization time: {optimization_time_sec / 60:.1f} min", flush=True)
 
     wandb.finish()
     print(f"\n✅ All outputs saved to {args.output_dir}", flush=True)

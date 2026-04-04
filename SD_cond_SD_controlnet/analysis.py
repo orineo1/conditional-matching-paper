@@ -301,96 +301,85 @@ def plot_boxplot(run_data, save_path=None):
     make_boxplot(reg_male,    reg_female,    "Regular", reg_path)
     make_boxplot(lgd_cm_male, lgd_cm_female, "LGD-CM",  lgd_cm_path)
 
-def plot_boxplot_combined(run_data, save_path=None):
-    """
-    Single figure: Male and Female groups on x-axis.
-    Within each group: Regular (blue) and LGD-CM (orange).
-    Always shows all 4 boxes.
-    Count annotations below x-axis. Legend above plot.
-    """
-    m = run_data["metrics"]
 
-    lgd_cm_per_image  = m.get("lgd_cm_gender",  {}).get("per_image", [])
+import matplotlib.pyplot as plt
+import numpy as np
+from matplotlib.patches import Patch
+
+
+def plot_boxplot_combined(run_data, save_path=None):
+    m = run_data.get("metrics", {})
+
+    # Data extraction
+    lgd_cm_per_image = m.get("lgd_cm_gender", {}).get("per_image", [])
     regular_per_image = m.get("regular_gender", {}).get("per_image", [])
 
     if not lgd_cm_per_image or not regular_per_image:
-        print("⚠️  Missing softmax data for combined boxplot — skipping.")
+        print("⚠️ Missing data — skipping.")
         return
 
     def split_by_gender(per_image):
-        male_conf   = [x["p_male"]   for x in per_image if x["label"] == "male"]
+        male_conf = [x["p_male"] for x in per_image if x["label"] == "male"]
         female_conf = [x["p_female"] for x in per_image if x["label"] == "female"]
         return male_conf, female_conf
 
-    reg_male,    reg_female    = split_by_gender(regular_per_image)
+    reg_male, reg_female = split_by_gender(regular_per_image)
     lgd_cm_male, lgd_cm_female = split_by_gender(lgd_cm_per_image)
 
-    def safe(lst):
-        return lst if lst else [float("nan")]
+    # Use tight grouping: [Male_Reg, Male_LGD, (gap), Female_Reg, Female_LGD]
+    positions = [1, 1.8, 3.5, 4.3]
+    data = [reg_male, lgd_cm_male, reg_female, lgd_cm_female]
+    counts = [len(reg_male), len(lgd_cm_male), len(reg_female), len(lgd_cm_female)]
+    colors = ["steelblue", "darkorange", "steelblue", "darkorange"]
+    labels = ["Regular", "LGD-CM", "Regular", "LGD-CM"]
 
-    data      = [safe(reg_male), safe(lgd_cm_male),
-                 safe(reg_female), safe(lgd_cm_female)]
-    counts    = [len(reg_male), len(lgd_cm_male),
-                 len(reg_female), len(lgd_cm_female)]
-    positions = [1, 2, 4, 5]
-    colors    = ["steelblue", "darkorange", "steelblue", "darkorange"]
+    fig, ax = plt.subplots(figsize=(8, 5))
 
-    fig, ax = plt.subplots(figsize=(7, 5))
+    # Plot boxes only if data exists
+    for i, (pts, pos, col) in enumerate(zip(data, positions, colors)):
+        if len(pts) > 0:
+            # Boxplot
+            bp = ax.boxplot(pts, positions=[pos], patch_artist=True, widths=0.6,
+                            showfliers=False,  # We show them with scatter anyway
+                            medianprops=dict(color="black", linewidth=2),
+                            boxprops=dict(facecolor=col, alpha=0.5, edgecolor=col))
 
-    bp = ax.boxplot(data, positions=positions, patch_artist=True,
-                    widths=0.6,
-                    medianprops=dict(color="black", linewidth=2))
+            # Individual points with jitter
+            jitter = np.random.uniform(-0.15, 0.15, size=len(pts))
+            ax.scatter(np.full(len(pts), pos) + jitter, pts,
+                       color=col, alpha=0.7, s=30, zorder=3, edgecolors='black', linewidth=0.5)
 
-    for patch, color, d in zip(bp["boxes"], colors, data):
-        all_nan = all(np.isnan(v) for v in d)
-        patch.set_facecolor(color)
-        patch.set_alpha(0.0 if all_nan else 0.6)
-        if all_nan:
-            patch.set_linewidth(0)
+    # Fix: Alignment of n= labels
+    for pos, count, col in zip(positions, counts, colors):
+        ax.text(pos, 0.44, f"n={count}", ha='center', va='top',
+                color=col, fontsize=9, fontweight='bold')
 
-    # overlay individual points with jitter
-    for pts, pos, color in zip(data, positions, colors):
-        real_pts = [p for p in pts if not np.isnan(p)]
-        if real_pts:
-            jitter = np.random.uniform(-0.1, 0.1, size=len(real_pts))
-            ax.scatter(np.array([pos] * len(real_pts)) + jitter, real_pts,
-                       color=color, alpha=0.8, s=40, zorder=3)
+    # Formatting
+    ax.set_xticks([1.4, 3.9])  # Midpoints of the groups
+    ax.set_xticklabels(["Male", "Female"], fontsize=12, fontweight='bold')
 
-    # count annotations below x-axis
-    for pos, color, count in zip(positions, colors, counts):
-        ax.annotate(f"n={count}",
-                    xy=(pos, 0), xycoords=("data", "axes fraction"),
-                    xytext=(0, -30), textcoords="offset points",
-                    ha="center", va="top",
-                    fontsize=9, color=color,
-                    annotation_clip=False)
+    ax.set_xlim(0, 5.5)
+    ax.set_ylim(0.45, 1.02)  # Adjusted to fit n= labels at the bottom
+    ax.set_ylabel("Confidence", fontsize=11)
+    ax.set_title("CLIP Softmax Confidence: Regular vs LGD-CM", fontsize=14, pad=20)
 
-    # Male / Female labels pushed down
-    ax.set_xticks([1.5, 4.5])
-    ax.set_xticklabels(["Male", "Female"], fontsize=12)
-    ax.tick_params(axis="x", pad=25)
+    ax.grid(True, alpha=0.2, axis="y")
+    ax.axvline(2.65, color="black", lw=1, linestyle="--", alpha=0.2)  # Middle divider
 
-    ax.set_xlim(0, 6)
-    ax.set_ylim(0.5, 1.0)
-    ax.set_ylabel("Confidence")
-    ax.set_title("CLIP softmax confidence — Regular vs LGD-CM", fontsize=13)
-    ax.grid(True, alpha=0.3, axis="y")
-    ax.axvline(3, color="gray", lw=0.8, linestyle="--", alpha=0.4)
-
-    from matplotlib.patches import Patch
+    # Legend
     legend_elements = [
-        Patch(facecolor="steelblue",  alpha=0.6, label="Regular"),
-        Patch(facecolor="darkorange", alpha=0.6, label="LGD-CM"),
+        Patch(facecolor="steelblue", alpha=0.5, label="Regular"),
+        Patch(facecolor="darkorange", alpha=0.5, label="LGD-CM"),
     ]
-    ax.legend(handles=legend_elements,
-              loc="upper center",
-              bbox_to_anchor=(0.5, 1.12),
-              ncol=2,
-              frameon=True)
+    ax.legend(handles=legend_elements, loc="upper center",
+              bbox_to_anchor=(0.5, 1.1), ncol=2, frameon=True)
 
     plt.tight_layout()
-    plt.subplots_adjust(top=0.85)
-    _save_or_show(fig, save_path)
+
+    # Custom save/show logic
+    if save_path:
+        plt.savefig(save_path, bbox_inches='tight')
+    plt.show()
     return fig
 def plot_portrait_grid(run_data, condition="lgd_cm",
                        n_cols=5, save_path=None):

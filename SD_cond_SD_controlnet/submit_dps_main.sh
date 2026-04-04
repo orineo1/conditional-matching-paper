@@ -9,9 +9,18 @@
 #SBATCH --partition=salmon
 
 # Conda setup
-export PATH="/usr/local/spack/opt/spack/linux-debian12-x86_64/gcc-12.2.0/miniconda3-24.3.0-iqeknetqo7ngpr57d6gmu3dg4rzlcgk6/bin:$PATH"
-source /usr/local/spack/opt/spack/linux-debian12-x86_64/gcc-12.2.0/miniconda3-24.3.0-iqeknetqo7ngpr57d6gmu3dg4rzlcgk6/etc/profile.d/conda.sh
-conda activate /sci/labs/orzuk/shaulytolk/conditional-matching-paper/scribble_env
+#export PATH="/usr/local/spack/opt/spack/linux-debian12-x86_64/gcc-12.2.0/miniconda3-24.3.0-iqeknetqo7ngpr57d6gmu3dg4rzlcgk6/bin:$PATH"
+#source /usr/local/spack/opt/spack/linux-debian12-x86_64/gcc-12.2.0/miniconda3-24.3.0-iqeknetqo7ngpr57d6gmu3dg4rzlcgk6/etc/profile.d/conda.sh
+#conda activate /sci/labs/orzuk/shaulytolk/conditional-matching-paper/scribble_env
+# ── NEW ENVIRONMENT SETUP (Replaces broken Spack lines) ──────────────────────
+# We point directly to your environment to bypass the 'conda command not found' error
+ENV_PATH="/sci/labs/orzuk/shaulytolk/conditional-matching-paper/scribble_env"
+export PATH="$ENV_PATH/bin:$PATH"
+PYTHON="$ENV_PATH/bin/python"
+
+# Verify in log
+echo "Using Python: $($PYTHON --version) at $PYTHON"
+
 export WANDB_API_KEY=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
 
 echo "Starting DPS main pipeline on $(hostname) with GPU: $CUDA_VISIBLE_DEVICES"

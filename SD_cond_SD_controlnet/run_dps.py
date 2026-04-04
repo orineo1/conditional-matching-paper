@@ -124,11 +124,15 @@ def compute_clip_softmax(pil_list, clip_model, clip_processor,
 
     clip_model.to(device)
     with torch.no_grad():
-        text_features = clip_model.get_text_features(**text_inputs)
+        text_features = clip_model.get_text_features(
+            input_ids=text_inputs["input_ids"],
+            attention_mask=text_inputs["attention_mask"],
+        )
         text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+    print(f"  [softmax] text_features shape: {text_features.shape}  "
+          f"dtype: {text_features.dtype}", flush=True)
 
     results = []
-    # encode images in batches of 8
     batch_size = 8
     all_image_features = []
     for start in range(0, len(pil_list), batch_size):
@@ -139,12 +143,18 @@ def compute_clip_softmax(pil_list, clip_model, clip_processor,
         with torch.no_grad():
             img_features = encode_images_clip(tensors, clip_model, clip_processor)
         all_image_features.append(img_features)
+        print(f"  [softmax] encoded batch {start}–{start+len(batch)}  "
+              f"shape: {img_features.shape}", flush=True)
 
-    image_features = torch.cat(all_image_features, dim=0)  # [N, 768]
+    image_features = torch.cat(all_image_features, dim=0)
+    print(f"  [softmax] all image_features: {image_features.shape}  "
+          f"nan={torch.isnan(image_features).any().item()}", flush=True)
 
-    # cosine similarity → softmax
-    logits = (image_features @ text_features.T) * 100.0  # scale like CLIP
-    probs = F.softmax(logits, dim=-1).cpu().numpy()       # [N, 2]
+    logits = (image_features @ text_features.T) * 100.0
+    print(f"  [softmax] logits: {logits.cpu().numpy().round(3)}", flush=True)
+
+    probs = F.softmax(logits, dim=-1).cpu().numpy()
+    print(f"  [softmax] probs: {probs.round(3)}", flush=True)
 
     for p_male, p_female in probs:
         results.append({
@@ -154,7 +164,7 @@ def compute_clip_softmax(pil_list, clip_model, clip_processor,
         })
 
     clip_model.to("cpu")
-    return results, image_features.cpu().numpy()  # also return embeddings
+    return results, image_features.cpu().numpy()
 
 def pil_images_to_tensor(pil_list, device):
     tensors = [TF.to_tensor(img).unsqueeze(0) for img in pil_list]

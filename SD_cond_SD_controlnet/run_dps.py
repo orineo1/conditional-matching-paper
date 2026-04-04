@@ -259,7 +259,7 @@ def main():
     man_images = target_images_per_group["Man"]
     # ── Extract HED scribble from a man target image ───────────────────────────
     print("Extracting HED scribble from a man target image...", flush=True)
-    source_image = target_images_per_group["Man"][0]
+    source_image = target_images_per_group["Man"][2]
     scribble_pil = extract_scribble_hed(source_image)
     source_image.save(os.path.join(args.output_dir, "source_portrait.png"))
     scribble_pil.save(os.path.join(args.output_dir, "scribble.png"))

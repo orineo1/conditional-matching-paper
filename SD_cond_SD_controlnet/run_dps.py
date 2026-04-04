@@ -244,7 +244,7 @@ def main():
 
     target_prompts = [
         ("woman", "a superrealistic portrait photograph of a woman, studio lighting, white shirt"),
-        ("androgynous", "a superrealistic portrait photograph of an androgynous person, studio lighting, white shirt"),
+        ("man", "a superrealistic portrait photograph of a man, studio lighting, white shirt"),
         ("andro_masc", "a superrealistic portrait photograph of an androgynous person, white shirt, "
                        "masculine bone structure, sharp jawline, studio lighting"),
         ("mostly_masc", "a superrealistic portrait photograph of a masculine man, white shirt, "
@@ -484,7 +484,11 @@ def main():
 
     baseline_save_path = os.path.join(steps_dir, "step_baseline.png")
     visualize_step(sd_baseline, architect, sprinter, target_clip_np,
-                   num_cond=4, save_path=baseline_save_path, pca_fixed=pca_fixed)
+                   num_cond=4, save_path=baseline_save_path, pca_fixed=pca_fixed,
+                   n_groups=n_groups,
+                   group_names=[g for g, _ in target_prompts],
+                   group_colors=["#4169E1", "#9B59B6", "#E67E22", "#E74C3C"],
+                   group_markers=["o", "D", "^", "s"])
     print("✅ Baseline visualization saved.", flush=True)
 
     # ── 9. DPS loop ────────────────────────────────────────────────────────────
@@ -607,7 +611,11 @@ def main():
 
         step_save_path = os.path.join(steps_dir, f"step_{i:03d}.png")
         visualize_step(sd, architect, sprinter, target_clip_np,
-                       num_cond=5, save_path=step_save_path, pca_fixed=pca_fixed)
+                       num_cond=5, save_path=step_save_path, pca_fixed=pca_fixed,
+                       n_groups=n_groups,
+                       group_names=[g for g, _ in target_prompts],
+                       group_colors=["#4169E1", "#9B59B6", "#E67E22", "#E74C3C"],
+                       group_markers=["o", "D", "^", "s"])
 
         # Scheduler step
         latents = denoise_step(architect.scheduler, noise_pred, t, latents_step,

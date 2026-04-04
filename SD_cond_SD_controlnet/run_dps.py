@@ -289,17 +289,32 @@ def main():
     print("✅ all_clip_embeddings ready.", flush=True)
 
     # PCA
+    # PCA
     _pca = PCA(n_components=2)
     _all_coords = _pca.fit_transform(all_clip_embeddings.cpu().numpy())
     colors = ["crimson", "mediumorchid", "limegreen", "dodgerblue"]
+    markers = ["o", "x", "^", "D"]
     fig, ax = plt.subplots(figsize=(8, 6))
     for idx, (group_name, _) in enumerate(target_prompts):
         start = idx * n_per_group
-        ax.scatter(_all_coords[start:start + n_per_group, 0],
-                   _all_coords[start:start + n_per_group, 1],
-                   c=colors[idx], label=group_name, alpha=0.7)
-    ax.set_title("PCA of Target CLIP Embeddings (4 groups)")
-    ax.legend();
+        end = start + n_per_group
+        coords = _all_coords[start:end]
+        ax.scatter(coords[:, 0], coords[:, 1],
+                   c=colors[idx], marker=markers[idx],
+                   label=group_name, alpha=0.7, s=60)
+        # centroid
+        cx, cy = coords[:, 0].mean(), coords[:, 1].mean()
+        ax.scatter(cx, cy, c=colors[idx], marker='*', s=250,
+                   edgecolors='black', linewidths=0.8, zorder=5)
+        ax.annotate(group_name, (cx, cy),
+                    textcoords="offset points", xytext=(6, 4),
+                    fontsize=8, color=colors[idx], fontweight='bold')
+    ax.set_title(f"PCA of Target CLIP Embeddings (4 groups)\n"
+                 f"PC1: {_pca.explained_variance_ratio_[0]:.1%}  "
+                 f"PC2: {_pca.explained_variance_ratio_[1]:.1%}")
+    ax.set_xlabel(f"PC1 ({_pca.explained_variance_ratio_[0]:.1%})")
+    ax.set_ylabel(f"PC2 ({_pca.explained_variance_ratio_[1]:.1%})")
+    ax.legend(loc='best', fontsize=8);
     ax.grid(True, alpha=0.3)
     pca_path = os.path.join(args.output_dir, "target_clip_pca.png")
     fig.savefig(pca_path, dpi=100, bbox_inches='tight');

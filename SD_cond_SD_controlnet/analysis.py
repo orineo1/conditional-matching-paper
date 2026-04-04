@@ -315,18 +315,11 @@ def plot_portrait_grid(run_data, condition="lgd_cm",
     return fig
 
 
-def compare_scribbles_heatmap(run_data, save_path=None):
+def compare_scribbles_heatmap(lgd_cm_pil, regular_pil, save_path=None):
     """
     Pixel-wise absolute difference heatmap between LGD-CM and regular scribbles.
     Moved here from visualization.py.
     """
-    lgd_cm_pil  = run_data.get("final_scribble_lgd_cm")
-    regular_pil = run_data.get("final_scribble_regular")
-
-    if lgd_cm_pil is None or regular_pil is None:
-        print("⚠️  Missing scribble images for heatmap — skipping.")
-        return
-
     lgd_cm_np  = np.array(lgd_cm_pil).astype(float)
     regular_np = np.array(regular_pil).astype(float)
     diff       = np.abs(lgd_cm_np - regular_np).mean(axis=2)
@@ -381,8 +374,11 @@ def make_all_plots(run_dir, plots_dir=None):
                        save_path=os.path.join(plots_dir, "portraits_regular.png"))
 
     print("Generating heatmap...",   flush=True)
-    compare_scribbles_heatmap(run,
-                              save_path=os.path.join(plots_dir, "scribble_heatmap.png"))
+    lgd_cm_pil = run.get("final_scribble_lgd_cm")
+    regular_pil = run.get("final_scribble_regular")
+    if lgd_cm_pil and regular_pil:
+        compare_scribbles_heatmap(lgd_cm_pil, regular_pil,
+                                  save_path=os.path.join(plots_dir, "scribble_heatmap.png"))
 
     print(f"✅ All plots saved to {plots_dir}", flush=True)
     return run

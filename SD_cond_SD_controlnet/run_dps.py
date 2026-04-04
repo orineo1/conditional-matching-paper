@@ -128,9 +128,6 @@ def compute_clip_softmax(pil_list, clip_model, clip_processor,
             input_ids=text_inputs["input_ids"],
             attention_mask=text_inputs["attention_mask"],
         )
-        print(f"  [softmax] text_features type: {type(text_features)}  "
-              f"hasattr pooler_output: {hasattr(text_features, 'pooler_output')}",
-              flush=True)
         if hasattr(text_features, "pooler_output"):
             text_features = text_features.pooler_output
         text_features = text_features / text_features.norm(dim=-1, keepdim=True)
@@ -148,18 +145,11 @@ def compute_clip_softmax(pil_list, clip_model, clip_processor,
         with torch.no_grad():
             img_features = encode_images_clip(tensors, clip_model, clip_processor)
         all_image_features.append(img_features)
-        print(f"  [softmax] encoded batch {start}–{start+len(batch)}  "
-              f"shape: {img_features.shape}", flush=True)
-
     image_features = torch.cat(all_image_features, dim=0)
-    print(f"  [softmax] all image_features: {image_features.shape}  "
-          f"nan={torch.isnan(image_features).any().item()}", flush=True)
 
     logits = (image_features @ text_features.T) * 100.0
-    print(f"  [softmax] logits: {logits.cpu().numpy().round(3)}", flush=True)
 
     probs = F.softmax(logits, dim=-1).cpu().numpy()
-    print(f"  [softmax] probs: {probs.round(3)}", flush=True)
 
     for p_male, p_female in probs:
         results.append({

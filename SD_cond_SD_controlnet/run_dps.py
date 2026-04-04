@@ -14,6 +14,8 @@ import argparse
 import copy
 import gc
 import json
+import time
+import numpy as np
 import os
 import sys
 
@@ -107,7 +109,10 @@ def parse_args():
 def pil_images_to_tensor(pil_list, device):
     tensors = [TF.to_tensor(img).unsqueeze(0) for img in pil_list]
     return torch.cat(tensors, dim=0).to(device)
-
+def save_image_list_npy(pil_list, path):
+    """Save a list of PIL images as [N,H,W,3] uint8 numpy array."""
+    arr = np.stack([np.array(img) for img in pil_list], axis=0)
+    np.save(path, arr)
 
 def extract_scribble_hed(pil_image):
     from controlnet_aux import HEDdetector
@@ -391,6 +396,7 @@ def main():
     print("✅ Baseline visualization saved.", flush=True)
 
     # ── 9. DPS loop ────────────────────────────────────────────────────────────
+    dps_start_time = time.time()
     for i, t in enumerate(timesteps_to_run):
         print(f"\n{'='*60}", flush=True)
         print(f"Step {i+1}/{len(timesteps_to_run)}  (t={t})", flush=True)
@@ -572,6 +578,26 @@ def main():
         os.makedirs(photo_dir, exist_ok=True)
         for idx, photo in enumerate(photos):
             photo.save(os.path.join(photo_dir, f"photo_{idx:03d}.png"))
+    # ── Save image arrays as .npy for offline plotting ────────────────────
+    npy_dir = os.path.join(args.output_dir, "npy")
+    os.makedirs(npy_dir, exist_ok=True)
+
+    save_image_list_npy(dps_eval_photos, os.path.join(npy_dir, "photos_dps.npy"))
+    save_image_list_npy(regular_eval_photos, os.path.join(npy_dir, "photos_regular.npy"))
+    save_image_list_npy(man_images, os.path.join(npy_dir, "targets_man.npy"))
+    save_image_list_npy(woman_images, os.path.join(npy_dir, "targets_woman.npy"))
+    save_image_list_npy([source_image], os.path.join(npy_dir, "source_portrait.npy"))
+    save_image_list_npy([scribble_pil], os.path.join(npy_dir, "scribble.npy"))
+    print("✅ Image arrays saved to npy/", flush=True)
+
+    # save individual target portraits
+    for folder, photos in [("targets_man", man_images),
+                           ("targets_woman", woman_images)]:
+        photo_dir = os.path.join(args.output_dir, folder)
+        os.makedirs(photo_dir, exist_ok=True)
+        for idx, photo in enumerate(photos):
+            photo.save(os.path.join(photo_dir, f"photo_{idx:03d}.png"))
+    print("✅ Individual target portraits saved.", flush=True)
 
     # Training curves
     steps_list = [d["step"]          for d in step_gradients]
@@ -650,6 +676,7 @@ def main():
     wandb.summary["final_grad_norm"]          = step_gradients[-1]["gradient_norm"]
 
     # Save metrics JSON
+    dps_end_time = time.time()
     metrics_path = os.path.join(args.output_dir, "metrics.json")
     with open(metrics_path, "w") as f:
         json.dump({
@@ -658,6 +685,7 @@ def main():
             "final_dps_mmd": dps_mmd,
             "final_regular_mmd": regular_mmd,
             "mmd_delta": regular_mmd - dps_mmd,
+            "optimization_time_sec": dps_end_time - dps_start_time,
         }, f, indent=2)
 
     wandb.finish()

@@ -7,7 +7,7 @@ regenerate any figure without touching the GPU.
 Usage:
     from analysis import load_run, make_all_plots
     run = load_run("output/dps_main_44388132")
-    make_all_plots(run, output_dir="output/dps_main_44388132/plots")
+    make_all_plots(run, plots_dir="output/dps_main_44388132/plots")
 
 Or from CLI:
     python analysis.py --run_dir output/dps_main_44388132
@@ -53,7 +53,7 @@ def load_run(run_dir):
     data["targets_man"]    = _load_photo_dir(os.path.join(run_dir, "targets_man"))
     data["targets_woman"]  = _load_photo_dir(os.path.join(run_dir, "targets_woman"))
 
-    # load scribble / source if present
+    # load scribble / source images if present
     for name in ["scribble.png", "source_portrait.png",
                  "final_scribble_lgd_cm.png", "final_scribble_regular.png"]:
         path = os.path.join(run_dir, name)
@@ -67,9 +67,7 @@ def _load_photo_dir(photo_dir):
     """Load all photo_NNN.png files from a directory as a list of PIL images."""
     if not os.path.exists(photo_dir):
         return []
-    paths = sorted(
-        p for p in os.listdir(photo_dir) if p.endswith(".png")
-    )
+    paths = sorted(p for p in os.listdir(photo_dir) if p.endswith(".png"))
     return [Image.open(os.path.join(photo_dir, p)) for p in paths]
 
 
@@ -93,9 +91,9 @@ def plot_pca(run_data, save_path=None):
     pca      = PCA(n_components=2)
     coords   = pca.fit_transform(combined)
 
-    n_man     = len(clip_man)
-    n_woman   = len(clip_woman)
-    n_lgd_cm  = len(clip_lgd_cm)
+    n_man    = len(clip_man)
+    n_woman  = len(clip_woman)
+    n_lgd_cm = len(clip_lgd_cm)
 
     c_man     = coords[:n_man]
     c_woman   = coords[n_man:n_man + n_woman]
@@ -118,7 +116,8 @@ def plot_pca(run_data, save_path=None):
                label=f"LGD-CM (MMD={lgd_cm_mmd:.4f})")
     ax.set_title(f"CLIP PCA — Target vs Regular vs LGD-CM\n"
                  f"Variance explained: {pca.explained_variance_ratio_.sum():.1%}")
-    ax.legend(); ax.grid(True, alpha=0.3)
+    ax.legend()
+    ax.grid(True, alpha=0.3)
     plt.tight_layout()
     _save_or_show(fig, save_path)
     return fig
@@ -144,9 +143,9 @@ def plot_tsne(run_data, save_path=None, random_state=42):
                   perplexity=min(30, len(combined) - 1))
     coords = tsne.fit_transform(combined)
 
-    n_man     = len(clip_man)
-    n_woman   = len(clip_woman)
-    n_lgd_cm  = len(clip_lgd_cm)
+    n_man    = len(clip_man)
+    n_woman  = len(clip_woman)
+    n_lgd_cm = len(clip_lgd_cm)
 
     c_man     = coords[:n_man]
     c_woman   = coords[n_man:n_man + n_woman]
@@ -168,7 +167,8 @@ def plot_tsne(run_data, save_path=None, random_state=42):
                c="limegreen", alpha=0.8, s=80, marker="x",
                label=f"LGD-CM (MMD={lgd_cm_mmd:.4f})")
     ax.set_title("CLIP t-SNE — Target vs Regular vs LGD-CM")
-    ax.legend(); ax.grid(True, alpha=0.3)
+    ax.legend()
+    ax.grid(True, alpha=0.3)
     plt.tight_layout()
     _save_or_show(fig, save_path)
     return fig
@@ -177,7 +177,7 @@ def plot_tsne(run_data, save_path=None, random_state=42):
 def plot_kde(run_data, save_path=None):
     """
     Overlaid KDE of CLIP softmax confidence scores.
-    One panel: LGD-CM (orange) vs Regular (blue), both conditions.
+    One panel: LGD-CM (orange) vs Regular (blue).
     X-axis: p(male) score per image.
     """
     from scipy.stats import gaussian_kde
@@ -215,9 +215,9 @@ def plot_kde(run_data, save_path=None):
     ax.set_ylabel("Density")
     ax.set_xlim(0, 1)
     ax.set_title("CLIP softmax confidence distribution")
-    ax.legend(); ax.grid(True, alpha=0.3)
+    ax.legend()
+    ax.grid(True, alpha=0.3)
 
-    # annotate counts
     lgd_cm_stats  = m.get("lgd_cm_gender",  {})
     regular_stats = m.get("regular_gender", {})
     ax.text(0.02, 0.95,
@@ -274,6 +274,7 @@ def plot_portrait_grid(run_data, condition="lgd_cm",
     """
     Reload and display a grid of eval portraits.
     condition: "lgd_cm" or "regular"
+    Each portrait is titled with its gender label and confidence score.
     """
     photos = run_data.get(f"photos_{condition}", [])
     if not photos:
@@ -286,8 +287,8 @@ def plot_portrait_grid(run_data, condition="lgd_cm",
     n_male    = stats.get("n_male",   "?")
     n_female  = stats.get("n_female", "?")
 
-    n       = len(photos)
-    n_rows  = (n + n_cols - 1) // n_cols
+    n      = len(photos)
+    n_rows = (n + n_cols - 1) // n_cols
     fig, axes = plt.subplots(n_rows, n_cols,
                              figsize=(3 * n_cols, 3 * n_rows))
     axes = np.array(axes).flatten()
@@ -296,14 +297,13 @@ def plot_portrait_grid(run_data, condition="lgd_cm",
     for idx, (photo, ax) in enumerate(zip(photos, axes)):
         ax.imshow(photo)
         if idx < len(per_image):
-            p = per_image[idx]
+            p     = per_image[idx]
             label = p.get("label", "")
             conf  = p.get("p_male", 0) if label == "male" else p.get("p_female", 0)
             color = "royalblue" if label == "male" else "crimson"
             ax.set_title(f"{label}\n{conf:.2f}", fontsize=8, color=color)
         ax.axis("off")
 
-    # hide unused axes
     for ax in axes[n:]:
         ax.axis("off")
 
@@ -315,23 +315,47 @@ def plot_portrait_grid(run_data, condition="lgd_cm",
     return fig
 
 
-def compare_scribbles_heatmap(lgd_cm_pil, regular_pil, save_path=None):
+def compare_scribbles_heatmap(lgd_cm_pil, regular_pil, save_path=None,
+                               input_pil=None):
     """
-    Pixel-wise absolute difference heatmap between LGD-CM and regular scribbles.
-    Moved here from visualization.py.
+    4-panel figure: input scribble (optional), unguided, guided, difference heatmap.
+    Each scribble is shown in its own panel for clear comparison.
     """
     lgd_cm_np  = np.array(lgd_cm_pil).astype(float)
     regular_np = np.array(regular_pil).astype(float)
     diff       = np.abs(lgd_cm_np - regular_np).mean(axis=2)
     diff_norm  = diff / (diff.max() + 1e-8)
 
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-    axes[0].imshow(regular_pil);                  axes[0].set_title("Regular");   axes[0].axis("off")
-    axes[1].imshow(lgd_cm_pil);                   axes[1].set_title("LGD-CM");    axes[1].axis("off")
-    im = axes[2].imshow(diff_norm, cmap="hot");   axes[2].set_title("Difference"); axes[2].axis("off")
-    plt.colorbar(im, ax=axes[2], fraction=0.046)
-    plt.suptitle(f"Max diff: {diff.max():.1f}  Mean diff: {diff.mean():.2f}",
-                 fontsize=12)
+    n_panels = 4 if input_pil is not None else 3
+    fig, axes = plt.subplots(1, n_panels, figsize=(5 * n_panels, 5))
+
+    idx = 0
+    if input_pil is not None:
+        axes[idx].imshow(input_pil)
+        axes[idx].set_title("Input scribble", fontsize=12)
+        axes[idx].axis("off")
+        idx += 1
+
+    axes[idx].imshow(regular_pil)
+    axes[idx].set_title("Unguided", fontsize=12)
+    axes[idx].axis("off")
+    idx += 1
+
+    axes[idx].imshow(lgd_cm_pil)
+    axes[idx].set_title("LGD-CM (guided)", fontsize=12)
+    axes[idx].axis("off")
+    idx += 1
+
+    im = axes[idx].imshow(diff_norm, cmap="hot")
+    axes[idx].set_title("Difference", fontsize=12)
+    axes[idx].axis("off")
+    plt.colorbar(im, ax=axes[idx], fraction=0.046)
+
+    plt.suptitle(
+        f"Scribble comparison — Max diff: {diff.max():.1f}  "
+        f"Mean diff: {diff.mean():.2f}",
+        fontsize=12,
+    )
     plt.tight_layout()
     _save_or_show(fig, save_path)
     return fig
@@ -351,21 +375,17 @@ def make_all_plots(run_dir, plots_dir=None):
     print(f"Loading run from {run_dir}...", flush=True)
     run = load_run(run_dir)
 
-    print("Generating PCA...",       flush=True)
-    plot_pca(run,
-             save_path=os.path.join(plots_dir, "pca.png"))
+    print("Generating PCA...", flush=True)
+    plot_pca(run, save_path=os.path.join(plots_dir, "pca.png"))
 
-    print("Generating t-SNE...",     flush=True)
-    plot_tsne(run,
-              save_path=os.path.join(plots_dir, "tsne.png"))
+    print("Generating t-SNE...", flush=True)
+    plot_tsne(run, save_path=os.path.join(plots_dir, "tsne.png"))
 
-    print("Generating KDE...",       flush=True)
-    plot_kde(run,
-             save_path=os.path.join(plots_dir, "kde.png"))
+    print("Generating KDE...", flush=True)
+    plot_kde(run, save_path=os.path.join(plots_dir, "kde.png"))
 
-    print("Generating boxplot...",   flush=True)
-    plot_boxplot(run,
-                 save_path=os.path.join(plots_dir, "boxplot.png"))
+    print("Generating boxplot...", flush=True)
+    plot_boxplot(run, save_path=os.path.join(plots_dir, "boxplot.png"))
 
     print("Generating portrait grids...", flush=True)
     plot_portrait_grid(run, condition="lgd_cm",
@@ -373,12 +393,18 @@ def make_all_plots(run_dir, plots_dir=None):
     plot_portrait_grid(run, condition="regular",
                        save_path=os.path.join(plots_dir, "portraits_regular.png"))
 
-    print("Generating heatmap...",   flush=True)
-    lgd_cm_pil = run.get("final_scribble_lgd_cm")
+    print("Generating scribble heatmap...", flush=True)
+    lgd_cm_pil  = run.get("final_scribble_lgd_cm")
     regular_pil = run.get("final_scribble_regular")
+    input_pil   = run.get("scribble")
     if lgd_cm_pil and regular_pil:
-        compare_scribbles_heatmap(lgd_cm_pil, regular_pil,
-                                  save_path=os.path.join(plots_dir, "scribble_heatmap.png"))
+        compare_scribbles_heatmap(
+            lgd_cm_pil, regular_pil,
+            input_pil=input_pil,
+            save_path=os.path.join(plots_dir, "scribble_heatmap.png"),
+        )
+    else:
+        print("⚠️  Missing scribble images for heatmap — skipping.")
 
     print(f"✅ All plots saved to {plots_dir}", flush=True)
     return run

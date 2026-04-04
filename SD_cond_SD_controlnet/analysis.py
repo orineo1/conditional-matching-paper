@@ -305,7 +305,8 @@ def plot_boxplot_combined(run_data, save_path=None):
     """
     Single figure: Male and Female groups on x-axis.
     Within each group: Regular (blue) and LGD-CM (orange).
-    Always shows all 4 boxes. Annotates count inside each box.
+    Always shows all 4 boxes.
+    Count annotations below x-axis. Legend above plot.
     """
     m = run_data["metrics"]
 
@@ -324,14 +325,13 @@ def plot_boxplot_combined(run_data, save_path=None):
     reg_male,    reg_female    = split_by_gender(regular_per_image)
     lgd_cm_male, lgd_cm_female = split_by_gender(lgd_cm_per_image)
 
-    # always show all 4 boxes — use [nan] as placeholder if empty
     def safe(lst):
         return lst if lst else [float("nan")]
 
-    data     = [safe(reg_male), safe(lgd_cm_male),
-                safe(reg_female), safe(lgd_cm_female)]
-    counts   = [len(reg_male), len(lgd_cm_male),
-                len(reg_female), len(lgd_cm_female)]
+    data      = [safe(reg_male), safe(lgd_cm_male),
+                 safe(reg_female), safe(lgd_cm_female)]
+    counts    = [len(reg_male), len(lgd_cm_male),
+                 len(reg_female), len(lgd_cm_female)]
     positions = [1, 2, 4, 5]
     colors    = ["steelblue", "darkorange", "steelblue", "darkorange"]
 
@@ -340,23 +340,36 @@ def plot_boxplot_combined(run_data, save_path=None):
     bp = ax.boxplot(data, positions=positions, patch_artist=True,
                     widths=0.6,
                     medianprops=dict(color="black", linewidth=2))
-    for patch, color in zip(bp["boxes"], colors):
-        patch.set_facecolor(color)
-        patch.set_alpha(0.6)
 
-    # overlay individual points with jitter + count annotation
-    for pts, pos, color, count in zip(data, positions, colors, counts):
+    for patch, color, d in zip(bp["boxes"], colors, data):
+        all_nan = all(np.isnan(v) for v in d)
+        patch.set_facecolor(color)
+        patch.set_alpha(0.0 if all_nan else 0.6)
+        if all_nan:
+            patch.set_linewidth(0)
+
+    # overlay individual points with jitter
+    for pts, pos, color in zip(data, positions, colors):
         real_pts = [p for p in pts if not np.isnan(p)]
         if real_pts:
             jitter = np.random.uniform(-0.1, 0.1, size=len(real_pts))
             ax.scatter(np.array([pos] * len(real_pts)) + jitter, real_pts,
                        color=color, alpha=0.8, s=40, zorder=3)
-        # annotate count below each box
-        ax.text(pos, 0.51, f"n={count}", ha="center", va="bottom",
-                fontsize=9, color=color)
 
+    # count annotations below x-axis
+    for pos, color, count in zip(positions, colors, counts):
+        ax.annotate(f"n={count}",
+                    xy=(pos, 0), xycoords=("data", "axes fraction"),
+                    xytext=(0, -30), textcoords="offset points",
+                    ha="center", va="top",
+                    fontsize=9, color=color,
+                    annotation_clip=False)
+
+    # Male / Female labels pushed down
     ax.set_xticks([1.5, 4.5])
     ax.set_xticklabels(["Male", "Female"], fontsize=12)
+    ax.tick_params(axis="x", pad=25)
+
     ax.set_xlim(0, 6)
     ax.set_ylim(0.5, 1.0)
     ax.set_ylabel("Confidence")
@@ -369,9 +382,14 @@ def plot_boxplot_combined(run_data, save_path=None):
         Patch(facecolor="steelblue",  alpha=0.6, label="Regular"),
         Patch(facecolor="darkorange", alpha=0.6, label="LGD-CM"),
     ]
-    ax.legend(handles=legend_elements, loc="upper right")
+    ax.legend(handles=legend_elements,
+              loc="upper center",
+              bbox_to_anchor=(0.5, 1.12),
+              ncol=2,
+              frameon=True)
 
     plt.tight_layout()
+    plt.subplots_adjust(top=0.85)
     _save_or_show(fig, save_path)
     return fig
 def plot_portrait_grid(run_data, condition="lgd_cm",

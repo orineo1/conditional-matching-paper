@@ -204,70 +204,61 @@ def main():
     clip_model, clip_processor = load_clip_model(device)
     print("Models loaded.", flush=True)
 
-    # ── 2. Base oval image + Sobel (used for initial target generation) ─────────
-    base_image_pil, base_tensor = build_base_image(device)
-    with torch.no_grad():
-        sobel_cond_tensor = sobel_proxy(base_tensor, device)
-        sobel_cond_pil = T.ToPILImage()(sobel_cond_tensor.squeeze(0).cpu())
-
-    # ── 3. Generate initial target distributions ────────────────────────────────
-    N = args.n_targets
-    n_half = N // 2
-    print(f"Generating {N} initial target images ({n_half} man + {n_half} woman)...", flush=True)
-
-    with torch.no_grad():
-        man_images_init, _ = generate_and_store_cs(
-            sprinter, args.sprinter_target_man_prompt,
-            sobel_cond_pil, n_half, batch_size=2, cn_scale=args.controlnet_scale,
-        )
-        woman_images_init, _ = generate_and_store_cs(
-            sprinter, args.sprinter_target_woman_prompt,
-            sobel_cond_pil, n_half, batch_size=2, cn_scale=args.controlnet_scale,
-        )
-
-    # ── 4. Extract HED scribble from one of the generated portraits ─────────────
-    print("Extracting HED scribble...", flush=True)
-    source_image = man_images_init[2]
-    scribble_pil = extract_scribble_hed(source_image)
+    # ── 2. Load GuidedScribble.png as the source scribble ─────────────────────
+    from PIL import Image
+    scribble_path = os.path.join(script_dir, "GuidedScribble.png")
+    scribble_pil = Image.open(scribble_path).convert("RGB")
+    source_image = scribble_pil
     source_image.save(os.path.join(args.output_dir, "source_portrait.png"))
     scribble_pil.save(os.path.join(args.output_dir, "scribble.png"))
-
-    # From here on, use scribble_pil as the controlnet conditioning
     sobel_cond_pil = scribble_pil
-    print("✅ HED scribble ready.", flush=True)
+    print(f"✅ Loaded scribble from {scribble_path}  size={scribble_pil.size}", flush=True)
 
-    # ── 5. Regenerate targets conditioned on the HED scribble ──────────────────
-    print(f"Regenerating {N} target images conditioned on HED scribble...", flush=True)
-    n_groups = 4
-    n_per_group = N // n_groups  # divide N equally across 4 groups
-    print(f"Regenerating {N} target images ({n_per_group} per group × {n_groups} groups)...", flush=True)
-
+    # ── 3. Generate 5-group target distribution ────────────────────────────────
     target_prompts = [
-        ("woman", "a superrealistic portrait photograph of a woman, studio lighting, white shirt"),
-        ("man", "a superrealistic portrait photograph of a man, studio lighting, white shirt"),
-        ("andro_masc", "a superrealistic portrait photograph of an androgynous person, white shirt, "
-                       "masculine bone structure, sharp jawline, studio lighting"),
-        ("mostly_masc", "a superrealistic portrait photograph of a masculine man, white shirt, "
-                        "androgynous softness and minor characteristics, studio lighting"),
+        ("Woman",
+         "a superrealistic portrait photograph of a woman, studio lighting, white shirt",
+         25, "crimson", "o"),
+        ("Androgynous",
+         "a superrealistic portrait photograph of an androgynous person, "
+         "slight masculine features, studio lighting, white shirt",
+         25, "mediumorchid", "x"),
+        ("Andro-masculine",
+         "a superrealistic portrait photograph of an androgynous person, white shirt, "
+         "masculine bone structure, sharp jawline, studio lighting",
+         15, "limegreen", "^"),
+        ("Mostly masculine",
+         "a superrealistic portrait photograph of a masculine man, white shirt, "
+         "androgynous softness and minor characteristics, studio lighting",
+         15, "orange", "s"),
+        ("Man",
+         "a superrealistic portrait photograph of a man, studio lighting, white shirt",
+         25, "dodgerblue", "D"),
     ]
 
+    n_groups = len(target_prompts)
+    group_names_list = [g for g, _, _, _, _ in target_prompts]
+    group_colors = [c for _, _, _, c, _ in target_prompts]
+    group_markers = [m for _, _, _, _, m in target_prompts]
+
+    print(f"Generating target images across {n_groups} groups...", flush=True)
     target_images_per_group = {}
     with torch.no_grad():
-        for group_name, prompt in target_prompts:
+        for group_name, prompt, n, _, _ in target_prompts:
             imgs, _ = generate_and_store_cs(
                 sprinter, prompt,
-                sobel_cond_pil, n_per_group, batch_size=2, cn_scale=args.controlnet_scale,
+                sobel_cond_pil, n, batch_size=2, cn_scale=args.controlnet_scale,
             )
             target_images_per_group[group_name] = imgs
             plot_row(imgs, f"Target: {group_name}",
                      save_path=os.path.join(args.output_dir, f"target_samples_{group_name}.png"))
             print(f"  ✅ {group_name}: {len(imgs)} images", flush=True)
 
-    # convenience aliases used later in npy saving / wandb logging
-    woman_images = target_images_per_group["woman"]
-    man_images = target_images_per_group["mostly_masc"]  # closest to "man" for legacy keys
+    # legacy aliases
+    woman_images = target_images_per_group["Woman"]
+    man_images = target_images_per_group["Man"]
 
-    # ── 6. Encode targets to CLIP ──────────────────────────────────────────────
+    # ── 4. Encode targets to CLIP ──────────────────────────────────────────────
     print("Encoding targets to CLIP...", flush=True)
     clip_model.to(device)
     clip_embs_per_group = {}
@@ -280,36 +271,39 @@ def main():
     all_clip_embeddings = torch.cat(list(clip_embs_per_group.values()), dim=0)
     N_total = all_clip_embeddings.shape[0]
     print(f"Target CLIP embeddings: {all_clip_embeddings.shape}  "
-          f"({n_per_group} × {n_groups} = {N_total})", flush=True)
+          f"(total {N_total} images)", flush=True)
 
-    # Sanity check
     norms = all_clip_embeddings.norm(dim=-1)
     assert torch.allclose(norms, torch.ones(N_total, device=device), atol=1e-3), "Not normalized!"
     print(f"  Norms min/max: {norms.min():.4f} / {norms.max():.4f}")
     print("✅ all_clip_embeddings ready.", flush=True)
 
-    # PCA
-    # PCA
+    # ── 5. PCA: fit on man + woman, project the rest ───────────────────────────
+    man_clip_embs = clip_embs_per_group["Man"]
+    woman_clip_embs = clip_embs_per_group["Woman"]
     _pca = PCA(n_components=2)
-    _all_coords = _pca.fit_transform(all_clip_embeddings.cpu().numpy())
-    colors = ["crimson", "mediumorchid", "limegreen", "dodgerblue"]
-    markers = ["o", "x", "^", "D"]
-    fig, ax = plt.subplots(figsize=(8, 6))
-    for idx, (group_name, _) in enumerate(target_prompts):
-        start = idx * n_per_group
-        end = start + n_per_group
-        coords = _all_coords[start:end]
-        ax.scatter(coords[:, 0], coords[:, 1],
-                   c=colors[idx], marker=markers[idx],
-                   label=group_name, alpha=0.7, s=60)
-        # centroid
+    _coords_fit = _pca.fit_transform(
+        torch.cat([man_clip_embs, woman_clip_embs], dim=0).cpu().numpy()
+    )
+    n_man = man_clip_embs.shape[0]
+
+    fig, ax = plt.subplots(figsize=(9, 7))
+    ax.scatter(_coords_fit[n_man:, 0], _coords_fit[n_man:, 1],
+               c="crimson", label="Woman", alpha=0.7, marker="o")
+    ax.scatter(_coords_fit[:n_man, 0], _coords_fit[:n_man, 1],
+               c="dodgerblue", label="Man", alpha=0.7, marker="D")
+    for group_name, _, _, color, marker in target_prompts:
+        if group_name in ("Man", "Woman"):
+            continue
+        coords = _pca.transform(clip_embs_per_group[group_name].cpu().numpy())
+        ax.scatter(coords[:, 0], coords[:, 1], c=color, label=group_name,
+                   alpha=0.8, marker=marker, s=80)
         cx, cy = coords[:, 0].mean(), coords[:, 1].mean()
-        ax.scatter(cx, cy, c=colors[idx], marker='*', s=250,
-                   edgecolors='black', linewidths=0.8, zorder=5)
-        ax.annotate(group_name, (cx, cy),
-                    textcoords="offset points", xytext=(6, 4),
-                    fontsize=8, color=colors[idx], fontweight='bold')
-    ax.set_title(f"PCA of Target CLIP Embeddings (4 groups)\n"
+        ax.scatter(cx, cy, c=color, marker='*', s=200,
+                   edgecolors='black', linewidths=0.6, zorder=5)
+        ax.annotate(group_name, (cx, cy), textcoords="offset points",
+                    xytext=(6, 4), fontsize=8, color=color, fontweight='bold')
+    ax.set_title(f"CLIP PCA — 5-group spectrum\n"
                  f"PC1: {_pca.explained_variance_ratio_[0]:.1%}  "
                  f"PC2: {_pca.explained_variance_ratio_[1]:.1%}")
     ax.set_xlabel(f"PC1 ({_pca.explained_variance_ratio_[0]:.1%})")
@@ -320,7 +314,7 @@ def main():
     fig.savefig(pca_path, dpi=100, bbox_inches='tight');
     plt.close(fig)
     pca_fixed = _pca
-    del _all_coords
+    target_clip_np = all_clip_embeddings.cpu().numpy()
 
     # ── 7. wandb init (after we have config details) ───────────────────────────
     eval_interval = args.eval_interval if args.eval_interval > 0 else max(1, (args.n_steps - args.start_step) // 5)
@@ -331,7 +325,7 @@ def main():
         config={
             "prompt":                       args.prompt,
             "negative_prompt":              args.negative_prompt,
-            "n_targets":                    N,
+            "n_targets":                    N_total,
             "n_steps":                      args.n_steps,
             "start_step":                   args.start_step,
             "strength":                     1 - args.start_step / args.n_steps,
@@ -486,10 +480,9 @@ def main():
     visualize_step(sd_baseline, architect, sprinter, target_clip_np,
                    num_cond=4, save_path=baseline_save_path, pca_fixed=pca_fixed,
                    n_groups=n_groups,
-                   group_names=[g for g, _ in target_prompts],
-                   group_colors=["#4169E1", "#9B59B6", "#E67E22", "#E74C3C"],
-                   group_markers=["o", "D", "^", "s"])
-    print("✅ Baseline visualization saved.", flush=True)
+                   group_names=group_names_list,
+                   group_colors=group_colors,
+                   group_markers=group_markers)
 
     # ── 9. DPS loop ────────────────────────────────────────────────────────────
     dps_start_time = time.time()
@@ -613,9 +606,9 @@ def main():
         visualize_step(sd, architect, sprinter, target_clip_np,
                        num_cond=5, save_path=step_save_path, pca_fixed=pca_fixed,
                        n_groups=n_groups,
-                       group_names=[g for g, _ in target_prompts],
-                       group_colors=["#4169E1", "#9B59B6", "#E67E22", "#E74C3C"],
-                       group_markers=["o", "D", "^", "s"])
+                       group_names=group_names_list,
+                       group_colors=group_colors,
+                       group_markers=group_markers)
 
         # Scheduler step
         latents = denoise_step(architect.scheduler, noise_pred, t, latents_step,

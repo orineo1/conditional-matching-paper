@@ -51,4 +51,14 @@ python SD_cond_SD_controlnet/run_dps.py \
     --kernel_alpha 1.0 \
     --seed 1
 
+# ── sync to Google Drive regardless of job exit code ──
+OUTPUT_DIR=SD_cond_SD_controlnet/output/dps_main_${SLURM_JOB_ID}
+echo "Syncing $OUTPUT_DIR to Google Drive..."
+rclone copy "$OUTPUT_DIR" \
+    "gdrive:conditional-matching/runs/dps_main_${SLURM_JOB_ID}" \
+    --tpslimit 10 \
+    --cache-rps 50 \
+    --transfers 4
+echo "✅ Sync complete."
+
 echo "DPS main pipeline complete."

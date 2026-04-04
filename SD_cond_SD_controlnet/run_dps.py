@@ -209,8 +209,8 @@ def main():
     scribble_path = os.path.join(script_dir, "GuidedScribble.png")
     scribble_pil = Image.open(scribble_path).convert("RGB")
     source_image = scribble_pil
-    source_image.save(os.path.join(args.output_dir, "source_portrait.png"))
-    scribble_pil.save(os.path.join(args.output_dir, "scribble.png"))
+    # source_image.save(os.path.join(args.output_dir, "source_portrait.png"))
+    # scribble_pil.save(os.path.join(args.output_dir, "scribble.png"))
     sobel_cond_pil = scribble_pil
     print(f"✅ Loaded scribble from {scribble_path}  size={scribble_pil.size}", flush=True)
 
@@ -257,6 +257,13 @@ def main():
     # legacy aliases
     woman_images = target_images_per_group["Woman"]
     man_images = target_images_per_group["Man"]
+    # ── Extract HED scribble from a man target image ───────────────────────────
+    print("Extracting HED scribble from a man target image...", flush=True)
+    source_image = target_images_per_group["Man"][0]
+    scribble_pil = extract_scribble_hed(source_image)
+    source_image.save(os.path.join(args.output_dir, "source_portrait.png"))
+    scribble_pil.save(os.path.join(args.output_dir, "scribble.png"))
+    print(f"✅ HED scribble ready  size={scribble_pil.size}", flush=True)
 
     # ── 4. Encode targets to CLIP ──────────────────────────────────────────────
     print("Encoding targets to CLIP...", flush=True)
@@ -355,7 +362,7 @@ def main():
     })
     print("✅ Input images logged to wandb.", flush=True)
 
-    # ── 8. Prepare DPS ─────────────────────────────────────────────────────────
+    # ── 8. Prepare DPS ─────────── ──────────────────────────────────────────────
     height, width = 512, 512
     n_steps = args.n_steps
     start_step = args.start_step

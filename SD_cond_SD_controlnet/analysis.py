@@ -442,16 +442,16 @@ def compare_scribbles_heatmap(lgd_cm_pil, regular_pil, save_path=None,
     diff       = np.abs(lgd_cm_np - regular_np).mean(axis=2)
     diff_norm  = diff / (diff.max() + 1e-8)
 
-    fig, ax = plt.subplots(figsize=(5, 5))
+    dpi = 100
+    fig, ax = plt.subplots(figsize=(512 / dpi, 512 / dpi), dpi=dpi)
     im = ax.imshow(diff_norm, cmap="hot")
-    ax.set_title(f"Scribble difference\n"
-                 f"Max: {diff.max():.1f}  Mean: {diff.mean():.2f}",
-                 fontsize=12)
     ax.axis("off")
-    plt.colorbar(im, ax=ax, fraction=0.046)
-    plt.tight_layout()
-    _save_or_show(fig, save_path)
-    return fig
+    plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
+    if save_path:
+        fig.savefig(save_path, dpi=dpi, bbox_inches=None)
+        plt.close(fig)
+    else:
+        plt.show()
 
 
 # ── Make all plots ────────────────────────────────────────────────────────────

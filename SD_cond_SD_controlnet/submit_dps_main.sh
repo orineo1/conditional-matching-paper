@@ -84,6 +84,6 @@ echo "✅ Analysis complete."
 
 # ── 7. Sync to GDrive ────────────────────────────────────────────────────────
 echo "Syncing $OUTPUT_DIR to Google Drive..."
-rclone copy "$OUTPUT_DIR" "gdrive:conditional-matching/runs/dps_main_${SLURM_JOB_ID}" \
+rclone copy "$OUTPUT_DIR" "gdrive:conditional-matching/runs/InterpolationMenWomen/dps_main_${SLURM_JOB_ID}" \
     --tpslimit 10 --cache-rps 50 --transfers 4
 echo "✅ Job Process Finished."

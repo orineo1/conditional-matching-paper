@@ -709,6 +709,10 @@ def main():
                         os.path.join(npy_dir, "source_portrait.npy"))
     save_image_list_npy([scribble_pil],
                         os.path.join(npy_dir, "scribble.npy"))
+    save_image_list_npy([final_dps_pil],
+                        os.path.join(npy_dir, "final_scribble_lgd_cm.npy"))
+    save_image_list_npy([final_regular_pil],
+                        os.path.join(npy_dir, "final_scribble_regular.npy"))
     print("✅ Image arrays saved to npy/", flush=True)
 
     # save individual target portraits
@@ -828,6 +832,8 @@ def main():
                 "targets_woman": "npy/targets_woman.npy",
                 "source_portrait": "npy/source_portrait.npy",
                 "scribble": "npy/scribble.npy",
+                "final_scribble_lgd_cm": "npy/final_scribble_lgd_cm.npy",
+                "final_scribble_regular": "npy/final_scribble_regular.npy",
                 "clip_lgd_cm": "npy/clip_lgd_cm.npy",
                 "clip_regular": "npy/clip_regular.npy",
                 "clip_targets": "npy/clip_targets.npy",

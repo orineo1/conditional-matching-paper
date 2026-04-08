@@ -58,8 +58,6 @@ python SD_cond_SD_controlnet/run_dps.py \
     \
     `# ── Sprinter prompts ───────────────────────────────────────────` \
     --sprinter_variation_prompt    "a superrealistic professional photograph of" \
-    --sprinter_target_man_prompt   "a superrealistic portrait photograph of a man, studio lighting" \
-    --sprinter_target_woman_prompt "a superrealistic portrait photograph of a woman, studio lighting" \
     --sprinter_eval_prompt         "a superrealistic professional photograph of" \
     \
     `# ── Target distribution (5-group default, explicit here) ───────` \

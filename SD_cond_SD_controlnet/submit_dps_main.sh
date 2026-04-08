@@ -8,62 +8,79 @@
 #SBATCH --mem=48G
 #SBATCH --partition=salmon
 
-# ── 1. Environment Setup (YOUR Private Env) ──────────────────────────────────
-# Point to the new environment we just built and verified on salmon-01
+# ── 1. Environment Setup ──────────────────────────────────────────────────────
 export ENV_PATH="/sci/labs/orzuk/ori_m/dps_env"
 source $ENV_PATH/bin/activate
 
-# ── 2. Redirect Caches to Lab (Keep these to avoid "Home Full" error) ────────
+# ── 2. Redirect Caches to Lab ─────────────────────────────────────────────────
 export LAB_ROOT="/sci/labs/orzuk/ori_m"
 export HF_HOME="$LAB_ROOT/hf_cache"
 export MPLCONFIGDIR="$LAB_ROOT/.matplotlib_cache"
 export XDG_CACHE_HOME="$LAB_ROOT/.cache"
 mkdir -p "$HF_HOME" "$MPLCONFIGDIR" "$XDG_CACHE_HOME"
 
-# ── 3. Verification ──────────────────────────────────────────────────────────
+# ── 3. Verification ───────────────────────────────────────────────────────────
 echo "=== JOB STARTING ON $(hostname) ==="
 python -c "import transformers; print(f'Transformers version: {transformers.__version__}')"
 python -c "import torch; print(f'GPU Check: {torch.cuda.is_available()}')"
 echo "==================================="
 
-# ── 4. Runtime Configs ───────────────────────────────────────────────────────
+# ── 4. Runtime Configs ────────────────────────────────────────────────────────
 export WANDB_API_KEY=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
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 cd /sci/labs/orzuk/ori_m/conditional-matching-paper
 
-# Create output dir early so rclone doesn't fail if the script crashes
 OUTPUT_DIR="SD_cond_SD_controlnet/output/dps_main_${SLURM_JOB_ID}"
 mkdir -p "$OUTPUT_DIR"
 
-# ── 5. Run the Pipeline ──────────────────────────────────────────────────────
-# We just use 'python' now because your environment is 'source'-ed
+# ── 5. Run the Pipeline ───────────────────────────────────────────────────────
 python SD_cond_SD_controlnet/run_dps.py \
-    --output_dir "$OUTPUT_DIR" \
-    --n_steps 30 \
-    --start_step 15 \
-    --num_variations 6 \
-    --n_targets 6 \
-    --base_zeta 5.0 \
-    --guidance_scale 0.0 \
-    --controlnet_scale 0.5 \
-    --n_eval 6 \
-    --sprinter_variation_prompt "a superrealistic professional photograph of" \
-    --sprinter_target_man_prompt "a superrealistic portrait photograph of a man, studio lighting" \
+    --output_dir        "$OUTPUT_DIR" \
+    --wandb_project     "interpolation_men_women" \
+    \
+    `# ── Scheduler / loop ──────────────────────────────────────────` \
+    --n_steps           30 \
+    --start_step        15 \
+    \
+    `# ── Guidance ───────────────────────────────────────────────────` \
+    --base_zeta         5.0 \
+    --guidance_scale    0.0 \
+    --controlnet_scale  0.5 \
+    --loss_fn           mmd \
+    --loss_scale        1.0 \
+    --bandwidth_scale   1.0 \
+    --kernel_alpha      1.0 \
+    \
+    `# ── Variations / eval ──────────────────────────────────────────` \
+    --num_variations    6 \
+    --n_eval            6 \
+    \
+    `# ── Sprinter prompts ───────────────────────────────────────────` \
+    --sprinter_variation_prompt    "a superrealistic professional photograph of" \
+    --sprinter_target_man_prompt   "a superrealistic portrait photograph of a man, studio lighting" \
     --sprinter_target_woman_prompt "a superrealistic portrait photograph of a woman, studio lighting" \
-    --sprinter_eval_prompt "a superrealistic professional photograph of" \
-    --architect_model_id "stabilityai/sdxl-turbo" \
-    --sprinter_model_id "stabilityai/sdxl-turbo" \
+    --sprinter_eval_prompt         "a superrealistic professional photograph of" \
+    \
+    `# ── Target distribution (5-group default, explicit here) ───────` \
+    --target_prompts \
+        "Woman:a superrealistic portrait photograph of a woman, studio lighting, white shirt:25" \
+        "Androgynous:a superrealistic portrait photograph of an androgynous person, slight masculine features, studio lighting, white shirt:1" \
+        "Andro-masculine:a superrealistic portrait photograph of an androgynous person, white shirt, masculine bone structure, sharp jawline, studio lighting:39" \
+        "Mostly masculine:a superrealistic portrait photograph of a masculine man, white shirt, androgynous softness and minor characteristics, studio lighting:10" \
+        "Man:a superrealistic portrait photograph of a man, studio lighting, white shirt:25" \
+    \
+    `# ── Models ─────────────────────────────────────────────────────` \
+    --architect_model_id  "stabilityai/sdxl-turbo" \
+    --sprinter_model_id   "stabilityai/sdxl-turbo" \
     --controlnet_model_id "xinsir/controlnet-scribble-sdxl-1.0" \
-    --loss_fn mmd \
-    --loss_scale 1.0 \
-    --bandwidth_scale 1.0 \
-    --kernel_alpha 1.0 \
+    \
     --seed 1
-# ── 6. Run offline analysis (PCA, t-SNE, KDE, boxplot, heatmap) ──────────────
+
+# ── 6. Offline analysis ───────────────────────────────────────────────────────
 echo "Running analysis..."
 python SD_cond_SD_controlnet/analysis.py \
-    --run_dir "$OUTPUT_DIR" \
+    --run_dir   "$OUTPUT_DIR" \
     --plots_dir "$OUTPUT_DIR/plots"
 echo "✅ Analysis complete."
 

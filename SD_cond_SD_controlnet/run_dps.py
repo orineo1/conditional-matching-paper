@@ -95,10 +95,6 @@ def parse_args():
     p.add_argument("--negative_prompt", type=str, default="")
     p.add_argument("--sprinter_variation_prompt", type=str,
                    default="a superrealistic professional photograph of")
-    p.add_argument("--sprinter_target_man_prompt", type=str,
-                   default="a superrealistic portrait photograph of a man, studio lighting")
-    p.add_argument("--sprinter_target_woman_prompt", type=str,
-                   default="a superrealistic portrait photograph of a woman, studio lighting")
     p.add_argument("--sprinter_eval_prompt", type=str,
                    default="a superrealistic professional photograph of")
 
@@ -342,8 +338,10 @@ def main():
     plt.close(fig)
     pca_fixed = _pca
     target_clip_np = all_clip_embeddings.cpu().numpy()
-
+    softmax_man_prompt = target_prompts[-1][1]  # last group (most masculine)
+    softmax_woman_prompt = target_prompts[0][1]  # first group (most feminine)
     # ── 7. wandb init (after we have config details) ───────────────────────────
+
     eval_interval = args.eval_interval if args.eval_interval > 0 else max(1, (args.n_steps - args.start_step) // 5)
 
     run = wandb.init(
@@ -370,8 +368,8 @@ def main():
             "architect_model":              args.architect_model_id,
             "sprinter_model":               args.sprinter_model_id,
             "sprinter_variation_prompt":    args.sprinter_variation_prompt,
-            "sprinter_target_man_prompt":   args.sprinter_target_man_prompt,
-            "sprinter_target_woman_prompt": args.sprinter_target_woman_prompt,
+            "sprinter_target_man_prompt":   softmax_man_prompt,
+            "sprinter_target_woman_prompt": softmax_woman_prompt,
             "sprinter_eval_prompt":         args.sprinter_eval_prompt,
             "loss_fn":              args.loss_fn,
             "loss_scale":           args.loss_scale,
@@ -772,20 +770,20 @@ def main():
 
     lgd_cm_softmax, lgd_cm_clip_embs = compute_clip_softmax(
         dps_eval_photos, clip_model, clip_processor,
-        args.sprinter_target_man_prompt,
-        args.sprinter_target_woman_prompt,
+        softmax_man_prompt,
+        softmax_woman_prompt,
         device,
     )
     regular_softmax, regular_clip_embs = compute_clip_softmax(
         regular_eval_photos, clip_model, clip_processor,
-        args.sprinter_target_man_prompt,
-        args.sprinter_target_woman_prompt,
+        softmax_man_prompt,
+        softmax_woman_prompt,
         device,
     )
     target_softmax, target_clip_embs = compute_clip_softmax(
         man_images + woman_images, clip_model, clip_processor,
-        args.sprinter_target_man_prompt,
-        args.sprinter_target_woman_prompt,
+        softmax_man_prompt,
+        softmax_woman_prompt,
         device,
     )
     clip_model.to("cpu")

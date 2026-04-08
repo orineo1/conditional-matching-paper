@@ -53,7 +53,7 @@ def parse_args():
     p.add_argument("--output_dir", type=str, default="SD_cond_SD_controlnet/output/dps_run")
     p.add_argument("--lora_path", type=str, default=None)
     p.add_argument("--architect_unet_path", type=str, default=None)
-    p.add_argument("--wandb_project", type=str, default="measure_MMD_between_uncond_dps")
+    p.add_argument("--wandb_project", type=str, default="interpolation_men_women")
     p.add_argument("--wandb_entity", type=str, default="conditional-matching")
 
     # Scheduler / loop
@@ -76,8 +76,15 @@ def parse_args():
 
     # Variations / eval
     p.add_argument("--num_variations", type=int, default=6)
-    p.add_argument("--n_targets", type=int, default=20,
-                   help="Total target images (split evenly man/woman)")
+    p.add_argument(
+        "--target_prompts", type=str, nargs="+", default=None,
+        metavar="NAME:PROMPT:N",
+        help=(
+            "Target prompt specs as 'name:prompt:n' triples. "
+            "Example: --target_prompts 'Woman:a portrait of a woman:25' 'Man:a portrait of a man:25'. "
+            "Overrides the built-in 5-group default when provided."
+        ),
+    )
     p.add_argument("--n_eval", type=int, default=10,
                    help="Sprinter photos per MMD evaluation")
     p.add_argument("--eval_interval", type=int, default=0,
@@ -215,26 +222,46 @@ def main():
     print(f"✅ Loaded scribble from {scribble_path}  size={scribble_pil.size}", flush=True)
 
     # ── 3. Generate 5-group target distribution ────────────────────────────────
-    target_prompts = [
-        ("Woman",
-         "a superrealistic portrait photograph of a woman, studio lighting, white shirt",
-         25, "crimson", "o"),
-        ("Androgynous",
-         "a superrealistic portrait photograph of an androgynous person, "
-         "slight masculine features, studio lighting, white shirt",
-         1, "mediumorchid", "x"),
-        ("Andro-masculine",
-         "a superrealistic portrait photograph of an androgynous person, white shirt, "
-         "masculine bone structure, sharp jawline, studio lighting",
-         39, "limegreen", "^"),
-        ("Mostly masculine",
-         "a superrealistic portrait photograph of a masculine man, white shirt, "
-         "androgynous softness and minor characteristics, studio lighting",
-         10, "orange", "s"),
-        ("Man",
-         "a superrealistic portrait photograph of a man, studio lighting, white shirt",
-         25, "dodgerblue", "D"),
-    ]
+    _DEFAULT_COLORS = ["crimson", "mediumorchid", "limegreen", "orange", "dodgerblue",
+                       "gold", "deepskyblue", "hotpink", "slategray", "peru"]
+    _DEFAULT_MARKERS = ["o", "x", "^", "s", "D", "P", "v", "<", ">", "h"]
+
+    if args.target_prompts:
+        target_prompts = []
+        for idx, spec in enumerate(args.target_prompts):
+            parts = spec.split(":", 2)
+            if len(parts) != 3:
+                raise ValueError(
+                    f"--target_prompts entry '{spec}' must be in 'name:prompt:n' format"
+                )
+            name, prompt_text, n_str = parts
+            n_group = int(n_str)
+            color = _DEFAULT_COLORS[idx % len(_DEFAULT_COLORS)]
+            marker = _DEFAULT_MARKERS[idx % len(_DEFAULT_MARKERS)]
+            target_prompts.append((name.strip(), prompt_text.strip(), n_group, color, marker))
+        print(f"Using {len(target_prompts)} CLI-provided target groups.", flush=True)
+    else:
+        target_prompts = [
+            ("Woman",
+             "a superrealistic portrait photograph of a woman, studio lighting, white shirt",
+             25, "crimson", "o"),
+            ("Androgynous",
+             "a superrealistic portrait photograph of an androgynous person, "
+             "slight masculine features, studio lighting, white shirt",
+             1, "mediumorchid", "x"),
+            ("Andro-masculine",
+             "a superrealistic portrait photograph of an androgynous person, white shirt, "
+             "masculine bone structure, sharp jawline, studio lighting",
+             39, "limegreen", "^"),
+            ("Mostly masculine",
+             "a superrealistic portrait photograph of a masculine man, white shirt, "
+             "androgynous softness and minor characteristics, studio lighting",
+             10, "orange", "s"),
+            ("Man",
+             "a superrealistic portrait photograph of a man, studio lighting, white shirt",
+             25, "dodgerblue", "D"),
+        ]
+        print(f"Using built-in 5-group default target distribution.", flush=True)
 
     n_groups = len(target_prompts)
     group_names_list = [g for g, _, _, _, _ in target_prompts]
@@ -255,11 +282,13 @@ def main():
             print(f"  ✅ {group_name}: {len(imgs)} images", flush=True)
 
     # legacy aliases
-    woman_images = target_images_per_group["Woman"]
-    man_images = target_images_per_group["Man"]
+    woman_images = target_images_per_group.get(
+        "Woman", target_images_per_group[group_names_list[0]])
+    man_images = target_images_per_group.get(
+        "Man", target_images_per_group[group_names_list[-1]])
     # ── Extract HED scribble from a man target image ───────────────────────────
     print("Extracting HED scribble from a man target image...", flush=True)
-    source_image = target_images_per_group["Man"][2]
+    source_image = man_images[min(2, len(man_images) - 1)]
     scribble_pil = extract_scribble_hed(source_image)
     source_image.save(os.path.join(args.output_dir, "source_portrait.png"))
     scribble_pil.save(os.path.join(args.output_dir, "scribble.png"))
@@ -301,7 +330,7 @@ def main():
                    edgecolors='black', linewidths=0.6, zorder=5)
         ax.annotate(group_name, (cx, cy), textcoords="offset points",
                     xytext=(6, 4), fontsize=8, color=color, fontweight='bold')
-    ax.set_title(f"CLIP PCA — 5-group spectrum\n"
+    ax.set_title(f"CLIP PCA — {n_groups}-group spectrum\n"
                  f"PC1: {_pca.explained_variance_ratio_[0]:.1%}  "
                  f"PC2: {_pca.explained_variance_ratio_[1]:.1%}")
     ax.set_xlabel(f"PC1 ({_pca.explained_variance_ratio_[0]:.1%})")
@@ -348,17 +377,30 @@ def main():
             "loss_scale":           args.loss_scale,
             "bandwidth_scale":      args.bandwidth_scale,
             "kernel_alpha": args.kernel_alpha,
+            # per-group prompt details
+            "target_groups": {
+                name: {"prompt": prompt_text, "n_samples": n}
+                for name, prompt_text, n, _, _ in target_prompts
+            },
+            "target_group_names": [name for name, _, _, _, _ in target_prompts],
+            "target_group_counts": {name: n for name, _, n, _, _ in target_prompts},
+            "target_group_prompts": {name: prompt_text for name, prompt_text, _, _, _ in target_prompts},
+            "n_target_groups": len(target_prompts),
+            "n_targets_total": sum(n for _, _, n, _, _ in target_prompts),
         },
     )
     print(f"✅ wandb run: {run.name}", flush=True)
 
-    # Log input images
+    # Log input images — one gallery per target group
+    target_images_log = {
+        f"target_samples/{name}": [wandb.Image(p) for p in imgs]
+        for name, imgs in target_images_per_group.items()
+    }
     wandb.log({
-        "scribble":             wandb.Image(scribble_pil),
-        "source_portrait":      wandb.Image(source_image),
-        "target_samples_man":   [wandb.Image(p) for p in man_images],
-        "target_samples_woman": [wandb.Image(p) for p in woman_images],
-        "target_clip_pca":      wandb.Image(pca_path),
+        "scribble": wandb.Image(scribble_pil),
+        "source_portrait": wandb.Image(source_image),
+        "target_clip_pca": wandb.Image(pca_path),
+        **target_images_log,
     })
     print("✅ Input images logged to wandb.", flush=True)
 

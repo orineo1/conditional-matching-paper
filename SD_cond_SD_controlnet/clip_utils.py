@@ -23,7 +23,8 @@ def encode_images_clip(pixel_tensor, clip_model, clip_processor):
     Returns: [B, 768] normalized embeddings (differentiable w.r.t pixel_tensor)
     """
     # Resize to 224x224 — differentiable
-    resized = F.interpolate(pixel_tensor, size=(224, 224), mode="bilinear", align_corners=False)
+    # resized = F.interpolate(pixel_tensor, size=(224, 224), mode="bilinear", align_corners=False)
+    resized = F.adaptive_avg_pool2d(pixel_tensor, (224, 224))
 
     # Normalize with CLIP's own mean/std
     mean = torch.tensor([0.48145466, 0.4578275,  0.40821073], device=pixel_tensor.device).view(1, 3, 1, 1)

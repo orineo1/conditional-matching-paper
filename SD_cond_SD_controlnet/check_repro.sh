@@ -20,7 +20,7 @@ mkdir -p "$HF_HOME" "$MPLCONFIGDIR" "$XDG_CACHE_HOME"
 
 export WANDB_API_KEY=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
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-
+export CUBLAS_WORKSPACE_CONFIG=:4096:8
 cd /sci/labs/orzuk/ori_m/conditional-matching-paper
 
 # ── 2. Define Paths and Shared Config ────────────────────────────────────────

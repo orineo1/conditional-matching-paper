@@ -143,7 +143,7 @@ def run_dps_step_clip(latents, latents_step, noise_pred, pixel_x0_norm,
                       sprinter, all_clip_embeddings, num_variations,
                       variation_batch_size, base_zeta_prime,
                       clip_model, clip_processor, vae, vae_scaling_factor, variation_prompt,
-                      loss_fn=compute_mmd,loss_scale=1.0,seed=None):
+                      loss_fn=compute_mmd,loss_scale=1.0,seed=None,step_idx=0):
     from clip_utils import encode_images_clip
 
     device = pixel_x0_norm.device
@@ -157,7 +157,7 @@ def run_dps_step_clip(latents, latents_step, noise_pred, pixel_x0_norm,
 
         def sprinter_vae_clip_forward(ctrl):
             # Create local generator for variations
-            batch_seed = seed + start_idx if seed is not None else None
+            batch_seed = seed + (step_idx * 100) + start_idx if seed is not None else None
             gen_var = torch.Generator(device=ctrl.device).manual_seed(batch_seed) if batch_seed is not None else None
 
             var_latents = sprinter(

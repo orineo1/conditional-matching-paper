@@ -187,10 +187,8 @@ def set_seed(seed):
     # Force deterministic behavior in CuDNN
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+    torch.use_deterministic_algorithms(True, warn_only=True)
 
-    # Optional: some ops don't have deterministic versions,
-    # but this ensures others stay in line.
-    # torch.use_deterministic_algorithms(True)
     print(f"✅ Global seed set to {seed} with deterministic CuDNN.")
 
 def main():
@@ -535,7 +533,7 @@ def main():
             variation_prompt=args.sprinter_variation_prompt,
             loss_fn=loss_fn,
             loss_scale=args.loss_scale,
-            seed=args.seed
+            seed=i
         )
 
         grad_norm = grad.norm().item()

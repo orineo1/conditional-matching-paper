@@ -170,8 +170,8 @@ def run_dps_step_clip(latents, latents_step, noise_pred, pixel_x0_norm,
                 return_dict=True,
                 generator=gen_var,
             ).images
-            print(f"      [REPRO] sprinter latents sum={var_latents.sum().item():.8f}  "
-                  f"batch_seed={batch_seed}  cn_scale={controlnet_scale}", flush=True)
+            # print(f"      [REPRO] sprinter latents sum={var_latents.sum().item():.8f}  "
+            #       f"batch_seed={batch_seed}  cn_scale={controlnet_scale}", flush=True)
 
             var_pixels = vae.decode(
                 (var_latents.float() / vae_scaling_factor).to(vae.dtype)
@@ -186,8 +186,8 @@ def run_dps_step_clip(latents, latents_step, noise_pred, pixel_x0_norm,
         variation_clip_list.append(var_clip)
 
     variation_clip_embs = torch.cat(variation_clip_list, dim=0)
-    print(f"      [DEBUG] Variation Embs Sum: {variation_clip_embs.sum().item():.10f} | "
-          f"Std: {variation_clip_embs.std().item():.10f}")
+    # print(f"      [DEBUG] Variation Embs Sum: {variation_clip_embs.sum().item():.10f} | "
+    #       f"Std: {variation_clip_embs.std().item():.10f}")
     torch.cuda.empty_cache()
 
     loss_value  = loss_fn(variation_clip_embs, all_clip_embeddings.detach())
@@ -198,9 +198,9 @@ def run_dps_step_clip(latents, latents_step, noise_pred, pixel_x0_norm,
     grad = torch.autograd.grad(
         loss_scaled, latents_step, retain_graph=False, create_graph=False
     )[0]
-    print(f"      [DEBUG] Grad Sum: {grad.sum().item():.10f} | "
-          f"Abs Max: {grad.abs().max().item():.10f} | "
-          f"L2: {grad.norm().item():.10f}")
+    # print(f"      [DEBUG] Grad Sum: {grad.sum().item():.10f} | "
+    #       f"Abs Max: {grad.abs().max().item():.10f} | "
+    #       f"L2: {grad.norm().item():.10f}")
 
     vl_clip_flat = variation_clip_embs.detach().cpu().numpy()
     del variation_clip_list, variation_clip_embs

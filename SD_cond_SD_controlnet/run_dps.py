@@ -81,6 +81,9 @@ def parse_args():
                    help="Total target images (split evenly man/woman)")
     p.add_argument("--n_eval", type=int, default=10,
                    help="Sprinter photos per MMD evaluation")
+    p.add_argument("--n_eval_final", type=int, default=None,
+                   help="Sprinter photos for FINAL MMD/SWD evaluation "
+                        "(defaults to --n_eval if not set)")
     p.add_argument("--eval_interval", type=int, default=0,
                    help="Evaluate intermediate MMD every N steps (0 = auto ~5 checkpoints)")
 
@@ -197,6 +200,7 @@ def set_seed(seed):
 
 def main():
     args = parse_args()
+    n_eval_final = args.n_eval_final if args.n_eval_final is not None else args.n_eval
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Device: {device}", flush=True)
 
@@ -327,6 +331,7 @@ def main():
             "controlnet_scale":             args.controlnet_scale,
             "edge_method":                  "hed_scribble",
             "n_eval":                       args.n_eval,
+            n_eval_final:                   args.n_eval_final,
             "eval_interval":                eval_interval,
             "lora_path":                    args.lora_path,
             "architect_unet_path":          args.architect_unet_path,
@@ -633,7 +638,7 @@ def main():
         latents_regular, architect.vae, architect.image_processor,
         sprinter, clip_model, clip_processor,
         all_clip_embeddings, eval_prompt=args.sprinter_eval_prompt,
-        n_eval=args.n_eval, device=device,
+        n_eval=n_eval_final, device=device,
         seed=args.seed
     )
 
@@ -642,7 +647,7 @@ def main():
         latents, architect.vae, architect.image_processor,
         sprinter, clip_model, clip_processor,
         all_clip_embeddings, eval_prompt=args.sprinter_eval_prompt,
-        n_eval=args.n_eval, device=device,
+        n_eval=n_eval_final, device=device,
         seed=args.seed
     )
 

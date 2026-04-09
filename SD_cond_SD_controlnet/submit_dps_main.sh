@@ -48,6 +48,7 @@ python SD_cond_SD_controlnet/run_dps.py \
     --guidance_scale 0.0 \
     --controlnet_scale 0.5 \
     --n_eval 6 \
+    --n_eval_final 50 \
     --sprinter_variation_prompt "a superrealistic professional photograph of" \
     --sprinter_target_man_prompt "a superrealistic portrait photograph of a man, studio lighting" \
     --sprinter_target_woman_prompt "a superrealistic portrait photograph of a woman, studio lighting" \
@@ -70,5 +71,7 @@ echo "✅ Analysis complete."
 # ── 7. Sync to GDrive ────────────────────────────────────────────────────────
 echo "Syncing $OUTPUT_DIR to Google Drive..."
 rclone copy "$OUTPUT_DIR" "gdrive:conditional-matching/runs/dps_main_${SLURM_JOB_ID}" \
-    --tpslimit 10 --cache-rps 50 --transfers 4
+    --tpslimit 10 --cache-rps 50 --transfers 4 \
+    --exclude "photos_lgd_cm/**" \
+    --exclude "photos_regular/**"
 echo "✅ Job Process Finished."

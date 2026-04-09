@@ -188,7 +188,7 @@ def set_seed(seed):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
     torch.use_deterministic_algorithms(True, warn_only=True)
-
+    os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
     print(f"✅ Global seed set to {seed} with deterministic algorithms.")
 
 def main():
@@ -533,7 +533,8 @@ def main():
             variation_prompt=args.sprinter_variation_prompt,
             loss_fn=loss_fn,
             loss_scale=args.loss_scale,
-            seed=i
+            seed=i,
+            step_idx=i,
         )
 
         grad_norm = grad.norm().item()

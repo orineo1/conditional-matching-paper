@@ -537,8 +537,9 @@ def main():
             variation_prompt=args.sprinter_variation_prompt,
             loss_fn=loss_fn,
             loss_scale=args.loss_scale,
-            seed=i,
+            seed=args.seed,
             step_idx=i,
+            controlnet_scale=args.controlnet_scale,
         )
 
         grad_norm = grad.norm().item()

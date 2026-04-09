@@ -144,7 +144,8 @@ def run_dps_step_clip(latents, latents_step, noise_pred, pixel_x0_norm,
                       sprinter, all_clip_embeddings, num_variations,
                       variation_batch_size, base_zeta_prime,
                       clip_model, clip_processor, vae, vae_scaling_factor, variation_prompt,
-                      loss_fn=compute_mmd,loss_scale=1.0,seed=None,step_idx=0):
+                      loss_fn=compute_mmd, loss_scale=1.0, seed=None, step_idx=0,
+                      controlnet_scale=0.8):   # ← new parameter
     from clip_utils import encode_images_clip
 
     device = pixel_x0_norm.device
@@ -152,77 +153,56 @@ def run_dps_step_clip(latents, latents_step, noise_pred, pixel_x0_norm,
 
     variation_clip_list = []
     for start_idx in range(0, num_variations, variation_batch_size):
-        end_idx = min(start_idx + variation_batch_size, num_variations)
-        bs = end_idx - start_idx
-        ctrl_batch = pixel_x0_norm[0].unsqueeze(0).repeat(bs, 1, 1, 1)
+        end_idx  = min(start_idx + variation_batch_size, num_variations)
+        ctrl_batch = pixel_x0_norm[0].unsqueeze(0).repeat(end_idx - start_idx, 1, 1, 1)
 
-        def sprinter_vae_clip_forward(ctrl):
-            # Create local generator for variations
-            batch_seed = seed * 10000 + step_idx * 100 + start_idx if seed is not None else None
-            gen_var = torch.Generator(device=ctrl.device).manual_seed(batch_seed) if batch_seed is not None else None
+        def sprinter_vae_clip_forward(ctrl, _start_idx=start_idx):
+            batch_seed = seed * 10000 + step_idx * 100 + _start_idx if seed is not None else None
+            gen_var    = torch.Generator(device=ctrl.device).manual_seed(batch_seed) if batch_seed is not None else None
 
             var_latents = sprinter(
                 prompt=[variation_prompt] * ctrl.shape[0],
-                image=ctrl, num_inference_steps=2, guidance_scale=0.0,
-                controlnet_conditioning_scale=0.8,
-                output_type="latent", return_dict=True,
-                generator=gen_var,  # <--- ADD THIS
+                image=ctrl,
+                num_inference_steps=2,
+                guidance_scale=0.0,
+                controlnet_conditioning_scale=controlnet_scale,   # ← use parameter
+                output_type="latent",
+                return_dict=True,
+                generator=gen_var,
             ).images
-            print(f"      [REPRO] sprinter latents sum={var_latents.sum().item():.8f}", flush=True)
+            print(f"      [REPRO] sprinter latents sum={var_latents.sum().item():.8f}  "
+                  f"batch_seed={batch_seed}  cn_scale={controlnet_scale}", flush=True)
 
             var_pixels = vae.decode(
                 (var_latents.float() / vae_scaling_factor).to(vae.dtype)
             ).sample
             var_pixels = torch.clamp((var_pixels.float() + 1.0) / 2.0, 0.0, 1.0)
-            print(f"      [REPRO] pixels sum={var_pixels.sum().item():.8f}", flush=True)
 
-            # ── Stage 3: resize (adaptive_avg_pool2d) ─────────────────
-            resized = F.adaptive_avg_pool2d(var_pixels, (224, 224))
-            print(f"      [REPRO] resized sum={resized.sum().item():.8f}", flush=True)
-
-            # ── Stage 4: CLIP vision model ────────────────────────────
             with torch.cuda.amp.autocast(enabled=False):
-                emb = encode_images_clip(var_pixels.float(), clip_model, clip_processor)
-            print(f"      [REPRO] clip emb sum={emb.sum().item():.8f}", flush=True)
-            return emb
+                return encode_images_clip(var_pixels.float(), clip_model, clip_processor)
 
         var_clip = torch.utils.checkpoint.checkpoint(
             sprinter_vae_clip_forward, ctrl_batch, use_reentrant=False)
         variation_clip_list.append(var_clip)
 
     variation_clip_embs = torch.cat(variation_clip_list, dim=0)
-    # DEBUG PRINT: Check if embeddings are bit-identical
-    emb_sum = variation_clip_embs.sum().item()
-    emb_std = variation_clip_embs.std().item()
-    print(f"      [DEBUG] Variation Embs Sum: {emb_sum:.10f} | Std: {emb_std:.10f}")
-    torch.cuda.empty_cache()
-
-    # DEBUG: check variation CLIP embeddings
-    print(f"      var_clip_embs: shape={variation_clip_embs.shape} "
-          f"nan={torch.isnan(variation_clip_embs).sum().item()} "
-          f"range=[{variation_clip_embs.min().item():.4f}, {variation_clip_embs.max().item():.4f}] "
-          f"grad_fn={variation_clip_embs.grad_fn}", flush=True)
-
-    # ── B. MMD between variation embeddings and fixed target ──────────────────
-    loss_value = loss_fn(variation_clip_embs, all_clip_embeddings.detach())
-    loss_scaled = loss_value * loss_scale
-    loss_norm = loss_scaled.detach()
-    zeta_i = base_zeta_prime / loss_norm
-
-    grad = torch.autograd.grad(
-        loss_scaled , latents_step, retain_graph=False, create_graph=False
-    )[0]
     print(f"      [DEBUG] Variation Embs Sum: {variation_clip_embs.sum().item():.10f} | "
           f"Std: {variation_clip_embs.std().item():.10f}")
+    torch.cuda.empty_cache()
+
+    loss_value  = loss_fn(variation_clip_embs, all_clip_embeddings.detach())
+    loss_scaled = loss_value * loss_scale
+    loss_norm   = loss_scaled.detach()
+    zeta_i      = base_zeta_prime / loss_norm
+
+    grad = torch.autograd.grad(
+        loss_scaled, latents_step, retain_graph=False, create_graph=False
+    )[0]
     print(f"      [DEBUG] Grad Sum: {grad.sum().item():.10f} | "
-          f"Abs Max: {grad.abs().max().item():.10f}")
-    print(f"      [DEBUG] Grad L2: {grad.norm().item():.10f}")
-    # NEW DEBUG PRINT: Check if the gradient itself is bit-identical
-    grad_sum = grad.sum().item()
-    grad_abs_max = grad.abs().max().item()
-    print(f"      [DEBUG] Grad Sum: {grad_sum:.10f} | Abs Max: {grad_abs_max:.10f}")
+          f"Abs Max: {grad.abs().max().item():.10f} | "
+          f"L2: {grad.norm().item():.10f}")
 
     vl_clip_flat = variation_clip_embs.detach().cpu().numpy()
     del variation_clip_list, variation_clip_embs
 
-    return grad, loss_scaled , zeta_i, loss_norm, vl_clip_flat
+    return grad, loss_scaled, zeta_i, loss_norm, vl_clip_flat

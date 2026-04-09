@@ -250,7 +250,7 @@ def main():
 
     # ── 4. Extract HED scribble from one of the generated portraits ─────────────
     print("Extracting HED scribble...", flush=True)
-    source_image = man_images_init[2]
+    source_image = man_images_init[0]
     scribble_pil = extract_scribble_hed(source_image)
     source_image.save(os.path.join(args.output_dir, "source_portrait.png"))
     scribble_pil.save(os.path.join(args.output_dir, "scribble.png"))

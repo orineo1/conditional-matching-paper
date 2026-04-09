@@ -40,6 +40,7 @@ mkdir -p "$OUTPUT_DIR"
 # We just use 'python' now because your environment is 'source'-ed
 python SD_cond_SD_controlnet/run_dps.py \
     --output_dir "$OUTPUT_DIR" \
+    --wandb_project "sd_mmd_distance_bimodal_0.5" \
     --n_steps 30 \
     --start_step 15 \
     --num_variations 6 \

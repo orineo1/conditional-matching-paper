@@ -180,6 +180,10 @@ def run_dps_step_clip(latents, latents_step, noise_pred, pixel_x0_norm,
         variation_clip_list.append(var_clip)
 
     variation_clip_embs = torch.cat(variation_clip_list, dim=0)
+    # DEBUG PRINT: Check if embeddings are bit-identical
+    emb_sum = variation_clip_embs.sum().item()
+    emb_std = variation_clip_embs.std().item()
+    print(f"      [DEBUG] Variation Embs Sum: {emb_sum:.10f} | Std: {emb_std:.10f}")
     torch.cuda.empty_cache()
 
     # DEBUG: check variation CLIP embeddings
@@ -197,6 +201,10 @@ def run_dps_step_clip(latents, latents_step, noise_pred, pixel_x0_norm,
     grad = torch.autograd.grad(
         loss_scaled , latents_step, retain_graph=False, create_graph=False
     )[0]
+    # NEW DEBUG PRINT: Check if the gradient itself is bit-identical
+    grad_sum = grad.sum().item()
+    grad_abs_max = grad.abs().max().item()
+    print(f"      [DEBUG] Grad Sum: {grad_sum:.10f} | Abs Max: {grad_abs_max:.10f}")
 
     vl_clip_flat = variation_clip_embs.detach().cpu().numpy()
     del variation_clip_list, variation_clip_embs

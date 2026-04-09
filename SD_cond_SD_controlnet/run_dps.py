@@ -180,16 +180,16 @@ def set_seed(seed):
     if seed is None:
         return
     random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
-    # Force deterministic behavior in CuDNN
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
     torch.use_deterministic_algorithms(True, warn_only=True)
 
-    print(f"✅ Global seed set to {seed} with deterministic CuDNN.")
+    print(f"✅ Global seed set to {seed} with deterministic algorithms.")
 
 def main():
     args = parse_args()

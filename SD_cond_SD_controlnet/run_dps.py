@@ -185,8 +185,13 @@ def main():
     os.makedirs(steps_dir, exist_ok=True)
 
     if args.seed is not None:
-        torch.manual_seed(args.seed)
+        import random
+        random.seed(args.seed)
         np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed)  # covers all CUDA devices
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
 
     # ── wandb ──────────────────────────────────────────────────────────────────
     import wandb

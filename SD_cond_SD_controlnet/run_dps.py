@@ -189,6 +189,10 @@ def set_seed(seed):
     torch.backends.cudnn.benchmark = False
     torch.use_deterministic_algorithms(True, warn_only=True)
     os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
+
+    torch.backends.cuda.enable_flash_sdp(False)
+    torch.backends.cuda.enable_mem_efficient_sdp(False)
+    torch.backends.cuda.enable_math_sdp(True)
     print(f"✅ Global seed set to {seed} with deterministic algorithms.")
 
 def main():

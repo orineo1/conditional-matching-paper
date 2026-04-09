@@ -2,6 +2,7 @@ import torch
 import numpy as np
 import gc
 from metrics import compute_mmd
+import torch.nn.functional as F
 
 
 def generate_and_store(pipe, prompt, sobel_cond_pil, num_samples, batch_size=2):
@@ -167,13 +168,23 @@ def run_dps_step_clip(latents, latents_step, noise_pred, pixel_x0_norm,
                 output_type="latent", return_dict=True,
                 generator=gen_var,  # <--- ADD THIS
             ).images
+            print(f"      [REPRO] sprinter latents sum={var_latents.sum().item():.8f}", flush=True)
+
             var_pixels = vae.decode(
                 (var_latents.float() / vae_scaling_factor).to(vae.dtype)
             ).sample
             var_pixels = torch.clamp((var_pixels.float() + 1.0) / 2.0, 0.0, 1.0)
-            # CLIP encode — disable autocast to prevent fp16 overflow in CLIP ViT
+            print(f"      [REPRO] pixels sum={var_pixels.sum().item():.8f}", flush=True)
+
+            # ── Stage 3: resize (adaptive_avg_pool2d) ─────────────────
+            resized = F.adaptive_avg_pool2d(var_pixels, (224, 224))
+            print(f"      [REPRO] resized sum={resized.sum().item():.8f}", flush=True)
+
+            # ── Stage 4: CLIP vision model ────────────────────────────
             with torch.cuda.amp.autocast(enabled=False):
-                return encode_images_clip(var_pixels.float(), clip_model, clip_processor)
+                emb = encode_images_clip(var_pixels.float(), clip_model, clip_processor)
+            print(f"      [REPRO] clip emb sum={emb.sum().item():.8f}", flush=True)
+            return emb
 
         var_clip = torch.utils.checkpoint.checkpoint(
             sprinter_vae_clip_forward, ctrl_batch, use_reentrant=False)

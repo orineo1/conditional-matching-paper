@@ -331,7 +331,7 @@ def main():
             "controlnet_scale":             args.controlnet_scale,
             "edge_method":                  "hed_scribble",
             "n_eval":                       args.n_eval,
-            n_eval_final:                   args.n_eval_final,
+            "n_eval_final":                   args.n_eval_final,
             "eval_interval":                eval_interval,
             "lora_path":                    args.lora_path,
             "architect_unet_path":          args.architect_unet_path,

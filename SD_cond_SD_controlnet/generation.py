@@ -31,7 +31,7 @@ def generate_and_store(pipe, prompt, sobel_cond_pil, num_samples, batch_size=2):
     return all_images, np.vstack(all_lats)
 
 
-def generate_and_store_cs(pipe, prompt, cond_pil, num_samples, batch_size=2, cn_scale=0.5):
+def generate_and_store_cs(pipe, prompt, cond_pil, num_samples, batch_size=2, cn_scale=0.5,seed=None):
     """generate_and_store but with configurable controlnet_conditioning_scale."""
     original_vae_dtype = pipe.vae.dtype
     pipe.vae.to(dtype=torch.float16)
@@ -42,6 +42,9 @@ def generate_and_store_cs(pipe, prompt, cond_pil, num_samples, batch_size=2, cn_
             p._current_latents = cb_kwargs["latents"].detach().cpu().numpy()
         return cb_kwargs
 
+    generator = None
+    if seed is not None:
+        generator = torch.Generator(device=pipe.device).manual_seed(seed)
     for i in range(0, num_samples, batch_size):
         curr   = min(batch_size, num_samples - i)
         result = pipe(
@@ -51,6 +54,7 @@ def generate_and_store_cs(pipe, prompt, cond_pil, num_samples, batch_size=2, cn_
             guidance_scale=0.0,
             controlnet_conditioning_scale=cn_scale,
             callback_on_step_end=latents_callback,
+            generator=generator,
         )
         all_images.extend(result.images)
         all_lats.append(pipe._current_latents.reshape(curr, -1))

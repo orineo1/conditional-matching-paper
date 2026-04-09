@@ -15,6 +15,7 @@ import copy
 import gc
 import json
 import time
+import random
 import numpy as np
 import os
 import sys
@@ -175,6 +176,23 @@ def extract_scribble_hed(pil_image):
     return hed(pil_image, scribble=True)
 
 
+def set_seed(seed):
+    if seed is None:
+        return
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+    # Force deterministic behavior in CuDNN
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+    # Optional: some ops don't have deterministic versions,
+    # but this ensures others stay in line.
+    # torch.use_deterministic_algorithms(True)
+    print(f"✅ Global seed set to {seed} with deterministic CuDNN.")
+
 def main():
     args = parse_args()
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -185,8 +203,7 @@ def main():
     os.makedirs(steps_dir, exist_ok=True)
 
     if args.seed is not None:
-        torch.manual_seed(args.seed)
-        np.random.seed(args.seed)
+        set_seed(args.seed)
 
     # ── wandb ──────────────────────────────────────────────────────────────────
     import wandb
@@ -218,11 +235,11 @@ def main():
     with torch.no_grad():
         man_images_init, _ = generate_and_store_cs(
             sprinter, args.sprinter_target_man_prompt,
-            sobel_cond_pil, n_half, batch_size=2, cn_scale=args.controlnet_scale,
+            sobel_cond_pil, n_half, batch_size=2, cn_scale=args.controlnet_scale,seed=args.seed
         )
         woman_images_init, _ = generate_and_store_cs(
             sprinter, args.sprinter_target_woman_prompt,
-            sobel_cond_pil, n_half, batch_size=2, cn_scale=args.controlnet_scale,
+            sobel_cond_pil, n_half, batch_size=2, cn_scale=args.controlnet_scale,seed=args.seed
         )
 
     # ── 4. Extract HED scribble from one of the generated portraits ─────────────
@@ -381,7 +398,10 @@ def main():
     t_start        = timesteps[start_step]
     alphas_cumprod = architect.scheduler.alphas_cumprod.to(device)
     alpha          = alphas_cumprod[t_start.long()].to(torch.float32)
-    noise          = torch.randn_like(scribble_latent)
+    # Use a specific generator for the initial noise
+    gen = torch.Generator(device=device).manual_seed(args.seed) if args.seed else None
+    noise = torch.randn_like(scribble_latent, generator=gen)
+
     latents        = ((alpha ** 0.5) * scribble_latent + ((1 - alpha) ** 0.5) * noise).to(torch.float16)
     latents_regular = latents.detach().clone()
 

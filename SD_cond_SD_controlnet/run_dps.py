@@ -239,7 +239,7 @@ def main():
         )
         woman_images_init, _ = generate_and_store_cs(
             sprinter, args.sprinter_target_woman_prompt,
-            sobel_cond_pil, n_half, batch_size=2, cn_scale=args.controlnet_scale,seed=args.seed
+            sobel_cond_pil, n_half, batch_size=2, cn_scale=args.controlnet_scale,seed=args.seed+ 1000
         )
 
     # ── 4. Extract HED scribble from one of the generated portraits ─────────────
@@ -480,6 +480,8 @@ def main():
 
     # ── 9. DPS loop ────────────────────────────────────────────────────────────
     dps_start_time = time.time()
+    gen_dps = torch.Generator(device=device).manual_seed(args.seed)
+    gen_reg = torch.Generator(device=device).manual_seed(args.seed)
     for i, t in enumerate(timesteps_to_run):
         print(f"\n{'='*60}", flush=True)
         print(f"Step {i+1}/{len(timesteps_to_run)}  (t={t})", flush=True)
@@ -603,10 +605,13 @@ def main():
 
         # Scheduler step
         latents = denoise_step(architect.scheduler, noise_pred, t, latents_step,
-                               correction=correction)
+                               correction=correction,
+                               generator=gen_dps
+        )
         with torch.no_grad():
             latents_regular = denoise_step(scheduler_regular, noise_pred_regular,
-                                           t, latents_step_regular)
+                                           t, latents_step_regular,
+                                           generator=gen_reg)
 
         # Cleanup
         del grad, mmd_loss, loss_norm, zeta_i, correction

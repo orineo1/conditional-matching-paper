@@ -96,8 +96,9 @@ def compute_pred_x0_direct(scheduler, noise_pred, t, latents_in):
     return (latents_in - (1 - alpha)**0.5 * noise_pred) / alpha**0.5
 
 
-def denoise_step(scheduler, noise_pred, t, latents_in, correction=None):
-    x_t_minus_1 = scheduler.step(noise_pred, t, latents_in, return_dict=True).prev_sample
+def denoise_step(scheduler, noise_pred, t, latents_in, correction=None, generator=None):
+    output = scheduler.step(noise_pred, t, latents_in, generator=generator, return_dict=True)
+    x_t_minus_1 = output.prev_sample
     if correction is not None:
         x_t_minus_1 = x_t_minus_1 + correction
     return x_t_minus_1.detach()

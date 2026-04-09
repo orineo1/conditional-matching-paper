@@ -259,10 +259,12 @@ def main():
         man_images, _ = generate_and_store_cs(
             sprinter, args.sprinter_target_man_prompt,
             sobel_cond_pil, n_half, batch_size=2, cn_scale=args.controlnet_scale,
+            seed=args.seed
         )
         woman_images, _ = generate_and_store_cs(
             sprinter, args.sprinter_target_woman_prompt,
             sobel_cond_pil, n_half, batch_size=2, cn_scale=args.controlnet_scale,
+            seed=args.seed
         )
 
     plot_row(man_images, "Man Portrait Samples",
@@ -400,7 +402,12 @@ def main():
     alpha          = alphas_cumprod[t_start.long()].to(torch.float32)
     # Use a specific generator for the initial noise
     gen = torch.Generator(device=device).manual_seed(args.seed) if args.seed else None
-    noise = torch.randn_like(scribble_latent, generator=gen)
+    noise = torch.randn(
+        scribble_latent.size(),
+        generator=gen,
+        device=scribble_latent.device,
+        dtype=scribble_latent.dtype
+    )
 
     latents        = ((alpha ** 0.5) * scribble_latent + ((1 - alpha) ** 0.5) * noise).to(torch.float16)
     latents_regular = latents.detach().clone()
@@ -435,15 +442,16 @@ def main():
         baseline_px_norm = torch.clamp((baseline_px + 1.0) / 2.0, 0.0, 1.0)
 
         sprinter.vae.to(dtype=torch.float16)
+        gen_base = torch.Generator(device=device).manual_seed(args.seed) if args.seed else None
         baseline_var_images = [
             sprinter(
                 prompt=args.sprinter_variation_prompt,
                 image=baseline_px_norm,
                 num_inference_steps=2, guidance_scale=args.guidance_scale,
-                controlnet_conditioning_scale=args.controlnet_scale, output_type="pil",
-
+                controlnet_conditioning_scale=args.controlnet_scale,
+                output_type="pil",
+                generator=gen_base  # <--- ADD THIS
             ).images[0]
-
             for _ in range(args.n_eval)
         ]
         sprinter.vae.to(dtype=torch.float32)
@@ -525,7 +533,7 @@ def main():
             variation_prompt=args.sprinter_variation_prompt,
             loss_fn=loss_fn,
             loss_scale=args.loss_scale,
-
+            seed=args.seed
         )
 
         grad_norm = grad.norm().item()
@@ -563,6 +571,7 @@ def main():
                 sprinter, clip_model, clip_processor,
                 all_clip_embeddings, args.sprinter_eval_prompt,
                 n_eval=args.n_eval, device=device,
+                seed=args.seed
             )
             wandb_log["intermediate/unguided_cond_mmd"] = unguided_mmd
             wandb_log["intermediate/guided_cond_mmd"]   = mmd_loss.item()
@@ -616,6 +625,7 @@ def main():
         sprinter, clip_model, clip_processor,
         all_clip_embeddings, eval_prompt=args.sprinter_eval_prompt,
         n_eval=args.n_eval, device=device,
+        seed=args.seed
     )
 
     print("Computing final MMD (DPS)...", flush=True)
@@ -624,6 +634,7 @@ def main():
         sprinter, clip_model, clip_processor,
         all_clip_embeddings, eval_prompt=args.sprinter_eval_prompt,
         n_eval=args.n_eval, device=device,
+        seed=args.seed
     )
 
     print(f"Regular MMD : {regular_mmd:.6f}", flush=True)

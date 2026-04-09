@@ -51,7 +51,7 @@ def compute_mmd(x, y, bandwidth=None, bandwidth_scale=1.0, kernel_alpha=1.0):
     return torch.sqrt(mmd_sq.abs() + 1e-8)
 
 
-def compute_swd(x, y, n_projections=None, tol=1e-3, min_projections=10, step=10, max_projections=500):
+def compute_swd(x, y, n_projections=None, tol=1e-3, min_projections=10, step=10, max_projections=500, seed=None):
     """
     Sliced Wasserstein Distance between two sets of embeddings.
     x: [n, d] — generated (grad flows through this)
@@ -74,9 +74,8 @@ def compute_swd(x, y, n_projections=None, tol=1e-3, min_projections=10, step=10,
     d = x.shape[1]
 
     def _swd_fixed(n_proj):
-        # OLD: projections = torch.randn(n_projections, d, device=dev)
-        # NEW: use n_proj argument
-        projections = torch.randn(n_proj, d, device=dev)
+        gen_swd = torch.Generator(device=dev).manual_seed(seed) if seed is not None else None
+        projections = torch.randn(n_proj, d, device=dev, generator=gen_swd)
         projections = projections / projections.norm(dim=1, keepdim=True)
 
         x_proj = projections @ x.T  # [n_proj, n]
@@ -113,7 +112,7 @@ def compute_swd(x, y, n_projections=None, tol=1e-3, min_projections=10, step=10,
 
 def evaluate_distribution_mmd(latent, architect_vae, architect_image_processor,
                                 sprinter, clip_model, clip_processor,
-                                all_clip_embeddings,eval_prompt, n_eval=10, device="cuda",):
+                                all_clip_embeddings,eval_prompt, n_eval=10, device="cuda",seed=None):
     """
     Decode latent -> scribble PIL -> generate n_eval sprinter photos
     -> encode to CLIP -> compute MMD vs target distribution.
@@ -130,6 +129,7 @@ def evaluate_distribution_mmd(latent, architect_vae, architect_image_processor,
     original_vae_dtype = sprinter.vae.dtype
     sprinter.vae.to(dtype=torch.float16)
     eval_photos = []
+    gen_eval = torch.Generator(device=device).manual_seed(seed) if seed is not None else None
     with torch.no_grad():
         for start in range(0, n_eval, 2):
             bs = min(2, n_eval - start)
@@ -139,6 +139,7 @@ def evaluate_distribution_mmd(latent, architect_vae, architect_image_processor,
                 num_inference_steps=2, guidance_scale=0.0,
                 controlnet_conditioning_scale=0.8,
                 output_type="pil", return_dict=True,
+                generator=gen_eval
             )
             eval_photos.extend(result.images)
     sprinter.vae.to(dtype=original_vae_dtype)

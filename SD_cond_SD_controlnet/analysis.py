@@ -90,7 +90,7 @@ def plot_pca(run_data, save_path=None):
         return
 
     combined = np.vstack([clip_man, clip_woman, clip_lgd_cm, clip_regular])
-    pca      = PCA(n_components=2)
+    pca = PCA(n_components=2, random_state=42)
     coords   = pca.fit_transform(combined)
 
     n_man    = len(clip_man)

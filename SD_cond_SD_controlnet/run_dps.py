@@ -80,6 +80,9 @@ def parse_args():
                    help="Total target images (split evenly man/woman)")
     p.add_argument("--n_eval", type=int, default=10,
                    help="Sprinter photos per MMD evaluation")
+    p.add_argument("--n_eval_final", type=int, default=None,
+                   help="Sprinter photos for final MMD eval (default: same as n_eval). "
+                        "Also regenerates that many target images for the final comparison.")
     p.add_argument("--eval_interval", type=int, default=0,
                    help="Evaluate intermediate MMD every N steps (0 = auto ~5 checkpoints)")
 
@@ -595,25 +598,49 @@ def main():
     print(f"\n✅ CLIP-MMD DPS Complete! {len(step_vis_data)} steps stored.", flush=True)
 
     # ── 10. Final MMD evaluation ───────────────────────────────────────────────
+    n_eval_final = args.n_eval_final if args.n_eval_final is not None else args.n_eval
+    n_half_final = n_eval_final // 2
+
+    # Regenerate targets at final scale if different from training targets
+    if n_eval_final != N:
+        print(f"Regenerating {n_eval_final} final targets ({n_half_final} man + {n_half_final} woman)...", flush=True)
+        with torch.no_grad():
+            man_images_final, _ = generate_and_store_cs(
+                sprinter, args.sprinter_target_man_prompt,
+                sobel_cond_pil, n_half_final, batch_size=2, cn_scale=args.controlnet_scale,
+                seed=args.seed,
+            )
+            woman_images_final, _ = generate_and_store_cs(
+                sprinter, args.sprinter_target_woman_prompt,
+                sobel_cond_pil, n_half_final, batch_size=2, cn_scale=args.controlnet_scale,
+                seed=args.seed + n_half_final if args.seed is not None else None,
+            )
+            man_clip_final = encode_images_clip(pil_images_to_tensor(man_images_final, device), clip_model,
+                                                clip_processor)
+            woman_clip_final = encode_images_clip(pil_images_to_tensor(woman_images_final, device), clip_model,
+                                                  clip_processor)
+        all_clip_embeddings_final = torch.cat([man_clip_final, woman_clip_final], dim=0)
+        print(f"  Final target embeddings: {all_clip_embeddings_final.shape}", flush=True)
+    else:
+        all_clip_embeddings_final = all_clip_embeddings
+        man_images_final = man_images
+        woman_images_final = woman_images
+
     print("Computing final MMD (regular)...", flush=True)
     regular_mmd, regular_eval_photos, _ = evaluate_distribution_mmd(
         latents_regular, architect.vae, architect.image_processor,
         sprinter, clip_model, clip_processor,
-        all_clip_embeddings, eval_prompt=args.sprinter_eval_prompt,
-        n_eval=args.n_eval, device=device,
+        all_clip_embeddings_final, eval_prompt=args.sprinter_eval_prompt,
+        n_eval=n_eval_final, device=device,  # ← n_eval_final here
     )
 
     print("Computing final MMD (DPS)...", flush=True)
     dps_mmd, dps_eval_photos, _ = evaluate_distribution_mmd(
         latents, architect.vae, architect.image_processor,
         sprinter, clip_model, clip_processor,
-        all_clip_embeddings, eval_prompt=args.sprinter_eval_prompt,
-        n_eval=args.n_eval, device=device,
+        all_clip_embeddings_final, eval_prompt=args.sprinter_eval_prompt,
+        n_eval=n_eval_final, device=device,  # ← n_eval_final here
     )
-
-    print(f"Regular MMD : {regular_mmd:.6f}", flush=True)
-    print(f"DPS MMD     : {dps_mmd:.6f}", flush=True)
-    print(f"Delta (↓ better for DPS): {regular_mmd - dps_mmd:.6f}", flush=True)
 
     # ── 11. Final visualizations ───────────────────────────────────────────────
     with torch.no_grad():

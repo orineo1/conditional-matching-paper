@@ -86,7 +86,9 @@ def parse_args():
                         "(defaults to --n_eval if not set)")
     p.add_argument("--eval_interval", type=int, default=0,
                    help="Evaluate intermediate MMD every N steps (0 = auto ~5 checkpoints)")
-
+    # In parse_args(), add:
+    p.add_argument("--ratio", type=float, default=0.5,
+                   help="Fraction of target images that are 'man' (e.g. 0.3 = 30%% man / 70%% woman)")
     # Prompts
     p.add_argument("--prompt", type=str, default="")
     p.add_argument("--negative_prompt", type=str, default="")
@@ -235,17 +237,19 @@ def main():
 
     # ── 3. Generate initial target distributions ────────────────────────────────
     N = args.n_targets
-    n_half = N // 2
-    print(f"Generating {N} initial target images ({n_half} man + {n_half} woman)...", flush=True)
+    # n_half = N // 2
+    n_man = round(N * args.ratio)
+    n_woman = N - n_man
+    print(f"Generating {N} initial target images ({n_man} man + {n_woman} woman)...", flush=True)
 
     with torch.no_grad():
         man_images_init, _ = generate_and_store_cs(
             sprinter, args.sprinter_target_man_prompt,
-            sobel_cond_pil, n_half, batch_size=2, cn_scale=args.controlnet_scale,seed=args.seed
+            sobel_cond_pil, n_man, batch_size=2, cn_scale=args.controlnet_scale,seed=args.seed
         )
         woman_images_init, _ = generate_and_store_cs(
             sprinter, args.sprinter_target_woman_prompt,
-            sobel_cond_pil, n_half, batch_size=2, cn_scale=args.controlnet_scale,seed=args.seed+ 1000
+            sobel_cond_pil, n_woman, batch_size=2, cn_scale=args.controlnet_scale,seed=args.seed+ 1000
         )
 
     # ── 4. Extract HED scribble from one of the generated portraits ─────────────
@@ -264,12 +268,12 @@ def main():
     with torch.no_grad():
         man_images, _ = generate_and_store_cs(
             sprinter, args.sprinter_target_man_prompt,
-            sobel_cond_pil, n_half, batch_size=2, cn_scale=args.controlnet_scale,
+            sobel_cond_pil, n_man, batch_size=2, cn_scale=args.controlnet_scale,
             seed=args.seed
         )
         woman_images, _ = generate_and_store_cs(
             sprinter, args.sprinter_target_woman_prompt,
-            sobel_cond_pil, n_half, batch_size=2, cn_scale=args.controlnet_scale,
+            sobel_cond_pil, n_woman, batch_size=2, cn_scale=args.controlnet_scale,
             seed=args.seed
         )
 
@@ -302,11 +306,14 @@ def main():
     _pca = PCA(n_components=2)
     _coords = _pca.fit_transform(all_clip_embeddings.cpu().numpy())
     fig, ax = plt.subplots(figsize=(8, 6))
-    ax.scatter(_coords[:n_half, 0], _coords[:n_half, 1], c='dodgerblue', label='Man', alpha=0.7)
-    ax.scatter(_coords[n_half:, 0], _coords[n_half:, 1], c='crimson', label='Woman', alpha=0.7)
-    ax.set_title("PCA of Target CLIP Embeddings"); ax.legend(); ax.grid(True, alpha=0.3)
+    ax.scatter(_coords[:n_man, 0], _coords[:n_man, 1], c='dodgerblue', label='Man', alpha=0.7)
+    ax.scatter(_coords[n_man:, 0], _coords[n_man:, 1], c='crimson', label='Woman', alpha=0.7)
+    ax.set_title("PCA of Target CLIP Embeddings");
+    ax.legend();
+    ax.grid(True, alpha=0.3)
     pca_path = os.path.join(args.output_dir, "target_clip_pca.png")
-    fig.savefig(pca_path, dpi=100, bbox_inches='tight'); plt.close(fig)
+    fig.savefig(pca_path, dpi=100, bbox_inches='tight');
+    plt.close(fig)
     pca_fixed = _pca
     del _coords
 
@@ -345,6 +352,9 @@ def main():
             "loss_scale":           args.loss_scale,
             "bandwidth_scale":      args.bandwidth_scale,
             "kernel_alpha": args.kernel_alpha,
+            "ratio_man": args.ratio,
+            "n_man": n_man,
+            "n_woman": n_woman,
         },
     )
     print(f"✅ wandb run: {run.name}", flush=True)
@@ -762,10 +772,8 @@ def main():
     np.save(os.path.join(npy_dir, "clip_lgd_cm.npy"), lgd_cm_clip_embs)
     np.save(os.path.join(npy_dir, "clip_regular.npy"), regular_clip_embs)
     np.save(os.path.join(npy_dir, "clip_targets.npy"), target_clip_embs)
-    np.save(os.path.join(npy_dir, "clip_targets_man.npy"),
-            target_clip_embs[:len(man_images)])
-    np.save(os.path.join(npy_dir, "clip_targets_woman.npy"),
-            target_clip_embs[len(man_images):])
+    np.save(os.path.join(npy_dir, "clip_targets_man.npy"), target_clip_embs[:n_man])
+    np.save(os.path.join(npy_dir, "clip_targets_woman.npy"), target_clip_embs[n_man:])
     print("✅ CLIP embeddings saved to npy/", flush=True)
 
     # ── Gender counts + mean confidence ───────────────────────────────

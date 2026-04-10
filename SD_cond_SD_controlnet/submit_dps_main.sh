@@ -40,11 +40,12 @@ mkdir -p "$OUTPUT_DIR"
 # We just use 'python' now because your environment is 'source'-ed
 python SD_cond_SD_controlnet/run_dps.py \
     --output_dir "$OUTPUT_DIR" \
-    --wandb_project "sd_mmd_distance_bimodal_0.5" \
+    --wandb_project "dps_man_woman_ratio" \
     --n_steps 30 \
     --start_step 15 \
     --num_variations 6 \
     --n_targets 6 \
+    --ratio 0.3 \        # ← 30% man / 70% woman
     --base_zeta 5.0 \
     --guidance_scale 0.0 \
     --controlnet_scale 0.5 \

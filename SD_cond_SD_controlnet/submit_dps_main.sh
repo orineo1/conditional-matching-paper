@@ -37,7 +37,7 @@ mkdir -p "$OUTPUT_DIR"
 # ── 5. Run the Pipeline ───────────────────────────────────────────────────────
 python SD_cond_SD_controlnet/run_dps.py \
     --output_dir        "$OUTPUT_DIR" \
-    --wandb_project     "interpolation_men_women" \
+    --wandb_project     "interpolation_men_women_v2" \
     \
     `# ── Scheduler / loop ──────────────────────────────────────────` \
     --n_steps           30 \
@@ -62,11 +62,10 @@ python SD_cond_SD_controlnet/run_dps.py \
     \
     `# ── Target distribution (5-group default, explicit here) ───────` \
     --target_prompts \
-        "Woman:a superrealistic portrait photograph of a woman, studio lighting, white shirt:25" \
-        "Androgynous:a superrealistic portrait photograph of an androgynous person, slight masculine features, studio lighting, white shirt:1" \
-        "Andro-masculine:a superrealistic portrait photograph of an androgynous person, white shirt, masculine bone structure, sharp jawline, studio lighting:39" \
-        "Mostly masculine:a superrealistic portrait photograph of a masculine man, white shirt, androgynous softness and minor characteristics, studio lighting:10" \
-        "Man:a superrealistic portrait photograph of a man, studio lighting, white shirt:25" \
+        "Woman:a superrealistic portrait photograph of a woman, extremely feminine features, studio lighting:25" \
+        "Woman with masculine features:a superrealistic portrait photograph of a woman with masculine features, heavy brow ridge, studio lighting:25" \
+        "Man with feminine features:a superrealistic portrait photograph of a man with extremely feminine feminine features, soft delicate face, high cheekbones, studio lighting:25" \
+        "Man:a superrealistic portrait photograph of a man,  extremely masculine features, studio lighting:25" \
     \
     `# ── Models ─────────────────────────────────────────────────────` \
     --architect_model_id  "stabilityai/sdxl-turbo" \

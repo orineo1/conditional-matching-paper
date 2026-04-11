@@ -311,32 +311,51 @@ def main():
     print("✅ all_clip_embeddings ready.", flush=True)
 
     # ── 5. PCA: fit on man + woman, project the rest ───────────────────────────
-    _pca = PCA(n_components=2)
-    _all_coords = _pca.fit_transform(all_clip_embeddings.cpu().numpy())
+    # ── 5. PCA: fit on Man + Woman only, project all groups ───────────────────
+    man_anchor = clip_embs_per_group.get("Man", list(clip_embs_per_group.values())[-1]).cpu().numpy()
+    woman_anchor = clip_embs_per_group.get("Woman", list(clip_embs_per_group.values())[0]).cpu().numpy()
+    pca_fixed = PCA(n_components=2)
+    pca_fixed.fit(np.vstack([man_anchor, woman_anchor]))
 
-    fig, ax = plt.subplots(figsize=(9, 7))
-    offset = 0
-    for group_name, _, n, color, marker in target_prompts:
-        coords = _all_coords[offset:offset + n]
-        offset += n
-        ax.scatter(coords[:, 0], coords[:, 1], c=color, label=group_name,
-                   alpha=0.7, marker=marker, s=60)
-        cx, cy = coords[:, 0].mean(), coords[:, 1].mean()
-        ax.scatter(cx, cy, c=color, marker='*', s=200,
-                   edgecolors='black', linewidths=0.6, zorder=5)
-        ax.annotate(group_name, (cx, cy), textcoords="offset points",
-                    xytext=(6, 4), fontsize=8, color=color, fontweight='bold')
-    ax.set_title(f"CLIP PCA — {n_groups}-group spectrum\n"
-                 f"PC1: {_pca.explained_variance_ratio_[0]:.1%}  "
-                 f"PC2: {_pca.explained_variance_ratio_[1]:.1%}")
-    ax.set_xlabel(f"PC1 ({_pca.explained_variance_ratio_[0]:.1%})")
-    ax.set_ylabel(f"PC2 ({_pca.explained_variance_ratio_[1]:.1%})")
-    ax.legend(loc='best', fontsize=8);
-    ax.grid(True, alpha=0.3)
+    def plot_pca(pca, clip_embs_per_group, target_prompts,
+                 extra=None, save_path=None):
+        """
+        extra: list of (embs_np, label, color, marker) to overlay on top of target groups.
+        """
+        fig, ax = plt.subplots(figsize=(9, 7))
+        for group_name, _, n, color, marker in target_prompts:
+            embs = clip_embs_per_group[group_name].cpu().numpy()
+            coords = pca.transform(embs)
+            ax.scatter(coords[:, 0], coords[:, 1], c=color, label=group_name,
+                       alpha=0.5, marker=marker, s=50)
+            cx, cy = coords.mean(0)
+            ax.scatter(cx, cy, c=color, marker='*', s=200,
+                       edgecolors='black', linewidths=0.6, zorder=5)
+            ax.annotate(group_name, (cx, cy), textcoords="offset points",
+                        xytext=(6, 4), fontsize=8, color=color, fontweight='bold')
+        if extra:
+            for embs_np, label, color, marker in extra:
+                coords = pca.transform(embs_np)
+                ax.scatter(coords[:, 0], coords[:, 1], c=color, label=label,
+                           alpha=0.9, marker=marker, s=80,
+                           edgecolors='white', linewidths=0.5)
+                cx, cy = coords.mean(0)
+                ax.scatter(cx, cy, c=color, marker='*', s=250,
+                           edgecolors='black', linewidths=0.8, zorder=6)
+                ax.annotate(label, (cx, cy), textcoords="offset points",
+                            xytext=(6, 4), fontsize=9, color=color, fontweight='bold')
+        ax.set_xlabel(f"PC1 ({pca.explained_variance_ratio_[0]:.1%}) — Man/Woman axis")
+        ax.set_ylabel(f"PC2 ({pca.explained_variance_ratio_[1]:.1%})")
+        ax.set_title("CLIP PCA: fitted on Man & Woman, all groups projected")
+        ax.legend(loc='best', fontsize=8)
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        if save_path:
+            fig.savefig(save_path, dpi=100, bbox_inches='tight')
+        plt.close(fig)
+
     pca_path = os.path.join(args.output_dir, "target_clip_pca.png")
-    fig.savefig(pca_path, dpi=100, bbox_inches='tight');
-    plt.close(fig)
-    pca_fixed = _pca
+    plot_pca(pca_fixed, clip_embs_per_group, target_prompts, save_path=pca_path)
     target_clip_np = all_clip_embeddings.cpu().numpy()
     softmax_man_prompt = target_prompts[-1][1]  # last group (most masculine)
     softmax_woman_prompt = target_prompts[0][1]  # first group (most feminine)
@@ -788,7 +807,17 @@ def main():
     )
     clip_model.to("cpu")
     print("✅ CLIP softmax done.", flush=True)
-
+    final_pca_path = os.path.join(args.output_dir, "final_clip_pca.png")
+    plot_pca(
+        pca_fixed, clip_embs_per_group, target_prompts,
+        extra=[
+            (regular_clip_embs, "Regular", "gray",  "v"),
+            (lgd_cm_clip_embs,  "LGD-CM",  "black", "X"),
+        ],
+        save_path=final_pca_path,
+    )
+    wandb.log({"final_clip_pca": wandb.Image(final_pca_path)})
+    print("✅ Final PCA with LGD-CM and Regular projected.", flush=True)
     # save CLIP embeddings as .npy
     np.save(os.path.join(npy_dir, "clip_lgd_cm.npy"), lgd_cm_clip_embs)
     np.save(os.path.join(npy_dir, "clip_regular.npy"), regular_clip_embs)

@@ -37,7 +37,7 @@ mkdir -p "$OUTPUT_DIR"
 # ── 5. Run the Pipeline ───────────────────────────────────────────────────────
 python SD_cond_SD_controlnet/run_dps.py \
     --output_dir        "$OUTPUT_DIR" \
-    --wandb_project     "interpolation_men_women" \
+    --wandb_project     "man_woman_sunglasses" \
     \
     `# ── Scheduler / loop ──────────────────────────────────────────` \
     --n_steps           30 \
@@ -62,11 +62,10 @@ python SD_cond_SD_controlnet/run_dps.py \
     \
     `# ── Target distribution (5-group default, explicit here) ───────` \
     --target_prompts \
-        "Woman:a superrealistic portrait photograph of a woman, studio lighting, white shirt:25" \
-        "Androgynous:a superrealistic portrait photograph of an androgynous person, slight masculine features, studio lighting, white shirt:1" \
-        "Andro-masculine:a superrealistic portrait photograph of an androgynous person, white shirt, masculine bone structure, sharp jawline, studio lighting:39" \
-        "Mostly masculine:a superrealistic portrait photograph of a masculine man, white shirt, androgynous softness and minor characteristics, studio lighting:10" \
-        "Man:a superrealistic portrait photograph of a man, studio lighting, white shirt:25" \
+        "man_glass:a superrealistic portrait photograph of a man wearing sunglasses, studio lighting:25" \
+        "woman_sunglass:a superrealistic portrait photograph of a woman wearing sunglasses, studio lighting:25" \
+        "man_no_glass:a superrealistic portrait photograph of a man, studio lighting:25" \
+        "woman_no_glass:a superrealistic portrait photograph of a woman, studio lighting:25" \
     \
     `# ── Models ─────────────────────────────────────────────────────` \
     --architect_model_id  "stabilityai/sdxl-turbo" \

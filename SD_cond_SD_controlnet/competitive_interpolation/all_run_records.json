@@ -1,0 +1,482 @@
+[
+  {
+    "seed": 1,
+    "condition": "man_scribble",
+    "mmd": 0.6524286866188049,
+    "proportions": [
+      0.0,
+      0.008,
+      0.008,
+      0.0,
+      0.984
+    ]
+  },
+  {
+    "seed": 1,
+    "condition": "woman_scribble",
+    "mmd": 0.6183347702026367,
+    "proportions": [
+      0.876,
+      0.112,
+      0.004,
+      0.008,
+      0.0
+    ]
+  },
+  {
+    "seed": 1,
+    "condition": "avg_scribble",
+    "mmd": 0.5632354617118835,
+    "proportions": [
+      0.156,
+      0.448,
+      0.108,
+      0.004,
+      0.284
+    ]
+  },
+  {
+    "seed": 1,
+    "condition": "sdedit_scribble",
+    "mmd": 0.6013298630714417,
+    "proportions": [
+      0.004,
+      0.004,
+      0.016,
+      0.0,
+      0.976
+    ]
+  },
+  {
+    "seed": 2,
+    "condition": "man_scribble",
+    "mmd": 0.5899387001991272,
+    "proportions": [
+      0.008,
+      0.036,
+      0.0,
+      0.0,
+      0.956
+    ]
+  },
+  {
+    "seed": 2,
+    "condition": "woman_scribble",
+    "mmd": 0.6405812501907349,
+    "proportions": [
+      0.976,
+      0.024,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "seed": 2,
+    "condition": "avg_scribble",
+    "mmd": 0.5374095439910889,
+    "proportions": [
+      0.104,
+      0.3,
+      0.132,
+      0.004,
+      0.46
+    ]
+  },
+  {
+    "seed": 2,
+    "condition": "sdedit_scribble",
+    "mmd": 0.5542270541191101,
+    "proportions": [
+      0.08,
+      0.128,
+      0.004,
+      0.012,
+      0.776
+    ]
+  },
+  {
+    "seed": 3,
+    "condition": "man_scribble",
+    "mmd": 0.628898024559021,
+    "proportions": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  },
+  {
+    "seed": 3,
+    "condition": "woman_scribble",
+    "mmd": 0.6949268579483032,
+    "proportions": [
+      0.916,
+      0.028,
+      0.0,
+      0.056,
+      0.0
+    ]
+  },
+  {
+    "seed": 3,
+    "condition": "avg_scribble",
+    "mmd": 0.5318243503570557,
+    "proportions": [
+      0.4,
+      0.488,
+      0.024,
+      0.028,
+      0.06
+    ]
+  },
+  {
+    "seed": 3,
+    "condition": "sdedit_scribble",
+    "mmd": 0.5616877675056458,
+    "proportions": [
+      0.012,
+      0.036,
+      0.008,
+      0.0,
+      0.944
+    ]
+  },
+  {
+    "seed": 4,
+    "condition": "man_scribble",
+    "mmd": 0.6265766024589539,
+    "proportions": [
+      0.0,
+      0.0,
+      0.0,
+      0.004,
+      0.996
+    ]
+  },
+  {
+    "seed": 4,
+    "condition": "woman_scribble",
+    "mmd": 0.6291747093200684,
+    "proportions": [
+      0.996,
+      0.004,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "seed": 4,
+    "condition": "avg_scribble",
+    "mmd": 0.5271120667457581,
+    "proportions": [
+      0.22,
+      0.556,
+      0.044,
+      0.016,
+      0.164
+    ]
+  },
+  {
+    "seed": 4,
+    "condition": "sdedit_scribble",
+    "mmd": 0.537280797958374,
+    "proportions": [
+      0.008,
+      0.024,
+      0.0,
+      0.008,
+      0.96
+    ]
+  },
+  {
+    "seed": 5,
+    "condition": "man_scribble",
+    "mmd": 0.647150456905365,
+    "proportions": [
+      0.0,
+      0.0,
+      0.004,
+      0.0,
+      0.996
+    ]
+  },
+  {
+    "seed": 5,
+    "condition": "woman_scribble",
+    "mmd": 0.6091946363449097,
+    "proportions": [
+      0.984,
+      0.012,
+      0.0,
+      0.004,
+      0.0
+    ]
+  },
+  {
+    "seed": 5,
+    "condition": "avg_scribble",
+    "mmd": 0.5544844269752502,
+    "proportions": [
+      0.228,
+      0.616,
+      0.02,
+      0.012,
+      0.124
+    ]
+  },
+  {
+    "seed": 5,
+    "condition": "sdedit_scribble",
+    "mmd": 0.6079599261283875,
+    "proportions": [
+      0.004,
+      0.012,
+      0.004,
+      0.004,
+      0.976
+    ]
+  },
+  {
+    "seed": 6,
+    "condition": "man_scribble",
+    "mmd": 0.6360586285591125,
+    "proportions": [
+      0.0,
+      0.004,
+      0.0,
+      0.004,
+      0.992
+    ]
+  },
+  {
+    "seed": 6,
+    "condition": "woman_scribble",
+    "mmd": 0.606070339679718,
+    "proportions": [
+      0.932,
+      0.056,
+      0.0,
+      0.012,
+      0.0
+    ]
+  },
+  {
+    "seed": 6,
+    "condition": "avg_scribble",
+    "mmd": 0.5768471956253052,
+    "proportions": [
+      0.212,
+      0.508,
+      0.072,
+      0.0,
+      0.208
+    ]
+  },
+  {
+    "seed": 6,
+    "condition": "sdedit_scribble",
+    "mmd": 0.5856242179870605,
+    "proportions": [
+      0.008,
+      0.032,
+      0.0,
+      0.008,
+      0.952
+    ]
+  },
+  {
+    "seed": 7,
+    "condition": "man_scribble",
+    "mmd": 0.6585763096809387,
+    "proportions": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  },
+  {
+    "seed": 7,
+    "condition": "woman_scribble",
+    "mmd": 0.6140918135643005,
+    "proportions": [
+      0.936,
+      0.056,
+      0.0,
+      0.008,
+      0.0
+    ]
+  },
+  {
+    "seed": 7,
+    "condition": "avg_scribble",
+    "mmd": 0.5583480000495911,
+    "proportions": [
+      0.228,
+      0.44,
+      0.048,
+      0.0,
+      0.284
+    ]
+  },
+  {
+    "seed": 7,
+    "condition": "sdedit_scribble",
+    "mmd": 0.5363003611564636,
+    "proportions": [
+      0.04,
+      0.124,
+      0.0,
+      0.024,
+      0.812
+    ]
+  },
+  {
+    "seed": 8,
+    "condition": "man_scribble",
+    "mmd": 0.6237715482711792,
+    "proportions": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  },
+  {
+    "seed": 8,
+    "condition": "woman_scribble",
+    "mmd": 0.613883376121521,
+    "proportions": [
+      0.968,
+      0.028,
+      0.0,
+      0.004,
+      0.0
+    ]
+  },
+  {
+    "seed": 8,
+    "condition": "avg_scribble",
+    "mmd": 0.5346258878707886,
+    "proportions": [
+      0.288,
+      0.528,
+      0.044,
+      0.012,
+      0.128
+    ]
+  },
+  {
+    "seed": 8,
+    "condition": "sdedit_scribble",
+    "mmd": 0.5483257174491882,
+    "proportions": [
+      0.008,
+      0.12,
+      0.0,
+      0.004,
+      0.868
+    ]
+  },
+  {
+    "seed": 9,
+    "condition": "man_scribble",
+    "mmd": 0.6507430672645569,
+    "proportions": [
+      0.0,
+      0.004,
+      0.0,
+      0.0,
+      0.996
+    ]
+  },
+  {
+    "seed": 9,
+    "condition": "woman_scribble",
+    "mmd": 0.5983871817588806,
+    "proportions": [
+      0.952,
+      0.04,
+      0.0,
+      0.008,
+      0.0
+    ]
+  },
+  {
+    "seed": 9,
+    "condition": "avg_scribble",
+    "mmd": 0.5572227835655212,
+    "proportions": [
+      0.368,
+      0.448,
+      0.02,
+      0.016,
+      0.148
+    ]
+  },
+  {
+    "seed": 9,
+    "condition": "sdedit_scribble",
+    "mmd": 0.5514337420463562,
+    "proportions": [
+      0.032,
+      0.06,
+      0.016,
+      0.012,
+      0.88
+    ]
+  },
+  {
+    "seed": 10,
+    "condition": "man_scribble",
+    "mmd": 0.57277911901474,
+    "proportions": [
+      0.008,
+      0.048,
+      0.008,
+      0.004,
+      0.932
+    ]
+  },
+  {
+    "seed": 10,
+    "condition": "woman_scribble",
+    "mmd": 0.586085319519043,
+    "proportions": [
+      0.828,
+      0.156,
+      0.0,
+      0.016,
+      0.0
+    ]
+  },
+  {
+    "seed": 10,
+    "condition": "avg_scribble",
+    "mmd": 0.5656726956367493,
+    "proportions": [
+      0.076,
+      0.352,
+      0.104,
+      0.0,
+      0.468
+    ]
+  },
+  {
+    "seed": 10,
+    "condition": "sdedit_scribble",
+    "mmd": 0.545452892780304,
+    "proportions": [
+      0.004,
+      0.032,
+      0.036,
+      0.0,
+      0.928
+    ]
+  }
+]

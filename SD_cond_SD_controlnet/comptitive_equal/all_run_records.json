@@ -1,0 +1,242 @@
+[
+  {
+    "seed": 1,
+    "condition": "man_scribble",
+    "mmd": 0.5009185075759888,
+    "pct_male": 84.39999999999999
+  },
+  {
+    "seed": 1,
+    "condition": "woman_scribble",
+    "mmd": 0.6831395030021667,
+    "pct_male": 0.0
+  },
+  {
+    "seed": 1,
+    "condition": "avg_scribble",
+    "mmd": 0.47940793633461,
+    "pct_male": 14.399999999999999
+  },
+  {
+    "seed": 1,
+    "condition": "sdedit_scribble",
+    "mmd": 0.44993215799331665,
+    "pct_male": 86.8
+  },
+  {
+    "seed": 2,
+    "condition": "man_scribble",
+    "mmd": 0.47408729791641235,
+    "pct_male": 63.2
+  },
+  {
+    "seed": 2,
+    "condition": "woman_scribble",
+    "mmd": 0.6399789452552795,
+    "pct_male": 0.0
+  },
+  {
+    "seed": 2,
+    "condition": "avg_scribble",
+    "mmd": 0.5352821350097656,
+    "pct_male": 9.6
+  },
+  {
+    "seed": 2,
+    "condition": "sdedit_scribble",
+    "mmd": 0.4236145615577698,
+    "pct_male": 50.8
+  },
+  {
+    "seed": 3,
+    "condition": "man_scribble",
+    "mmd": 0.4749535620212555,
+    "pct_male": 85.6
+  },
+  {
+    "seed": 3,
+    "condition": "woman_scribble",
+    "mmd": 0.687321126461029,
+    "pct_male": 0.0
+  },
+  {
+    "seed": 3,
+    "condition": "avg_scribble",
+    "mmd": 0.5688747763633728,
+    "pct_male": 3.2
+  },
+  {
+    "seed": 3,
+    "condition": "sdedit_scribble",
+    "mmd": 0.4283854365348816,
+    "pct_male": 78.8
+  },
+  {
+    "seed": 4,
+    "condition": "man_scribble",
+    "mmd": 0.544387698173523,
+    "pct_male": 99.2
+  },
+  {
+    "seed": 4,
+    "condition": "woman_scribble",
+    "mmd": 0.6262046694755554,
+    "pct_male": 0.0
+  },
+  {
+    "seed": 4,
+    "condition": "avg_scribble",
+    "mmd": 0.5142332911491394,
+    "pct_male": 6.800000000000001
+  },
+  {
+    "seed": 4,
+    "condition": "sdedit_scribble",
+    "mmd": 0.4852614402770996,
+    "pct_male": 93.60000000000001
+  },
+  {
+    "seed": 5,
+    "condition": "man_scribble",
+    "mmd": 0.4406690001487732,
+    "pct_male": 59.599999999999994
+  },
+  {
+    "seed": 5,
+    "condition": "woman_scribble",
+    "mmd": 0.6541865468025208,
+    "pct_male": 0.0
+  },
+  {
+    "seed": 5,
+    "condition": "avg_scribble",
+    "mmd": 0.5145505666732788,
+    "pct_male": 10.8
+  },
+  {
+    "seed": 5,
+    "condition": "sdedit_scribble",
+    "mmd": 0.43869441747665405,
+    "pct_male": 51.2
+  },
+  {
+    "seed": 6,
+    "condition": "man_scribble",
+    "mmd": 0.5245000720024109,
+    "pct_male": 92.0
+  },
+  {
+    "seed": 6,
+    "condition": "woman_scribble",
+    "mmd": 0.578869640827179,
+    "pct_male": 0.0
+  },
+  {
+    "seed": 6,
+    "condition": "avg_scribble",
+    "mmd": 0.5474737882614136,
+    "pct_male": 10.0
+  },
+  {
+    "seed": 6,
+    "condition": "sdedit_scribble",
+    "mmd": 0.47160589694976807,
+    "pct_male": 50.0
+  },
+  {
+    "seed": 7,
+    "condition": "man_scribble",
+    "mmd": 0.5887790322303772,
+    "pct_male": 100.0
+  },
+  {
+    "seed": 7,
+    "condition": "woman_scribble",
+    "mmd": 0.586729884147644,
+    "pct_male": 0.0
+  },
+  {
+    "seed": 7,
+    "condition": "avg_scribble",
+    "mmd": 0.46210139989852905,
+    "pct_male": 3.2
+  },
+  {
+    "seed": 7,
+    "condition": "sdedit_scribble",
+    "mmd": 0.5396168231964111,
+    "pct_male": 96.8
+  },
+  {
+    "seed": 8,
+    "condition": "man_scribble",
+    "mmd": 0.5334829688072205,
+    "pct_male": 100.0
+  },
+  {
+    "seed": 8,
+    "condition": "woman_scribble",
+    "mmd": 0.6585960984230042,
+    "pct_male": 0.0
+  },
+  {
+    "seed": 8,
+    "condition": "avg_scribble",
+    "mmd": 0.5113427639007568,
+    "pct_male": 3.5999999999999996
+  },
+  {
+    "seed": 8,
+    "condition": "sdedit_scribble",
+    "mmd": 0.44071105122566223,
+    "pct_male": 72.39999999999999
+  },
+  {
+    "seed": 9,
+    "condition": "man_scribble",
+    "mmd": 0.5859481692314148,
+    "pct_male": 100.0
+  },
+  {
+    "seed": 9,
+    "condition": "woman_scribble",
+    "mmd": 0.6894291639328003,
+    "pct_male": 0.0
+  },
+  {
+    "seed": 9,
+    "condition": "avg_scribble",
+    "mmd": 0.5143736600875854,
+    "pct_male": 8.799999999999999
+  },
+  {
+    "seed": 9,
+    "condition": "sdedit_scribble",
+    "mmd": 0.5477505326271057,
+    "pct_male": 99.2
+  },
+  {
+    "seed": 10,
+    "condition": "man_scribble",
+    "mmd": 0.5037254095077515,
+    "pct_male": 93.60000000000001
+  },
+  {
+    "seed": 10,
+    "condition": "woman_scribble",
+    "mmd": 0.5863012671470642,
+    "pct_male": 0.0
+  },
+  {
+    "seed": 10,
+    "condition": "avg_scribble",
+    "mmd": 0.5422627329826355,
+    "pct_male": 44.4
+  },
+  {
+    "seed": 10,
+    "condition": "sdedit_scribble",
+    "mmd": 0.4626522958278656,
+    "pct_male": 74.4
+  }
+]

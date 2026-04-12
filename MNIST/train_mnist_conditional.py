@@ -3,12 +3,8 @@ MNIST Conditional Consistency Model Training with WandB Logging
 ================================================================
 Usage:
     python train_mnist_conditional.py --dataset every10_balanced   # default
-    python train_mnist_conditional.py --dataset every10
-    python train_mnist_conditional.py --dataset every45_balanced
-    python train_mnist_conditional.py --dataset every45
-    python train_mnist_conditional.py --dataset thesis_balanced
-    python train_mnist_conditional.py --dataset thesis
-    python train_mnist_conditional.py --dataset vanilla            # raw MNIST on-the-fly
+    python train_mnist_conditional.py --ict_s1 150                 # cap N curriculum
+    python train_mnist_conditional.py --scheduler cosine_restarts  # warm restarts
     python train_mnist_conditional.py --use_ema                    # with EMA target
 """
 
@@ -37,21 +33,32 @@ parser.add_argument("--dataset", type=str, default="every10_balanced",
                     choices=["every10_balanced", "every10",
                              "every45_balanced", "every45",
                              "thesis_balanced", "thesis",
-                             "vanilla"],
-                    help="Which dataset to use for training.")
-parser.add_argument("--use_ema",       action="store_true")
-parser.add_argument("--ema_decay",     type=float, default=0.9999)
-parser.add_argument("--nepochs",       type=int,   default=500)
-parser.add_argument("--batch_size",    type=int,   default=256)
-parser.add_argument("--lr",            type=float, default=1e-4)
-parser.add_argument("--weight_decay",  type=float, default=1e-4)
-parser.add_argument("--run_name",      type=str,   default=None)
-parser.add_argument("--save_dir",      type=str,   default="./checkpoints_cond")
-parser.add_argument("--data_dir",      type=str,   default="./data")
-parser.add_argument("--wandb_project", type=str,   default="mnist-conditional-cm")
-parser.add_argument("--log_every",     type=int,   default=100)
-parser.add_argument("--cond_noise",    type=float, default=0.05)
-parser.add_argument("--pixel_dropout", type=float, default=0.1)
+                             "vanilla"])
+parser.add_argument("--use_ema",        action="store_true")
+parser.add_argument("--ema_decay",      type=float, default=0.9999)
+parser.add_argument("--nepochs",        type=int,   default=500)
+parser.add_argument("--batch_size",     type=int,   default=256)
+parser.add_argument("--lr",             type=float, default=1e-4)
+parser.add_argument("--weight_decay",   type=float, default=1e-4)
+parser.add_argument("--run_name",       type=str,   default=None)
+parser.add_argument("--save_dir",       type=str,   default="./checkpoints_cond")
+parser.add_argument("--data_dir",       type=str,   default="./data")
+parser.add_argument("--wandb_project",  type=str,   default="mnist-conditional-cm")
+parser.add_argument("--log_every",      type=int,   default=100)
+parser.add_argument("--cond_noise",     type=float, default=0.05)
+parser.add_argument("--pixel_dropout",  type=float, default=0.1)
+# ── New hyperparameter args ──────────────────────────────────
+parser.add_argument("--ict_s0",         type=int,   default=10,
+                    help="iCT curriculum min discretization steps (default: 10)")
+parser.add_argument("--ict_s1",         type=int,   default=1280,
+                    help="iCT curriculum max discretization steps (default: 1280, try 150 to reduce spikes)")
+parser.add_argument("--scheduler",      type=str,   default="cosine",
+                    choices=["cosine", "cosine_restarts", "constant"],
+                    help="LR scheduler: cosine (default), cosine_restarts, or constant")
+parser.add_argument("--restart_period", type=int,   default=100,
+                    help="T_0 for CosineAnnealingWarmRestarts (default: 100)")
+parser.add_argument("--eta_min",        type=float, default=1e-7,
+                    help="Minimum LR for cosine scheduler (default: 1e-7)")
 args = parser.parse_args()
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -80,12 +87,14 @@ wandb.init(
         "use_ema":         args.use_ema,
         "ema_decay":       args.ema_decay if args.use_ema else None,
         "optimizer":       "AdamW",
-        "scheduler":       f"CosineAnnealingLR(T_max={args.nepochs}, eta_min=1e-7)",
+        "scheduler":       args.scheduler,
+        "restart_period":  args.restart_period,
+        "eta_min":         args.eta_min,
         "cond_noise":      args.cond_noise,
         "pixel_dropout":   args.pixel_dropout,
         "loss":            "smooth_huber + lambda_t weighting (iCT)",
-        "ict_s0":          10,
-        "ict_s1":          1280,
+        "ict_s0":          args.ict_s0,
+        "ict_s1":          args.ict_s1,
     }
 )
 
@@ -101,10 +110,6 @@ DATASET_FILES = {
 
 
 class RotationPtDataset(Dataset):
-    """
-    Loads a pre-built .pt rotation dataset.
-    Expects keys: 'images_flat' [N, 784] in [-1,1]  and  'angle_vec' [N, 2] (cos,sin).
-    """
     def __init__(self, pt_path):
         print(f"Loading dataset: {pt_path}")
         data = torch.load(pt_path, map_location="cpu")
@@ -120,7 +125,6 @@ class RotationPtDataset(Dataset):
 
 
 class VanillaMNISTDataset(Dataset):
-    """Raw MNIST with uniform on-the-fly rotation."""
     def __init__(self, root):
         self.base = datasets.MNIST(
             root, train=True, download=True,
@@ -170,13 +174,10 @@ def augment_conditioning(img_flat, noise_std=0.05, dropout_p=0.1):
 # ─────────────────── CNN image encoder ──────────────────────
 custom_cond = nn.Sequential(
     nn.Unflatten(1, (1, 28, 28)),
-    # Block 1
     nn.Conv2d(1, 32, 3, padding=1), nn.GroupNorm(8, 32), nn.SiLU(), nn.Dropout2d(0.1),
     nn.Conv2d(32, 32, 3, padding=1), nn.GroupNorm(8, 32), nn.SiLU(), nn.MaxPool2d(2),
-    # Block 2
     nn.Conv2d(32, 64, 3, padding=1), nn.GroupNorm(8, 64), nn.SiLU(), nn.Dropout2d(0.15),
     nn.Conv2d(64, 64, 3, padding=1), nn.GroupNorm(8, 64), nn.SiLU(), nn.MaxPool2d(2),
-    # Head
     nn.Dropout2d(0.2), nn.Flatten(), nn.Dropout(0.3),
     nn.Linear(64 * 7 * 7, 128), nn.SiLU(),
 ).to(device)
@@ -204,11 +205,20 @@ if args.use_ema:
             for p, ema_p in zip(model.parameters(), ema_model.parameters()):
                 ema_p.mul_(decay).add_(p.data, alpha=1.0 - decay)
 else:
-    ema_model = model   # iCT: target == current model (mu=0)
+    ema_model = model
 
-# ─────────────────────── Optimizer ──────────────────────────
+# ─────────────────────── Optimizer + Scheduler ──────────────
 optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.nepochs, eta_min=1e-7)
+
+if args.scheduler == "cosine":
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=args.nepochs, eta_min=args.eta_min)
+elif args.scheduler == "cosine_restarts":
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        optimizer, T_0=args.restart_period, eta_min=args.eta_min)
+elif args.scheduler == "constant":
+    scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer, factor=1.0)
+
 wandb.watch(model, log="gradients", log_freq=500)
 
 # ─────────────────────── Training Loop ──────────────────────
@@ -218,13 +228,13 @@ for epoch in range(1, args.nepochs + 1):
     epoch_loss = 0.0
     n_batches  = 0
 
-    N          = ict_discretization_schedule(epoch, args.nepochs, s0=10, s1=1280)
+    N          = ict_discretization_schedule(epoch, args.nepochs, s0=args.ict_s0, s1=args.ict_s1)
     boundaries = kerras_boundaries(7.0, 0.002, N, 80.0).to(device)
 
     pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{args.nepochs}  N={N}", leave=False)
     for images_flat, angle_vecs in pbar:
-        images_flat = images_flat.to(device)   # [B, 784]
-        angle_vecs  = angle_vecs.to(device)    # [B, 2]
+        images_flat = images_flat.to(device)
+        angle_vecs  = angle_vecs.to(device)
         B = angle_vecs.shape[0]
 
         cond  = augment_conditioning(images_flat, args.cond_noise, args.pixel_dropout)

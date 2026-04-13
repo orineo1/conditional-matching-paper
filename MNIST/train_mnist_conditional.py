@@ -1,11 +1,17 @@
 """
 MNIST Conditional Consistency Model Training with WandB Logging
 ================================================================
+Matches notebook training exactly, but uses the every10_balanced dataset.
+
+Changes from previous version:
+  - Removed conditioning augmentation (was causing posterior collapse)
+  - depth=6 to match notebook checkpoint
+  - No cond_noise / pixel_dropout args
+
 Usage:
-    python train_mnist_conditional.py --dataset every10_balanced   # default
-    python train_mnist_conditional.py --ict_s1 150                 # cap N curriculum
-    python train_mnist_conditional.py --scheduler cosine_restarts  # warm restarts
-    python train_mnist_conditional.py --use_ema                    # with EMA target
+    python train_mnist_conditional.py                          # default
+    python train_mnist_conditional.py --use_ema               # with EMA
+    python train_mnist_conditional.py --dataset every10        # full dataset
 """
 
 import argparse
@@ -29,7 +35,7 @@ from ConsistencyModels import ConsistencyModeliCT, kerras_boundaries, ict_discre
 
 # ─────────────────────────── CLI ────────────────────────────
 parser = argparse.ArgumentParser()
-parser.add_argument("--dataset", type=str, default="every10_balanced",
+parser.add_argument("--dataset",        type=str,   default="every10_balanced",
                     choices=["every10_balanced", "every10",
                              "every45_balanced", "every45",
                              "thesis_balanced", "thesis",
@@ -40,25 +46,19 @@ parser.add_argument("--nepochs",        type=int,   default=500)
 parser.add_argument("--batch_size",     type=int,   default=256)
 parser.add_argument("--lr",             type=float, default=1e-4)
 parser.add_argument("--weight_decay",   type=float, default=1e-4)
+parser.add_argument("--depth",          type=int,   default=6,
+                    help="Depth of consistency model MLP (default: 6, matches notebook)")
 parser.add_argument("--run_name",       type=str,   default=None)
 parser.add_argument("--save_dir",       type=str,   default="./checkpoints_cond")
 parser.add_argument("--data_dir",       type=str,   default="./data")
 parser.add_argument("--wandb_project",  type=str,   default="mnist-conditional-cm")
 parser.add_argument("--log_every",      type=int,   default=100)
-parser.add_argument("--cond_noise",     type=float, default=0.05)
-parser.add_argument("--pixel_dropout",  type=float, default=0.1)
-# ── New hyperparameter args ──────────────────────────────────
-parser.add_argument("--ict_s0",         type=int,   default=10,
-                    help="iCT curriculum min discretization steps (default: 10)")
-parser.add_argument("--ict_s1",         type=int,   default=1280,
-                    help="iCT curriculum max discretization steps (default: 1280, try 150 to reduce spikes)")
+parser.add_argument("--ict_s0",         type=int,   default=10)
+parser.add_argument("--ict_s1",         type=int,   default=1280)
 parser.add_argument("--scheduler",      type=str,   default="cosine",
-                    choices=["cosine", "cosine_restarts", "constant"],
-                    help="LR scheduler: cosine (default), cosine_restarts, or constant")
-parser.add_argument("--restart_period", type=int,   default=100,
-                    help="T_0 for CosineAnnealingWarmRestarts (default: 100)")
-parser.add_argument("--eta_min",        type=float, default=1e-7,
-                    help="Minimum LR for cosine scheduler (default: 1e-7)")
+                    choices=["cosine", "cosine_restarts", "constant"])
+parser.add_argument("--restart_period", type=int,   default=100)
+parser.add_argument("--eta_min",        type=float, default=1e-7)
 args = parser.parse_args()
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -75,7 +75,7 @@ wandb.init(
         "nfeatures":       2,
         "condition_on":    784,
         "nunits":          128,
-        "depth":           5,
+        "depth":           args.depth,
         "cond_embed":      "CNN_custom",
         "add_input_norm":  True,
         "add_output_norm": True,
@@ -90,8 +90,7 @@ wandb.init(
         "scheduler":       args.scheduler,
         "restart_period":  args.restart_period,
         "eta_min":         args.eta_min,
-        "cond_noise":      args.cond_noise,
-        "pixel_dropout":   args.pixel_dropout,
+        "cond_augment":    False,
         "loss":            "smooth_huber + lambda_t weighting (iCT)",
         "ict_s0":          args.ict_s0,
         "ict_s1":          args.ict_s1,
@@ -165,13 +164,8 @@ train_loader = DataLoader(
 )
 print(f"Dataset '{args.dataset}': {len(train_dataset):,} samples, {len(train_loader)} batches/epoch")
 
-# ──────────────── Conditioning augmentation ──────────────────
-def augment_conditioning(img_flat, noise_std=0.05, dropout_p=0.1):
-    x    = img_flat + noise_std * torch.randn_like(img_flat)
-    mask = (torch.rand_like(img_flat) > dropout_p).float()
-    return x * mask
-
 # ─────────────────── CNN image encoder ──────────────────────
+# Exact architecture matching notebook checkpoint
 custom_cond = nn.Sequential(
     nn.Unflatten(1, (1, 28, 28)),
     nn.Conv2d(1, 32, 3, padding=1), nn.GroupNorm(8, 32), nn.SiLU(), nn.Dropout2d(0.1),
@@ -183,9 +177,10 @@ custom_cond = nn.Sequential(
 ).to(device)
 
 # ─────────────────────── Model ──────────────────────────────
+# depth=6 matches notebook checkpoint (verified from state dict)
 model = ConsistencyModeliCT(
     nfeatures=2, condition_on=784, eps=0.002,
-    nunits=128, depth=5,
+    nunits=128, depth=args.depth,
     cond_embed_type="linear",
     cond_embed_model=custom_cond,
     add_input_norm=True, add_output_norm=True,
@@ -237,7 +232,9 @@ for epoch in range(1, args.nepochs + 1):
         angle_vecs  = angle_vecs.to(device)
         B = angle_vecs.shape[0]
 
-        cond  = augment_conditioning(images_flat, args.cond_noise, args.pixel_dropout)
+        # No conditioning augmentation — use image directly
+        cond  = images_flat
+
         t_idx = model.ict_noise_sampling(boundaries, B, P_mean=-1.1, P_std=2.0, device=device)
         t0    = boundaries[t_idx]
         t1    = boundaries[t_idx + 1]

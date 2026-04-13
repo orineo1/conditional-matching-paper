@@ -3,10 +3,12 @@ MNIST Conditional Consistency Model Training with WandB Logging
 ================================================================
 Matches notebook training exactly, but uses the every10_balanced dataset.
 
-Changes from previous version:
-  - Removed conditioning augmentation (was causing posterior collapse)
-  - depth=6 to match notebook checkpoint
-  - No cond_noise / pixel_dropout args
+Key differences from notebook:
+  - Uses pre-built every10_balanced rotation dataset instead of on-the-fly
+  - kerras_boundaries(10.0, 0.002, N, 7.0) matches notebook exactly
+  - scheduler.step() per batch, not per epoch (matches notebook)
+  - No conditioning augmentation (was causing posterior collapse)
+  - depth=6 matches notebook checkpoint
 
 Usage:
     python train_mnist_conditional.py                          # default
@@ -59,6 +61,17 @@ parser.add_argument("--scheduler",      type=str,   default="cosine",
                     choices=["cosine", "cosine_restarts", "constant"])
 parser.add_argument("--restart_period", type=int,   default=100)
 parser.add_argument("--eta_min",        type=float, default=1e-7)
+# ── Notebook-matching flags ──────────────────────────────────
+parser.add_argument("--cond_augment",   action="store_true",
+                    help="Enable conditioning augmentation (noise+dropout). Default: off.")
+parser.add_argument("--cond_noise",     type=float, default=0.05)
+parser.add_argument("--pixel_dropout",  type=float, default=0.1)
+parser.add_argument("--scheduler_per_batch", action="store_true",
+                    help="Step scheduler per batch instead of per epoch (matches notebook). Default: off.")
+parser.add_argument("--kerras_sigma_max", type=float, default=10.0,
+                    help="kerras_boundaries sigma_max (notebook=10.0, old script=7.0)")
+parser.add_argument("--kerras_rho",     type=float, default=7.0,
+                    help="kerras_boundaries rho (notebook=7.0, old script=80.0)")
 args = parser.parse_args()
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -70,30 +83,35 @@ wandb.init(
     project=args.wandb_project,
     name=run_name,
     config={
-        "model":           "ConsistencyModeliCT",
-        "dataset":         args.dataset,
-        "nfeatures":       2,
-        "condition_on":    784,
-        "nunits":          128,
-        "depth":           args.depth,
-        "cond_embed":      "CNN_custom",
-        "add_input_norm":  True,
-        "add_output_norm": True,
-        "eps":             0.002,
-        "nepochs":         args.nepochs,
-        "batch_size":      args.batch_size,
-        "lr":              args.lr,
-        "weight_decay":    args.weight_decay,
-        "use_ema":         args.use_ema,
-        "ema_decay":       args.ema_decay if args.use_ema else None,
-        "optimizer":       "AdamW",
-        "scheduler":       args.scheduler,
-        "restart_period":  args.restart_period,
-        "eta_min":         args.eta_min,
-        "cond_augment":    False,
-        "loss":            "smooth_huber + lambda_t weighting (iCT)",
-        "ict_s0":          args.ict_s0,
-        "ict_s1":          args.ict_s1,
+        "model":                "ConsistencyModeliCT",
+        "dataset":              args.dataset,
+        "nfeatures":            2,
+        "condition_on":         784,
+        "nunits":               128,
+        "depth":                args.depth,
+        "cond_embed":           "CNN_custom",
+        "add_input_norm":       True,
+        "add_output_norm":      True,
+        "eps":                  0.002,
+        "nepochs":              args.nepochs,
+        "batch_size":           args.batch_size,
+        "lr":                   args.lr,
+        "weight_decay":         args.weight_decay,
+        "use_ema":              args.use_ema,
+        "ema_decay":            args.ema_decay if args.use_ema else None,
+        "optimizer":            "AdamW",
+        "scheduler":            args.scheduler,
+        "scheduler_per_batch":  args.scheduler_per_batch,
+        "restart_period":       args.restart_period,
+        "eta_min":              args.eta_min,
+        "cond_augment":         args.cond_augment,
+        "cond_noise":           args.cond_noise if args.cond_augment else None,
+        "pixel_dropout":        args.pixel_dropout if args.cond_augment else None,
+        "loss":                 "smooth_huber + lambda_t weighting (iCT)",
+        "ict_s0":               args.ict_s0,
+        "ict_s1":               args.ict_s1,
+        "kerras_sigma_max":     args.kerras_sigma_max,
+        "kerras_rho":           args.kerras_rho,
     }
 )
 
@@ -164,8 +182,13 @@ train_loader = DataLoader(
 )
 print(f"Dataset '{args.dataset}': {len(train_dataset):,} samples, {len(train_loader)} batches/epoch")
 
+# ──────────────── Conditioning augmentation ──────────────────
+def augment_conditioning(img_flat, noise_std=0.05, dropout_p=0.1):
+    x    = img_flat + noise_std * torch.randn_like(img_flat)
+    mask = (torch.rand_like(img_flat) > dropout_p).float()
+    return x * mask
+
 # ─────────────────── CNN image encoder ──────────────────────
-# Exact architecture matching notebook checkpoint
 custom_cond = nn.Sequential(
     nn.Unflatten(1, (1, 28, 28)),
     nn.Conv2d(1, 32, 3, padding=1), nn.GroupNorm(8, 32), nn.SiLU(), nn.Dropout2d(0.1),
@@ -177,7 +200,6 @@ custom_cond = nn.Sequential(
 ).to(device)
 
 # ─────────────────────── Model ──────────────────────────────
-# depth=6 matches notebook checkpoint (verified from state dict)
 model = ConsistencyModeliCT(
     nfeatures=2, condition_on=784, eps=0.002,
     nunits=128, depth=args.depth,
@@ -205,12 +227,16 @@ else:
 # ─────────────────────── Optimizer + Scheduler ──────────────
 optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
+# Total scheduler steps depends on whether we step per batch or per epoch
+total_steps = args.nepochs * len(train_loader) if args.scheduler_per_batch else args.nepochs
+
 if args.scheduler == "cosine":
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=args.nepochs, eta_min=args.eta_min)
+        optimizer, T_max=total_steps, eta_min=args.eta_min)
 elif args.scheduler == "cosine_restarts":
+    T_0 = args.restart_period * len(train_loader) if args.scheduler_per_batch else args.restart_period
     scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-        optimizer, T_0=args.restart_period, eta_min=args.eta_min)
+        optimizer, T_0=T_0, eta_min=args.eta_min)
 elif args.scheduler == "constant":
     scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer, factor=1.0)
 
@@ -224,7 +250,8 @@ for epoch in range(1, args.nepochs + 1):
     n_batches  = 0
 
     N          = ict_discretization_schedule(epoch, args.nepochs, s0=args.ict_s0, s1=args.ict_s1)
-    boundaries = kerras_boundaries(7.0, 0.002, N, 80.0).to(device)
+    # Matches notebook: kerras_boundaries(10.0, 0.002, N, 7.0)
+    boundaries = kerras_boundaries(args.kerras_sigma_max, 0.002, N, args.kerras_rho).to(device)
 
     pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{args.nepochs}  N={N}", leave=False)
     for images_flat, angle_vecs in pbar:
@@ -232,8 +259,11 @@ for epoch in range(1, args.nepochs + 1):
         angle_vecs  = angle_vecs.to(device)
         B = angle_vecs.shape[0]
 
-        # No conditioning augmentation — use image directly
-        cond  = images_flat
+        # Conditioning: augment if requested, otherwise use image directly
+        if args.cond_augment:
+            cond = augment_conditioning(images_flat, args.cond_noise, args.pixel_dropout)
+        else:
+            cond = images_flat
 
         t_idx = model.ict_noise_sampling(boundaries, B, P_mean=-1.1, P_std=2.0, device=device)
         t0    = boundaries[t_idx]
@@ -252,6 +282,10 @@ for epoch in range(1, args.nepochs + 1):
         nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
 
+        # Step scheduler per batch if requested (matches notebook behavior)
+        if args.scheduler_per_batch:
+            scheduler.step()
+
         if args.use_ema:
             update_ema(model, ema_model, args.ema_decay)
 
@@ -260,17 +294,23 @@ for epoch in range(1, args.nepochs + 1):
         global_step += 1
 
         if global_step % args.log_every == 0:
-            wandb.log({"train/loss_step": loss.item(),
-                       "train/global_step": global_step,
-                       "train/N_boundaries": N}, step=global_step)
+            wandb.log({"train/loss_step":    loss.item(),
+                       "train/global_step":  global_step,
+                       "train/N_boundaries": N,
+                       "train/lr":          optimizer.param_groups[0]['lr']},
+                      step=global_step)
         pbar.set_postfix(loss=f"{loss.item():.5f}", N=N)
 
-    scheduler.step()
+    # Step scheduler per epoch (default)
+    if not args.scheduler_per_batch:
+        scheduler.step()
+
     avg_loss = epoch_loss / n_batches
-    wandb.log({"train/loss_epoch": avg_loss, "train/epoch": epoch,
-               "train/lr": scheduler.get_last_lr()[0],
-               "train/N_curriculum": N}, step=global_step)
-    print(f"Epoch {epoch:4d} | avg_loss={avg_loss:.6f} | N={N} | lr={scheduler.get_last_lr()[0]:.2e}")
+    wandb.log({"train/loss_epoch":    avg_loss,
+               "train/epoch":         epoch,
+               "train/lr":            optimizer.param_groups[0]['lr'],
+               "train/N_curriculum":  N}, step=global_step)
+    print(f"Epoch {epoch:4d} | avg_loss={avg_loss:.6f} | N={N} | lr={optimizer.param_groups[0]['lr']:.2e}")
 
     if epoch % 100 == 0 or epoch == args.nepochs:
         ckpt = {

@@ -71,6 +71,7 @@ class UnconditionalUnet(nn.Module):
             block_out_channels=(32, 64, 128),
             down_block_types=("DownBlock2D", "AttnDownBlock2D", "AttnDownBlock2D"),
             up_block_types=("AttnUpBlock2D", "AttnUpBlock2D", "UpBlock2D"),
+            dropout=0.1
         )
 
     def forward(self, x, t):

@@ -45,7 +45,7 @@ if __name__ == "__main__":
     parser.add_argument("--clf_batch",  type=int,   default=128)
     parser.add_argument("--threshold",  type=float, default=0.9999, help="Confidence threshold for augmentation")
     parser.add_argument("--batch_size", type=int,   default=256)
-    parser.add_argument("--epochs",     type=int,   default=300,    help="Consistency model epochs")
+    parser.add_argument("--epochs",     type=int,   default=500,    help="Consistency model epochs")
     parser.add_argument("--ckpt_dir",   type=str,   default="checkpoints")
     parser.add_argument("--resume",     type=str,   default=None,   help="Checkpoint path to resume from")
     args = parser.parse_args()

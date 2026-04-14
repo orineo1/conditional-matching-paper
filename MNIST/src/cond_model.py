@@ -26,7 +26,7 @@ from tqdm import tqdm
 
 def angles_to_circular(angles_deg):
     """Convert angles (degrees) → (cos, sin) circular representation."""
-    rad = torch.deg2rad(angles_deg)
+    rad = torch.deg2rad(angles_deg.float())
     return torch.stack([torch.cos(rad), torch.sin(rad)], dim=-1)
 
 

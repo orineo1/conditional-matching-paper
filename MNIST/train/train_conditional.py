@@ -19,8 +19,11 @@ import matplotlib.pyplot as plt
 import torch
 from torch.utils.data import DataLoader
 
+import sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+
 from dataset import train_classifier, AugmentedMNISTDataset
-from MNIST.src.cond_model import CircularAngleConsistencyModel
+from cond_model import CircularAngleConsistencyModel
 
 
 # ---------------------------------------------------------------------------

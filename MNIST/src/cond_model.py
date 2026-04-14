@@ -1,5 +1,5 @@
 """
-model.py
+cond_model.py
 ========
 Circular Angle Consistency Model (iCT) conditioned on MNIST images.
 

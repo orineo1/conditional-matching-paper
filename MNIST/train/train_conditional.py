@@ -20,7 +20,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from dataset import train_classifier, AugmentedMNISTDataset
-from model import CircularAngleConsistencyModel
+from MNIST.src.cond_model import CircularAngleConsistencyModel
 
 
 # ---------------------------------------------------------------------------

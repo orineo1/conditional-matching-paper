@@ -5,8 +5,8 @@ Trains an unconditional UNet diffusion model on MNIST images that have been
 randomly rotated. Checkpoints and DDIM samples are saved every 25 epochs.
 
 Usage:
-    python train_unet.py
-    python train_unet.py --resume 100   # resume from epoch 100 checkpoint
+    python train_uncond.py
+    python train_uncond.py --resume 100   # resume from epoch 100 checkpoint
 """
 
 import os

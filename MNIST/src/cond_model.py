@@ -237,7 +237,8 @@ class CircularAngleConsistencyModel(nn.Module):
     # ---- visualization -----------------------------------------------------
 
     def generate_sample_predictions(self, dataloader, device, epoch,
-                                    num_samples=10, samples_per_condition=250):
+                                    num_samples=10, samples_per_condition=250,
+                                    plots_dir='plots'):
         print(f"\n--- Epoch {epoch}: conditional angle histograms ---")
         self.eval()
         for batch_data in dataloader:
@@ -280,15 +281,21 @@ class CircularAngleConsistencyModel(nn.Module):
         plt.tight_layout()
         plt.suptitle(f'Images (top) vs Angle Predictions (bottom) — Epoch {epoch}',
                      y=1.02, fontsize=16)
-        plt.show()
+        plt.tight_layout()
+        plt.suptitle(f'Images (top) vs Angle Predictions (bottom) — Epoch {epoch}',
+                     y=1.02, fontsize=16)
+        os.makedirs(plots_dir, exist_ok=True)
+        plt.savefig(f'{plots_dir}/predictions_epoch_{epoch}.png', dpi=150, bbox_inches='tight')
         plt.close()
+        print(f"Saved predictions plot: {plots_dir}/predictions_epoch_{epoch}.png")
+        self.train()
         self.train()
 
     # ---- training loop -----------------------------------------------------
 
     def train_model(self, dataloader, nepochs=100, device='cpu',
                     use_improved_training=True, save_dir='checkpoints',
-                    checkpoint_path=None, start_epoch=None):
+                    checkpoint_path=None, start_epoch=None,plots_dir='plots'):
 
         os.makedirs(save_dir, exist_ok=True)
         self.to(device)
@@ -374,7 +381,7 @@ class CircularAngleConsistencyModel(nn.Module):
 
             if epoch % 25 == 0:
                 print(f"\nEpoch {epoch}/{nepochs}")
-                self.generate_sample_predictions(dataloader, device, epoch)
+                self.generate_sample_predictions(dataloader, device, epoch, plots_dir=plots_dir)
                 ckpt = {
                     'epoch':                epoch,
                     'model_state_dict':     self.state_dict(),

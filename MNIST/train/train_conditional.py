@@ -48,6 +48,8 @@ if __name__ == "__main__":
     parser.add_argument("--epochs",     type=int,   default=500,    help="Consistency model epochs")
     parser.add_argument("--ckpt_dir",   type=str,   default="checkpoints")
     parser.add_argument("--resume",     type=str,   default=None,   help="Checkpoint path to resume from")
+    parser.add_argument("--plots_dir", type=str, default="plots")
+
     args = parser.parse_args()
 
     print(f"Device: {device}")
@@ -73,6 +75,7 @@ if __name__ == "__main__":
         use_improved_training=True,
         save_dir=args.ckpt_dir,
         checkpoint_path=args.resume,
+        plots_dir=args.plots_dir,
     )
 
     # 4. Plot loss curve
@@ -82,5 +85,5 @@ if __name__ == "__main__":
     plt.xlabel("Step")
     plt.ylabel("Loss")
     plt.tight_layout()
-    plt.savefig("loss_curve.png", dpi=150)
+    plt.savefig(f'{args.plots_dir}/loss_curve.png', dpi=150)
     plt.show()

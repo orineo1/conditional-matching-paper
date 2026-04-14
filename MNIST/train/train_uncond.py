@@ -174,7 +174,7 @@ def train(net, dataloader, noise_scheduler, n_epochs, lr, device,
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--epochs",     type=int,   default=500)
+    parser.add_argument("--epochs",     type=int,   default=100)
     parser.add_argument("--batch_size", type=int,   default=256)
     parser.add_argument("--lr",         type=float, default=1e-3)
     parser.add_argument("--resume",     type=int,   default=None,

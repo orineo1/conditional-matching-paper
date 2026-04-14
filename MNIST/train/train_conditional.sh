@@ -9,9 +9,8 @@
 #SBATCH --partition=salmon
 
 # --- Conda ---
-export PATH="/usr/local/spack/opt/spack/linux-debian12-x86_64/gcc-12.2.0/miniconda3-24.3.0-iqeknetqo7ngpr57d6gmu3dg4rzlcgk6/bin:$PATH"
-source /usr/local/spack/opt/spack/linux-debian12-x86_64/gcc-12.2.0/miniconda3-24.3.0-iqeknetqo7ngpr57d6gmu3dg4rzlcgk6/etc/profile.d/conda.sh
-conda activate /sci/labs/orzuk/shaulytolk/conditional-matching-paper/scribble_env
+export ENV_PATH="/sci/labs/orzuk/ori_m/dps_env"
+source $ENV_PATH/bin/activate
 
 echo "Starting conditional training on $(hostname) | Job: $SLURM_JOB_ID | GPU: $CUDA_VISIBLE_DEVICES"
 mkdir -p logs checkpoints

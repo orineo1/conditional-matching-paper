@@ -124,7 +124,7 @@ class CircularAngleConsistencyModel(nn.Module):
     """
 
     def __init__(self, nfeatures=2, img_features=784, eps=0.002,
-                 nunits=128, depth=6, device=None):
+                 nunits=128, depth=5, device=None):
         super().__init__()
         self.eps          = eps
         self.nfeatures    = nfeatures
@@ -281,14 +281,10 @@ class CircularAngleConsistencyModel(nn.Module):
         plt.tight_layout()
         plt.suptitle(f'Images (top) vs Angle Predictions (bottom) — Epoch {epoch}',
                      y=1.02, fontsize=16)
-        plt.tight_layout()
-        plt.suptitle(f'Images (top) vs Angle Predictions (bottom) — Epoch {epoch}',
-                     y=1.02, fontsize=16)
         os.makedirs(plots_dir, exist_ok=True)
         plt.savefig(f'{plots_dir}/predictions_epoch_{epoch}.png', dpi=150, bbox_inches='tight')
         plt.close()
         print(f"Saved predictions plot: {plots_dir}/predictions_epoch_{epoch}.png")
-        self.train()
         self.train()
 
     # ---- training loop -----------------------------------------------------

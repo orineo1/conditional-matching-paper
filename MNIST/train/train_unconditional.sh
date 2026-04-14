@@ -16,7 +16,7 @@ conda activate /sci/labs/orzuk/shaulytolk/conditional-matching-paper/scribble_en
 echo "Starting unconditional training on $(hostname) | Job: $SLURM_JOB_ID | GPU: $CUDA_VISIBLE_DEVICES"
 mkdir -p logs checkpoints
 
-python train_unet.py \
+python train_uncond.py \
     --epochs     500  \
     --batch_size 256  \
     --lr         1e-3 \

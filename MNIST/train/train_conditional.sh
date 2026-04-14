@@ -23,7 +23,7 @@ python train_conditional.py \
     --clf_epochs 15     \
     --threshold  0.9999 \
     --batch_size 256    \
-    --epochs     300    \
+    --epochs     500    \
     --ckpt_dir   checkpoints
 
 echo "Conditional training complete."

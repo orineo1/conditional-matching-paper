@@ -68,7 +68,7 @@ class UnconditionalUnet(nn.Module):
             in_channels=1,
             out_channels=1,
             layers_per_block=2,
-            block_out_channels=(32, 64, 64),
+            block_out_channels=(32, 64, 128),
             down_block_types=("DownBlock2D", "AttnDownBlock2D", "AttnDownBlock2D"),
             up_block_types=("AttnUpBlock2D", "AttnUpBlock2D", "UpBlock2D"),
         )
@@ -80,8 +80,8 @@ class UnconditionalUnet(nn.Module):
 # ---------------------------------------------------------------------------
 # Visualization
 # ---------------------------------------------------------------------------
-def visualize_samples(model, noise_scheduler, epoch, device, n=16):
-    """Generate samples with DDIM and display a grid."""
+def visualize_samples(model, noise_scheduler, epoch, device, n=16, plots_dir='plots'):
+    """Generate samples with DDIM and save a grid."""
     model.eval()
     with torch.no_grad():
         ddim = DDIMScheduler.from_config(noise_scheduler.config)
@@ -96,7 +96,9 @@ def visualize_samples(model, noise_scheduler, epoch, device, n=16):
     ax.set_title(f"Generated Samples — Epoch {epoch} (DDIM, unconditional)")
     ax.axis("off")
     plt.tight_layout()
-    plt.show()
+    plt.savefig(f'{plots_dir}/samples_epoch_{epoch}.png', dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"Saved samples plot: {plots_dir}/samples_epoch_{epoch}.png")
     model.train()
 
 
@@ -104,9 +106,10 @@ def visualize_samples(model, noise_scheduler, epoch, device, n=16):
 # Training
 # ---------------------------------------------------------------------------
 def train(net, dataloader, noise_scheduler, n_epochs, lr, device,
-          checkpoint_dir, resume_from_epoch):
+          checkpoint_dir, resume_from_epoch, plots_dir='plots'):
 
     os.makedirs(checkpoint_dir, exist_ok=True)
+    os.makedirs(plots_dir, exist_ok=True)
 
     loss_fn = nn.MSELoss()
     opt     = torch.optim.AdamW(net.parameters(), lr=lr)
@@ -155,16 +158,16 @@ def train(net, dataloader, noise_scheduler, n_epochs, lr, device,
         # ---- checkpoint + visualize every 25 epochs ----
         if (epoch + 1) % 25 == 0:
             ckpt = {
-                "epoch":               epoch,
-                "model_state_dict":    net.state_dict(),
+                "epoch":                epoch,
+                "model_state_dict":     net.state_dict(),
                 "optimizer_state_dict": opt.state_dict(),
-                "losses":              losses,
-                "avg_loss":            avg,
+                "losses":               losses,
+                "avg_loss":             avg,
             }
             path = os.path.join(checkpoint_dir, f"checkpoint_epoch_{epoch+1}.pth")
             torch.save(ckpt, path)
             print(f"Checkpoint saved: {path}")
-            visualize_samples(net, noise_scheduler, epoch + 1, device)
+            visualize_samples(net, noise_scheduler, epoch + 1, device, plots_dir=plots_dir)
 
     return net, losses
 
@@ -180,6 +183,7 @@ if __name__ == "__main__":
     parser.add_argument("--resume",     type=int,   default=None,
                         help="Resume from this epoch number")
     parser.add_argument("--ckpt_dir",   type=str,   default="checkpoints")
+    parser.add_argument("--plots_dir",  type=str,   default="plots")
     args = parser.parse_args()
 
     print(f"Device: {device}")
@@ -195,14 +199,15 @@ if __name__ == "__main__":
     print(f"Model parameters: {sum(p.numel() for p in net.parameters()):,}")
 
     net, losses = train(
-        net             = net,
-        dataloader      = dataloader,
-        noise_scheduler = noise_scheduler,
-        n_epochs        = args.epochs,
-        lr              = args.lr,
-        device          = device,
-        checkpoint_dir  = args.ckpt_dir,
+        net               = net,
+        dataloader        = dataloader,
+        noise_scheduler   = noise_scheduler,
+        n_epochs          = args.epochs,
+        lr                = args.lr,
+        device            = device,
+        checkpoint_dir    = args.ckpt_dir,
         resume_from_epoch = args.resume,
+        plots_dir         = args.plots_dir,
     )
 
     # Final loss curve
@@ -212,5 +217,6 @@ if __name__ == "__main__":
     plt.xlabel("Step")
     plt.ylabel("MSE Loss")
     plt.tight_layout()
-    plt.savefig("loss_curve.png", dpi=150)
-    plt.show()
+    plt.savefig(f'{args.plots_dir}/loss_curve.png', dpi=150)
+    plt.close()
+    print(f"Loss curve saved: {args.plots_dir}/loss_curve.png")

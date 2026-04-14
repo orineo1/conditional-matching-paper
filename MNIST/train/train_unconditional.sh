@@ -20,9 +20,10 @@ cd /sci/labs/orzuk/ori_m/conditional-matching-paper/MNIST/train
 echo "Starting unconditional training on $(hostname) | Job: $SLURM_JOB_ID | GPU: $CUDA_VISIBLE_DEVICES"
 
 python train_uncond.py \
-    --epochs     100  \
+    --epochs     500  \
     --batch_size 256  \
     --lr         1e-3 \
-    --ckpt_dir   checkpoints
+    --ckpt_dir   checkpoints \
+    --plots_dir  plots
 
 echo "Unconditional training complete."

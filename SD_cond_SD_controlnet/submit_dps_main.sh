@@ -37,7 +37,7 @@ mkdir -p "$OUTPUT_DIR"
 # ── 5. Run the Pipeline ───────────────────────────────────────────────────────
 python SD_cond_SD_controlnet/run_dps.py \
     --output_dir        "$OUTPUT_DIR" \
-    --wandb_project     "interpolation_men_women_v2" \
+    --wandb_project     "interpolation-age" \
     \
     `# ── Scheduler / loop ──────────────────────────────────────────` \
     --n_steps           30 \
@@ -57,16 +57,14 @@ python SD_cond_SD_controlnet/run_dps.py \
     --n_eval            6 \
     \
     `# ── Sprinter prompts ───────────────────────────────────────────` \
-    --sprinter_variation_prompt    "a superrealistic professional photograph of" \
-    --sprinter_eval_prompt         "a superrealistic professional photograph of" \
+    --sprinter_variation_prompt  "a superrealistic professional photograph of" \
+    --sprinter_eval_prompt       "a superrealistic professional photograph of" \
     \
-    `# ── Target distribution (5-group default, explicit here) ───────` \
-    --target_prompts \
-        "Woman:a superrealistic portrait photograph of a woman, extremely feminine features, studio lighting:25" \
-        "Woman with masculine features:a superrealistic portrait photograph of a woman with masculine features, heavy brow ridge, studio lighting:25" \
-        "Man with feminine features:a superrealistic portrait photograph of a man with extremely feminine feminine features, soft delicate face, high cheekbones, studio lighting:25" \
-        "Man:a superrealistic portrait photograph of a man,  extremely masculine features, studio lighting:25" \
-    \
+    `# ── Age distribution ───────────────────────────────────────────` \
+    --age_min           10 \
+    --age_max           80 \
+    --age_step          1 \
+    --n_per_age         0 \
     `# ── Models ─────────────────────────────────────────────────────` \
     --architect_model_id  "stabilityai/sdxl-turbo" \
     --sprinter_model_id   "stabilityai/sdxl-turbo" \

@@ -53,7 +53,7 @@ def parse_args():
     p.add_argument("--output_dir", type=str, default="SD_cond_SD_controlnet/output/dps_run")
     p.add_argument("--lora_path", type=str, default=None)
     p.add_argument("--architect_unet_path", type=str, default=None)
-    p.add_argument("--wandb_project", type=str, default="interpolation_men_women")
+    p.add_argument("--wandb_project", type=str, default="interpolation-age")
     p.add_argument("--wandb_entity", type=str, default="conditional-matching")
 
     # Scheduler / loop
@@ -106,6 +106,16 @@ def parse_args():
                    default="stabilityai/stable-diffusion-xl-base-1.0")
 
     p.add_argument("--seed", type=int, default=None)
+    # Age distribution
+    p.add_argument("--age_min", type=int, default=10,
+                   help="Minimum age in target distribution (inclusive)")
+    p.add_argument("--age_max", type=int, default=80,
+                   help="Maximum age in target distribution (exclusive)")
+    p.add_argument("--age_step", type=int, default=1,
+                   help="Step between ages (1 = every year, 5 = every 5 years)")
+    p.add_argument("--n_per_age", type=int, default=0,
+                   help="Images per age. 0 = auto-scale to ~100 total")
+
     return p.parse_args()
 
 
@@ -218,206 +228,180 @@ def main():
     print(f"✅ Loaded scribble from {scribble_path}  size={scribble_pil.size}", flush=True)
 
     # ── 3. Generate 5-group target distribution ────────────────────────────────
-    _DEFAULT_COLORS = ["crimson", "mediumorchid", "limegreen", "orange", "dodgerblue",
-                       "gold", "deepskyblue", "hotpink", "slategray", "peru"]
-    _DEFAULT_MARKERS = ["o", "x", "^", "s", "D", "P", "v", "<", ">", "h"]
+    # ── 3. Generate age-based target distribution ──────────────────────────────
+    AGES = list(range(args.age_min, args.age_max, args.age_step))
+    N_PER_AGE = args.n_per_age if args.n_per_age > 0 else max(1, round(100 / len(AGES)))
+    N_TOTAL_TARGETS = len(AGES) * N_PER_AGE
+    CONTROLNET_SCALE = args.controlnet_scale
 
-    if args.target_prompts:
-        target_prompts = []
-        for idx, spec in enumerate(args.target_prompts):
-            parts = spec.split(":", 2)
-            if len(parts) != 3:
-                raise ValueError(
-                    f"--target_prompts entry '{spec}' must be in 'name:prompt:n' format"
-                )
-            name, prompt_text, n_str = parts
-            n_group = int(n_str)
-            color = _DEFAULT_COLORS[idx % len(_DEFAULT_COLORS)]
-            marker = _DEFAULT_MARKERS[idx % len(_DEFAULT_MARKERS)]
-            target_prompts.append((name.strip(), prompt_text.strip(), n_group, color, marker))
-        print(f"Using {len(target_prompts)} CLI-provided target groups.", flush=True)
-    else:
-        target_prompts = [
-            ("Woman",
-             "a superrealistic portrait photograph of a woman, studio lighting, white shirt",
-             25, "crimson", "o"),
-            ("Androgynous",
-             "a superrealistic portrait photograph of an androgynous person, "
-             "slight masculine features, studio lighting, white shirt",
-             1, "mediumorchid", "x"),
-            ("Andro-masculine",
-             "a superrealistic portrait photograph of an androgynous person, white shirt, "
-             "masculine bone structure, sharp jawline, studio lighting",
-             39, "limegreen", "^"),
-            ("Mostly masculine",
-             "a superrealistic portrait photograph of a masculine man, white shirt, "
-             "androgynous softness and minor characteristics, studio lighting",
-             10, "orange", "s"),
-            ("Man",
-             "a superrealistic portrait photograph of a man, studio lighting, white shirt",
-             25, "dodgerblue", "D"),
-        ]
-        print(f"Using built-in 5-group default target distribution.", flush=True)
 
-    n_groups = len(target_prompts)
-    group_names_list = [g for g, _, _, _, _ in target_prompts]
-    group_colors = [c for _, _, _, c, _ in target_prompts]
-    group_markers = [m for _, _, _, _, m in target_prompts]
+    print(f"Generating age target distribution: {len(AGES)} ages × {N_PER_AGE} = {N_TOTAL_TARGETS} images", flush=True)
 
-    print(f"Generating target images across {n_groups} groups...", flush=True)
-    target_images_per_group = {}
+    age_images = {}  # age -> list[PIL]
+    age_latents = {}  # age -> np.ndarray
+
     with torch.no_grad():
-        for group_name, prompt, n, _, _ in target_prompts:
-            imgs, _ = generate_and_store_cs(
-                sprinter, prompt,
-                sobel_cond_pil, n, batch_size=2, cn_scale=args.controlnet_scale,
+        for age in AGES:
+            prompt = (
+                f"a superrealistic portrait photograph of a {age}-year-old man, "
+                "studio lighting, sharp focus, photographic"
             )
-            target_images_per_group[group_name] = imgs
-            plot_row(imgs, f"Target: {group_name}",
-                     save_path=os.path.join(args.output_dir, f"target_samples_{group_name}.png"))
-            print(f"  ✅ {group_name}: {len(imgs)} images", flush=True)
+            imgs, lats = generate_and_store_cs(
+                sprinter, prompt,
+                sobel_cond_pil, N_PER_AGE, batch_size=2, cn_scale=CONTROLNET_SCALE,
+            )
+            age_images[age] = imgs
+            age_latents[age] = lats
+            print(f"  ✅ Age {age:3d}: {len(imgs)} images", flush=True)
 
-    # legacy aliases
-    woman_images = target_images_per_group.get(
-        "Woman", target_images_per_group[group_names_list[0]])
-    man_images = target_images_per_group.get(
-        "Man", target_images_per_group[group_names_list[-1]])
-    # ── Extract HED scribble from a man target image ───────────────────────────
-    print("Extracting HED scribble from a man target image...", flush=True)
-    source_image = man_images[min(2, len(man_images) - 1)]
-    scribble_pil = extract_scribble_hed(source_image)
-    source_image.save(os.path.join(args.output_dir, "source_portrait.png"))
-    scribble_pil.save(os.path.join(args.output_dir, "scribble.png"))
-    print(f"✅ HED scribble ready  size={scribble_pil.size}", flush=True)
+    all_imgs_flat = [img for a in AGES for img in age_images[a]]
+    plot_row(all_imgs_flat[:10], "Age Samples (10–19)",
+             save_path=os.path.join(args.output_dir, "target_samples_young.png"))
+    plot_row(all_imgs_flat[-10:], "Age Samples (70–79)",
+             save_path=os.path.join(args.output_dir, "target_samples_old.png"))
+
+    # Legacy aliases expected by downstream code
+    man_images = all_imgs_flat[:10]  # used for HED scribble extraction
+    woman_images = []  # not used but referenced in npy saving
 
     # ── 4. Encode targets to CLIP ──────────────────────────────────────────────
-    print("Encoding targets to CLIP...", flush=True)
+    print("Encoding age targets to CLIP...", flush=True)
     clip_model.to(device)
-    clip_embs_per_group = {}
+    age_clip_embs = {}
     with torch.no_grad():
-        for group_name, imgs in target_images_per_group.items():
-            clip_embs_per_group[group_name] = encode_images_clip(
-                pil_images_to_tensor(imgs, device), clip_model, clip_processor)
+        for age in AGES:
+            pixel_tensor = pil_images_to_tensor(age_images[age], device)
+            age_clip_embs[age] = encode_images_clip(pixel_tensor, clip_model, clip_processor)
     clip_model.to("cpu")
 
-    all_clip_embeddings = torch.cat(list(clip_embs_per_group.values()), dim=0)
+    all_clip_embeddings = torch.cat([age_clip_embs[a] for a in AGES], dim=0)
     N_total = all_clip_embeddings.shape[0]
-    print(f"Target CLIP embeddings: {all_clip_embeddings.shape}  "
-          f"(total {N_total} images)", flush=True)
+    print(f"✅ Age target CLIP embeddings: {all_clip_embeddings.shape}", flush=True)
 
     norms = all_clip_embeddings.norm(dim=-1)
     assert torch.allclose(norms, torch.ones(N_total, device=device), atol=1e-3), "Not normalized!"
-    print(f"  Norms min/max: {norms.min():.4f} / {norms.max():.4f}")
-    print("✅ all_clip_embeddings ready.", flush=True)
+    print(f"  Norms min/max: {norms.min():.4f} / {norms.max():.4f}", flush=True)
 
-    # ── 5. PCA: fit on man + woman, project the rest ───────────────────────────
-    # ── 5. PCA: fit on Man + Woman only, project all groups ───────────────────
-    man_anchor = clip_embs_per_group.get("Man", list(clip_embs_per_group.values())[-1]).cpu().numpy()
-    woman_anchor = clip_embs_per_group.get("Woman", list(clip_embs_per_group.values())[0]).cpu().numpy()
+    # ── 5. PCA fitted on youngest vs oldest age bracket ───────────────────────
+    n_anchor = min(10, len(AGES) // 4)
+    young_np = torch.cat([age_clip_embs[a] for a in AGES[:n_anchor]], dim=0).cpu().numpy()
+    old_np = torch.cat([age_clip_embs[a] for a in AGES[-n_anchor:]], dim=0).cpu().numpy()
     pca_fixed = PCA(n_components=2)
-    pca_fixed.fit(np.vstack([man_anchor, woman_anchor]))
+    pca_fixed.fit(np.vstack([young_np, old_np]))
 
-    def plot_pca(pca, clip_embs_per_group, target_prompts,
-                 extra=None, save_path=None):
-        """
-        extra: list of (embs_np, label, color, marker) to overlay on top of target groups.
-        """
-        fig, ax = plt.subplots(figsize=(9, 7))
-        for group_name, _, n, color, marker in target_prompts:
-            embs = clip_embs_per_group[group_name].cpu().numpy()
-            coords = pca.transform(embs)
-            ax.scatter(coords[:, 0], coords[:, 1], c=color, label=group_name,
-                       alpha=0.5, marker=marker, s=50)
-            cx, cy = coords.mean(0)
-            ax.scatter(cx, cy, c=color, marker='*', s=200,
-                       edgecolors='black', linewidths=0.6, zorder=5)
-            ax.annotate(group_name, (cx, cy), textcoords="offset points",
-                        xytext=(6, 4), fontsize=8, color=color, fontweight='bold')
+    age_labels = np.array([a for a in AGES for _ in range(N_PER_AGE)])
+    group_names_list = [str(a) for a in AGES]
+    group_colors = [plt.cm.plasma((a - AGES[0]) / (AGES[-1] - AGES[0])) for a in AGES]
+    group_markers = ["o"] * len(AGES)
+    clip_embs_per_group = {str(a): age_clip_embs[a] for a in AGES}
+    n_groups = len(AGES)
+
+    # Softmax anchors — oldest vs youngest age prompt
+    softmax_man_prompt = (
+        f"a superrealistic portrait photograph of a {AGES[-1]}-year-old man, "
+        "studio lighting, sharp focus, photographic"
+    )
+    softmax_woman_prompt = (
+        f"a superrealistic portrait photograph of a {AGES[0]}-year-old man, "
+        "studio lighting, sharp focus, photographic"
+    )
+    target_clip_np = all_clip_embeddings.cpu().numpy()
+
+    def plot_pca_age(pca, clip_embs_per_group, ages, age_labels_arr,
+                     extra=None, save_path=None):
+        fig, ax = plt.subplots(figsize=(10, 7))
+        coords_np = np.vstack([clip_embs_per_group[str(a)].cpu().numpy() for a in ages])
+        coords = pca.transform(coords_np)
+        sc = ax.scatter(
+            coords[:, 0], coords[:, 1],
+            c=age_labels_arr, cmap="plasma",
+            s=60, alpha=0.8, edgecolors="white", linewidths=0.4,
+        )
+        cbar = fig.colorbar(sc, ax=ax)
+        cbar.set_label("Age", fontsize=11)
+        offset = 0
+        for age in ages:
+            c = coords[offset:offset + N_PER_AGE].mean(axis=0)
+            if age % 10 == 0:
+                ax.annotate(str(age), c, fontsize=8, ha="center", va="bottom",
+                            xytext=(0, 4), textcoords="offset points",
+                            color="white", fontweight="bold",
+                            bbox=dict(boxstyle="round,pad=0.2", fc="black", alpha=0.4))
+            offset += N_PER_AGE
         if extra:
             for embs_np, label, color, marker in extra:
-                coords = pca.transform(embs_np)
-                ax.scatter(coords[:, 0], coords[:, 1], c=color, label=label,
+                ec = pca.transform(embs_np)
+                ax.scatter(ec[:, 0], ec[:, 1], c=color, label=label,
                            alpha=0.9, marker=marker, s=80,
-                           edgecolors='white', linewidths=0.5)
-                cx, cy = coords.mean(0)
-                ax.scatter(cx, cy, c=color, marker='*', s=250,
-                           edgecolors='black', linewidths=0.8, zorder=6)
+                           edgecolors="white", linewidths=0.5)
+                cx, cy = ec.mean(0)
                 ax.annotate(label, (cx, cy), textcoords="offset points",
-                            xytext=(6, 4), fontsize=9, color=color, fontweight='bold')
-        ax.set_xlabel(f"PC1 ({pca.explained_variance_ratio_[0]:.1%}) — Man/Woman axis")
+                            xytext=(6, 4), fontsize=9, color=color, fontweight="bold")
+        ax.set_xlabel(f"PC1 ({pca.explained_variance_ratio_[0]:.1%}) — Age axis")
         ax.set_ylabel(f"PC2 ({pca.explained_variance_ratio_[1]:.1%})")
-        ax.set_title("CLIP PCA: fitted on Man & Woman, all groups projected")
-        ax.legend(loc='best', fontsize=8)
+        ax.set_title("CLIP PCA: fitted on youngest/oldest ages, all ages projected")
         ax.grid(True, alpha=0.3)
+        if extra:
+            ax.legend(fontsize=9)
         plt.tight_layout()
         if save_path:
-            fig.savefig(save_path, dpi=100, bbox_inches='tight')
+            fig.savefig(save_path, dpi=100, bbox_inches="tight")
         plt.close(fig)
 
     pca_path = os.path.join(args.output_dir, "target_clip_pca.png")
-    plot_pca(pca_fixed, clip_embs_per_group, target_prompts, save_path=pca_path)
-    target_clip_np = all_clip_embeddings.cpu().numpy()
-    softmax_man_prompt = target_prompts[-1][1]  # last group (most masculine)
-    softmax_woman_prompt = target_prompts[0][1]  # first group (most feminine)
-    # ── 7. wandb init (after we have config details) ───────────────────────────
-
+    plot_pca_age(pca_fixed, clip_embs_per_group, AGES, age_labels, save_path=pca_path)
     eval_interval = args.eval_interval if args.eval_interval > 0 else max(1, (args.n_steps - args.start_step) // 5)
 
     run = wandb.init(
         project=args.wandb_project,
         entity=args.wandb_entity,
         config={
-            "prompt":                       args.prompt,
-            "negative_prompt":              args.negative_prompt,
-            "n_targets":                    N_total,
-            "n_steps":                      args.n_steps,
-            "start_step":                   args.start_step,
-            "strength":                     1 - args.start_step / args.n_steps,
-            "steps_run":                    args.n_steps - args.start_step,
-            "scheduler_type":               type(architect.scheduler).__name__,
-            "num_variations":               args.num_variations,
-            "base_zeta":                    args.base_zeta,
-            "guidance_scale":               args.guidance_scale,
-            "controlnet_scale":             args.controlnet_scale,
-            "edge_method":                  "hed_scribble",
-            "n_eval":                       args.n_eval,
-            "eval_interval":                eval_interval,
-            "lora_path":                    args.lora_path,
-            "architect_unet_path":          args.architect_unet_path,
-            "architect_model":              args.architect_model_id,
-            "sprinter_model":               args.sprinter_model_id,
-            "sprinter_variation_prompt":    args.sprinter_variation_prompt,
-            "sprinter_target_man_prompt":   softmax_man_prompt,
-            "sprinter_target_woman_prompt": softmax_woman_prompt,
-            "sprinter_eval_prompt":         args.sprinter_eval_prompt,
-            "loss_fn":              args.loss_fn,
-            "loss_scale":           args.loss_scale,
-            "bandwidth_scale":      args.bandwidth_scale,
+            "prompt": args.prompt,
+            "negative_prompt": args.negative_prompt,
+            "n_targets": N_total,
+            "ages": AGES,
+            "n_per_age": N_PER_AGE,
+            "n_steps": args.n_steps,
+            "start_step": args.start_step,
+            "strength": 1 - args.start_step / args.n_steps,
+            "steps_run": args.n_steps - args.start_step,
+            "scheduler_type": type(architect.scheduler).__name__,
+            "num_variations": args.num_variations,
+            "base_zeta": args.base_zeta,
+            "guidance_scale": args.guidance_scale,
+            "controlnet_scale": args.controlnet_scale,
+            "edge_method": "hed_scribble",
+            "n_eval": args.n_eval,
+            "eval_interval": eval_interval,
+            "lora_path": args.lora_path,
+            "architect_unet_path": args.architect_unet_path,
+            "architect_model": args.architect_model_id,
+            "sprinter_model": args.sprinter_model_id,
+            "sprinter_variation_prompt": args.sprinter_variation_prompt,
+            "sprinter_eval_prompt": args.sprinter_eval_prompt,
+            "loss_fn": args.loss_fn,
+            "loss_scale": args.loss_scale,
+            "bandwidth_scale": args.bandwidth_scale,
             "kernel_alpha": args.kernel_alpha,
-            # per-group prompt details
-            "target_groups": {
-                name: {"prompt": prompt_text, "n_samples": n}
-                for name, prompt_text, n, _, _ in target_prompts
-            },
-            "target_group_names": [name for name, _, _, _, _ in target_prompts],
-            "target_group_counts": {name: n for name, _, n, _, _ in target_prompts},
-            "target_group_prompts": {name: prompt_text for name, prompt_text, _, _, _ in target_prompts},
-            "n_target_groups": len(target_prompts),
-            "n_targets_total": sum(n for _, _, n, _, _ in target_prompts),
+            "age_min": args.age_min,
+            "age_max": args.age_max,
+            "age_step": args.age_step,
+            "n_per_age": N_PER_AGE,
+            "target_distribution": f"age_men_{args.age_min}_to_{args.age_max - 1}_step{args.age_step}",
         },
     )
     print(f"✅ wandb run: {run.name}", flush=True)
 
     # Log input images — one gallery per target group
-    target_images_log = {
-        f"target_samples/{name}": [wandb.Image(p) for p in imgs]
-        for name, imgs in target_images_per_group.items()
-    }
+    age_image_log = {}
+    for age in AGES[::10]:  # log one sample per decade to keep wandb lean
+        age_image_log[f"target_samples/age_{age}"] = [wandb.Image(p) for p in age_images[age]]
+
     wandb.log({
         "scribble": wandb.Image(scribble_pil),
         "source_portrait": wandb.Image(source_image),
         "target_clip_pca": wandb.Image(pca_path),
-        **target_images_log,
+        **age_image_log,
     })
     print("✅ Input images logged to wandb.", flush=True)
 
@@ -721,18 +705,20 @@ def main():
     plot_row(dps_eval_photos, f"LGD-CM final photos   (MMD={dps_mmd:.4f})",
              save_path=os.path.join(args.output_dir, "final_photos_lgd_cm.png"))
 
-    # Save individual photos for downstream evaluation (e.g. gender classifier)
+    # Save individual target portraits (youngest ages)
+    young_dir = os.path.join(args.output_dir, "targets_young")
+    os.makedirs(young_dir, exist_ok=True)
+    for idx, photo in enumerate(man_images):
+        photo.save(os.path.join(young_dir, f"photo_{idx:03d}.png"))
+
+    # Save individual eval photos for downstream evaluation
     for folder, photos in [("photos_regular", regular_eval_photos),
                            ("photos_lgd_cm", dps_eval_photos)]:
         photo_dir = os.path.join(args.output_dir, folder)
         os.makedirs(photo_dir, exist_ok=True)
         for idx, photo in enumerate(photos):
             photo.save(os.path.join(photo_dir, f"photo_{idx:03d}.png"))
-
-
-
-
-
+    print("✅ Eval photos saved.", flush=True)
 
     # ── 12. wandb final logs ───────────────────────────────────────────────────
     wandb.log({
@@ -760,10 +746,11 @@ def main():
                         os.path.join(npy_dir, "photos_lgd_cm.npy"))
     save_image_list_npy(regular_eval_photos,
                         os.path.join(npy_dir, "photos_regular.npy"))
-    save_image_list_npy(man_images,
-                        os.path.join(npy_dir, "targets_man.npy"))
-    save_image_list_npy(woman_images,
-                        os.path.join(npy_dir, "targets_woman.npy"))
+    save_image_list_npy(all_imgs_flat,
+                        os.path.join(npy_dir, "targets_all_ages.npy"))
+    save_image_list_npy(man_images,  # first 10 (youngest)
+                        os.path.join(npy_dir, "targets_young.npy"))
+    # woman_images is empty — skip
     save_image_list_npy([source_image],
                         os.path.join(npy_dir, "source_portrait.npy"))
     save_image_list_npy([scribble_pil],
@@ -775,12 +762,6 @@ def main():
     print("✅ Image arrays saved to npy/", flush=True)
 
     # save individual target portraits
-    for folder, photos in [("targets_man", man_images),
-                           ("targets_woman", woman_images)]:
-        photo_dir = os.path.join(args.output_dir, folder)
-        os.makedirs(photo_dir, exist_ok=True)
-        for idx, photo in enumerate(photos):
-            photo.save(os.path.join(photo_dir, f"photo_{idx:03d}.png"))
     print("✅ Individual target portraits saved.", flush=True)
 
     # ── CLIP softmax probabilities ─────────────────────────────────────
@@ -808,11 +789,11 @@ def main():
     clip_model.to("cpu")
     print("✅ CLIP softmax done.", flush=True)
     final_pca_path = os.path.join(args.output_dir, "final_clip_pca.png")
-    plot_pca(
-        pca_fixed, clip_embs_per_group, target_prompts,
+    plot_pca_age(
+        pca_fixed, clip_embs_per_group, AGES, age_labels,
         extra=[
-            (regular_clip_embs, "Regular", "gray",  "v"),
-            (lgd_cm_clip_embs,  "LGD-CM",  "black", "X"),
+            (regular_clip_embs, "Regular", "gray", "v"),
+            (lgd_cm_clip_embs, "LGD-CM", "black", "X"),
         ],
         save_path=final_pca_path,
     )
@@ -822,10 +803,7 @@ def main():
     np.save(os.path.join(npy_dir, "clip_lgd_cm.npy"), lgd_cm_clip_embs)
     np.save(os.path.join(npy_dir, "clip_regular.npy"), regular_clip_embs)
     np.save(os.path.join(npy_dir, "clip_targets.npy"), target_clip_embs)
-    np.save(os.path.join(npy_dir, "clip_targets_man.npy"),
-            target_clip_embs[:len(man_images)])
-    np.save(os.path.join(npy_dir, "clip_targets_woman.npy"),
-            target_clip_embs[len(man_images):])
+    np.save(os.path.join(npy_dir, "clip_targets_young.npy"), target_clip_embs[:len(man_images)])
     print("✅ CLIP embeddings saved to npy/", flush=True)
 
     # ── Gender counts + mean confidence ───────────────────────────────
@@ -895,19 +873,18 @@ def main():
 
             # paths to saved arrays (relative to output_dir)
             "npy": {
-                "photos_lgd_cm": "npy/photos_lgd_cm.npy",
-                "photos_regular": "npy/photos_regular.npy",
-                "targets_man": "npy/targets_man.npy",
-                "targets_woman": "npy/targets_woman.npy",
-                "source_portrait": "npy/source_portrait.npy",
-                "scribble": "npy/scribble.npy",
-                "final_scribble_lgd_cm": "npy/final_scribble_lgd_cm.npy",
-                "final_scribble_regular": "npy/final_scribble_regular.npy",
-                "clip_lgd_cm": "npy/clip_lgd_cm.npy",
-                "clip_regular": "npy/clip_regular.npy",
-                "clip_targets": "npy/clip_targets.npy",
-                "clip_targets_man": "npy/clip_targets_man.npy",
-                "clip_targets_woman": "npy/clip_targets_woman.npy",
+                "photos_lgd_cm":            "npy/photos_lgd_cm.npy",
+                "photos_regular":           "npy/photos_regular.npy",
+                "targets_all_ages":         "npy/targets_all_ages.npy",
+                "targets_young":            "npy/targets_young.npy",
+                "source_portrait":          "npy/source_portrait.npy",
+                "scribble":                 "npy/scribble.npy",
+                "final_scribble_lgd_cm":    "npy/final_scribble_lgd_cm.npy",
+                "final_scribble_regular":   "npy/final_scribble_regular.npy",
+                "clip_lgd_cm":              "npy/clip_lgd_cm.npy",
+                "clip_regular":             "npy/clip_regular.npy",
+                "clip_targets":             "npy/clip_targets.npy",
+                "clip_targets_young":       "npy/clip_targets_young.npy",
             },
         }, f, indent=2)
     print(f"✅ metrics.json saved.", flush=True)

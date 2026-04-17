@@ -1,3 +1,4 @@
+# DELETE these duplicate lines at the top:
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -5,24 +6,6 @@ from sklearn.decomposition import PCA
 from image_utils import latent_to_pil
 import wandb
 import matplotlib.cm as cm
-
-def plot_row(images, title, count=5, save_path=None):
-    fig, axes = plt.subplots(1, count, figsize=(4*count, 4))
-    fig.suptitle(title, fontsize=14, fontweight='bold')
-    for i in range(min(count, len(images))):
-        axes[i].imshow(images[i]); axes[i].axis('off')
-    plt.tight_layout()
-    if save_path:
-        fig.savefig(save_path, dpi=100, bbox_inches='tight'); plt.close(fig)
-    else:
-        plt.show()
-
-import matplotlib.pyplot as plt
-import numpy as np
-import torch
-from sklearn.decomposition import PCA
-from image_utils import latent_to_pil
-import wandb
 
 def plot_row(images, title, count=5, save_path=None):
     fig, axes = plt.subplots(1, count, figsize=(4*count, 4))
@@ -97,23 +80,24 @@ def visualize_step(sd, architect, sprinter, target_clip_np, num_cond=4,
 
     # ── PCA scatter ───────────────────────────────────────────────────────────
     ax = axes[1, n_cols - 1]
-    offset = 0
-    for g in range(n_groups):
-        size   = group_sizes[g]
-        coords = target_pca[offset:offset + size]
-        offset += size
-        ax.scatter(coords[:, 0], coords[:, 1],
-                   c=group_colors[g], marker=group_markers[g],
-                   alpha=0.6, s=40, label=group_names[g])
-        cx, cy = coords[:, 0].mean(), coords[:, 1].mean()
-        ax.scatter(cx, cy, c=group_colors[g], marker='*', s=150,
-                   edgecolors='black', linewidths=0.6, zorder=5)
 
-    ax.scatter(gen_pca[:, 0], gen_pca[:, 1],
-               c='limegreen', alpha=0.9, s=50, marker='x',
-               linewidths=1.5, label='Generated', zorder=6)
-    ax.set_title(f"CLIP PCA  Var={pca_var:.1%}")
-    ax.legend(fontsize=6, loc='best')
+    target_coords = pca_fixed.transform(target_clip_np)
+    gen_coords = pca_fixed.transform(sd['variation_clip_flat'])
+
+    ax.scatter(
+        target_coords[:, 0], target_coords[:, 1],
+        c="royalblue", s=20, alpha=0.5, linewidths=0,
+        label=f"Target ({len(target_coords)})",
+    )
+    ax.scatter(
+        gen_coords[:, 0], gen_coords[:, 1],
+        c="limegreen", s=60, alpha=0.95, marker="x",
+        linewidths=1.8, label=f"Generated ({len(gen_coords)})", zorder=6,
+    )
+
+    var_explained = pca_fixed.explained_variance_ratio_.sum() if pca_fixed is not None else 0.0
+    ax.set_title(f"CLIP PCA  Var={var_explained:.1%}")
+    ax.legend(fontsize=6, loc="best")
     ax.grid(True, alpha=0.3)
 
     for row in axes:

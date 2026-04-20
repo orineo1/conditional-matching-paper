@@ -15,6 +15,8 @@ conda activate /sci/labs/orzuk/shaulytolk/conditional-matching-paper/scribble_en
 export HF_HOME=/sci/labs/orzuk/shaulytolk/hf_cache
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
+pip install -q numpy --force-reinstall
+
 echo "Starting saliency analysis (lgd_cm) on $(hostname)"
 echo "Job ID: $SLURM_JOB_ID"
 

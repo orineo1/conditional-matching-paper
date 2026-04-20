@@ -86,13 +86,13 @@ from torch import optim
 from tqdm import tqdm
 # Optimize LGD using Monte Carlo-based guidance
 def optimize_LGD(model_uncond, model_cond, mog_means, mog_variances, weights, mu_list, Sigma_list, alpha,
-                 nsamples=250, num_x_t=3, loss="MMD", CM=False, device="cuda",FLAG=False):
+                 nsamples=250, num_x_t=3, loss="MMD", CM=False, device="cuda", FLAG=False,
+                 zeta=1.0):          # <-- NEW: guidance strength (ζ)
 
-    mmd_loss = MMDLoss(kernel=RBF())  # Assumes MMDLoss and RBF are defined elsewhere
+    mmd_loss = MMDLoss(kernel=RBF())
     best_mmd_loss = float("inf")
     best_x0_sample = None
 
-    # Initialize starting point (change to match shape if needed)
     x_t = torch.zeros(model_uncond.nfeatures, device=device, requires_grad=True)
     x_t = x_t.unsqueeze(0)
     pbar = tqdm(range(model_uncond.diffusion_steps - 1, 0, -1)) if FLAG else range(model_uncond.diffusion_steps - 1, 0, -1)
@@ -103,12 +103,17 @@ def optimize_LGD(model_uncond, model_cond, mog_means, mog_variances, weights, mu
         optimizer = optim.Adam([x_t], lr=0.05)
         optimizer.zero_grad()
 
-        # DDIM step (get x_{t-1} and predicted x0)
         x_t_minus_1, pred_x0 = model_uncond.sample_ddim_step(x_t, t, condition_x=None, device=device, eta=0.0)
-        current_var = model_uncond.betas[t].to(device)  # Use unconditional model's betas
+        current_var = model_uncond.betas[t].to(device)
         r_t = current_var / torch.sqrt(1 + current_var ** 2)
-        log_mean_exp_loss=torch.tensor([0])
-        # Monte Carlo estimation of expected loss over x0 ~ N(pred_x0, r_t^2 * I)
+        log_mean_exp_loss = torch.tensor([0])
+
+        # Skip guidance when zeta=0 (pure prior sampling)
+        if zeta == 0.0:
+            with torch.no_grad():
+                x_t = x_t_minus_1.detach().clone()
+            continue
+
         losses = []
         for j in range(num_x_t):
             x0_sample = pred_x0 + r_t * torch.randn_like(pred_x0)
@@ -119,7 +124,7 @@ def optimize_LGD(model_uncond, model_cond, mog_means, mog_variances, weights, mu
 
             mog_samples = generate_mog_samples_not_differentiable(nsamples, mog_means, mog_variances, weights)
             loss_val = mmd_loss(target_samples, mog_samples)
-            losses.append(-loss_val)  # negative for log-mean-exp
+            losses.append(-loss_val)
             if FLAG:
                 pbar.set_description(f"Step {t} | x_t:{x_t}|x0_sample:{x0_sample} | loss_val:{loss_val}|log_mean_exp_loss: {log_mean_exp_loss.item():.4f}")
 
@@ -127,17 +132,13 @@ def optimize_LGD(model_uncond, model_cond, mog_means, mog_variances, weights, mu
                 best_mmd_loss = loss_val.item()
                 best_x0_sample = x0_sample.detach().clone()
 
-
-        # Compute final log-mean-exp loss
         log_mean_exp_loss = -torch.logsumexp(torch.stack(losses), dim=0) + math.log(num_x_t)
         log_mean_exp_loss.backward()
 
-        # Manual gradient update (avoiding optimizer.step to stay DDIM-compatible)
         grad = x_t.grad.clone()
         with torch.no_grad():
-            x_t = x_t_minus_1.detach().clone() - grad
+            x_t = x_t_minus_1.detach().clone() - zeta * grad   # <-- only change: zeta * grad
 
-    # compute the final loss - proxy for the real loss
     condition = x_t.view(1, -1).repeat(nsamples, 1)
     target_samples, _, _ = model_cond.sample(nsamples=nsamples, condition_x=condition, device=device)
     if not CM:
@@ -145,8 +146,6 @@ def optimize_LGD(model_uncond, model_cond, mog_means, mog_variances, weights, mu
     mog_samples = generate_mog_samples_not_differentiable(nsamples, mog_means, mog_variances, weights)
     final_loss = mmd_loss(target_samples, mog_samples)
 
-
-    # Final output
     x_t_final = x_t.detach().clone()
     del x_t, condition, target_samples, mog_samples
     torch.cuda.empty_cache() if device == "cuda" else None

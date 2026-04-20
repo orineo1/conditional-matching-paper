@@ -15,25 +15,21 @@ conda activate /sci/labs/orzuk/shaulytolk/conditional-matching-paper/scribble_en
 export HF_HOME=/sci/labs/orzuk/shaulytolk/hf_cache
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
+# Clean broken numpy stub and reinstall
+SITE_PKG=/sci/labs/orzuk/shaulytolk/conditional-matching-paper/scribble_env/lib/python3.12/site-packages
+rm -rf "${SITE_PKG}/~umpy"* "${SITE_PKG}/~pmath"*
 pip install -q numpy --force-reinstall
 
 echo "Starting saliency analysis (lgd_cm) on $(hostname)"
 echo "Job ID: $SLURM_JOB_ID"
 
+set -e
 cd /sci/labs/orzuk/shaulytolk/conditional-matching-paper
 
-# Step 1: gender saliency map on the SOURCE scribble
 python scripts/gender_saliency.py \
     --scribble_path scripts/assets/lgd_cm_source_scribble.png \
     --output_dir output/saliency_lgd_cm_${SLURM_JOB_ID} \
     --n_seeds 20 \
-    --sigma 2.5 \
-
-# Step 2: pixel diff between source and optimized scribble
-python scripts/scribble_diff.py \
-    --guided scripts/assets/lgd_cm_optimized_scribble.png \
-    --unguided scripts/assets/lgd_cm_source_scribble.png \
-    --output_dir output/scribble_diff_lgd_cm_${SLURM_JOB_ID} \
-    --sigma 2.0
+    --sigma 2.5
 
 echo "Saliency lgd_cm analysis complete."

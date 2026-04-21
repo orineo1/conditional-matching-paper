@@ -5,7 +5,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --partition=salmon
-#SBATCH --array=0-13   # 7 grad_clamp × 2 diffusion_steps = 14 configs
+#SBATCH --array=0-17
 
 REPO_ROOT="/sci/labs/orzuk/ori_m/conditional-matching-paper"
 ENV_PATH="/sci/labs/orzuk/ori_m/dps_env"

@@ -18,7 +18,7 @@ mkdir -p "$REPO_ROOT/simulations/results/2D_cond_1D/gridsearch"
 source "$ENV_PATH/bin/activate"
 
 export REPO_ROOT="$REPO_ROOT"
-export WANDB_API_KEY="YOUR_WANDB_API_KEY_HERE"   # or set in ~/.bashrc
+export WANDB_API_KEY="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"   # or set in ~/.bashrc
 
 cd "$REPO_ROOT/simulations"
 

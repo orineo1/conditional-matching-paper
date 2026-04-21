@@ -49,15 +49,21 @@ import wandb
 # ─────────────────────────────────────────────────────────────────────────────
 # Paths — override REPO_ROOT in environment on cluster
 # ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Paths — Corrected logic
+# ─────────────────────────────────────────────────────────────────────────────
 REPO_ROOT = os.environ.get(
     "REPO_ROOT",
     "/sci/labs/orzuk/ori_m/conditional-matching-paper"
 )
 BASE_DIR = os.path.join(REPO_ROOT, "simulations")
-SRC_PATH = BASE_DIR          # .py modules live directly in simulations/
+SRC_PATH = os.path.join(BASE_DIR, "src")
+
+# Add both the base simulations folder and the src folder to path
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
 if SRC_PATH not in sys.path:
     sys.path.insert(0, SRC_PATH)
-
 import importlib
 import Diffusion, LossFunctions, ConsistencyModels
 import dist_utils, Optimization, experiment_utils

@@ -69,7 +69,7 @@ N_CDMS_SAMPLES = 100
 # Grid — only clamp + diffusion_steps swept
 # ─────────────────────────────────────────────────────────────────────────────
 GRID = {
-    "grad_clamp":      [0.0003, 0.001, 0.01, 0.05, 0.1, 0.25, "adaptive"],
+    "grad_clamp":      [0.0003, 0.001,0.005, 0.01,0.025, 0.05, 0.1, 0.25, "adaptive"],
     "diffusion_steps": [100, 250],
 }
 

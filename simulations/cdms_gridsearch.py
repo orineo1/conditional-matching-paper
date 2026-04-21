@@ -639,6 +639,8 @@ if __name__ == "__main__":
     p.add_argument("--wandb_entity",  type=str, default="")
     p.add_argument("--list_configs",  action="store_true",
                    help="Print total config count and exit")
+    p.add_argument("--smoke_test",    action="store_true",
+                   help="Override to tiny settings to verify pipeline end-to-end")
     args = p.parse_args()
 
     configs = all_configs()
@@ -649,4 +651,19 @@ if __name__ == "__main__":
         import sys; sys.exit(0)
 
     print(f"Config {args.config_id} / {len(configs) - 1}")
-    run_config(configs[args.config_id], args)
+    cfg = configs[args.config_id]
+
+    if args.smoke_test:
+        print("\n*** SMOKE TEST MODE — overriding to minimal settings ***")
+        cfg = {**cfg,
+               "nepochs_cm":     500,    # fast CM train (not loaded from ckpt)
+               "batch_cm":       256,
+               "n_cdms_samples": 5,      # 5 samples per β is enough to check flow
+               "num_x_t":        1,      # 1 x0 sample per step — fastest
+        }
+        # also shrink zeta list so there are only 3 plots to generate
+        global ZETA_VALUES
+        ZETA_VALUES = [0.0, 1.0, 4.0]
+        print(f"Smoke cfg: {cfg}\nZETAS: {ZETA_VALUES}\n")
+
+    run_config(cfg, args)

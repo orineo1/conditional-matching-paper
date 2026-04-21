@@ -69,10 +69,9 @@ N_CDMS_SAMPLES = 200
 # Grid — only clamp + diffusion_steps swept
 # ─────────────────────────────────────────────────────────────────────────────
 GRID = {
-"grad_clamp": [0.000005, 0.00001, 0.00003, 0.00005, 0.00007, 0.0001, 0.00015],
-    "diffusion_steps": [1_000],
+    "grad_clamp":      [0.000005, 0.00001, 0.00003, 0.00005, 0.00007, 0.0001, 0.00015],
+    "diffusion_steps": [100, 250, 500, 750, 1000],
 }
-
 
 def all_configs():
     keys, values = zip(*GRID.items())

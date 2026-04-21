@@ -54,8 +54,8 @@ REPO_ROOT = os.environ.get(
     "REPO_ROOT",
     "/sci/labs/orzuk/ori_m/conditional-matching-paper"
 )
-SRC_PATH = os.path.join(REPO_ROOT, "simulations", "src")
 BASE_DIR = os.path.join(REPO_ROOT, "simulations")
+SRC_PATH = BASE_DIR          # .py modules live directly in simulations/
 if SRC_PATH not in sys.path:
     sys.path.insert(0, SRC_PATH)
 
@@ -654,15 +654,14 @@ if __name__ == "__main__":
     cfg = configs[args.config_id]
 
     if args.smoke_test:
+        global ZETA_VALUES
         print("\n*** SMOKE TEST MODE — overriding to minimal settings ***")
         cfg = {**cfg,
-               "nepochs_cm":     500,    # fast CM train (not loaded from ckpt)
+               "nepochs_cm":     500,
                "batch_cm":       256,
-               "n_cdms_samples": 5,      # 5 samples per β is enough to check flow
-               "num_x_t":        1,      # 1 x0 sample per step — fastest
+               "n_cdms_samples": 5,
+               "num_x_t":        1,
         }
-        # also shrink zeta list so there are only 3 plots to generate
-        global ZETA_VALUES
         ZETA_VALUES = [0.0, 1.0, 4.0]
         print(f"Smoke cfg: {cfg}\nZETAS: {ZETA_VALUES}\n")
 

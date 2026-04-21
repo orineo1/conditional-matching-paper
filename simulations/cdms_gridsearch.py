@@ -231,7 +231,7 @@ def compute_analytical_Q(mu_list, Sigma_list, alpha,
     Q = {}
     for z in zeta_values:
         q    = px * np.exp(-z * lx)
-        Q[z] = q / np.trapz(q, x_grid)
+        Q[z] = q / np.trapezoid(q, x_grid)
     return Q
 
 
@@ -242,8 +242,8 @@ def js_divergence(samples, analytical_q, x_grid):
     if len(samples) < 2 or np.std(samples) < 1e-6:
         return 1.0
     kde = gaussian_kde(samples, bw_method="scott")
-    p   = np.maximum(kde(x_grid), 1e-10);  p /= np.trapz(p, x_grid)
-    q   = np.maximum(analytical_q, 1e-10); q /= np.trapz(q, x_grid)
+    p   = np.maximum(kde(x_grid), 1e-10);  p /= np.trapezoid(p, x_grid)
+    q   = np.maximum(analytical_q, 1e-10); q /= np.trapezoid(q, x_grid)
     return float(jensenshannon(p, q))
 
 
@@ -506,7 +506,7 @@ def run_config(cfg, args, zeta_values):
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--config_id",     type=int, required=True)
-    p.add_argument("--wandb_project", type=str, default="cdms-sweep")
+    p.add_argument("--wandb_project", type=str, default="find_q_best_simu")
     p.add_argument("--wandb_entity",  type=str, default="")
     p.add_argument("--list_configs",  action="store_true")
     p.add_argument("--smoke_test",    action="store_true",

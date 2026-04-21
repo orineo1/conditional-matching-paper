@@ -145,28 +145,49 @@ def build_gmm():
 # L2 GMM distance  — differentiable, stays on device
 # ─────────────────────────────────────────────────────────────────────────────
 def gmm_l2_diff_device(mu_p, Sigma_p, w_p, mu_q, Sigma_q, w_q):
-    if mu_p.dim() == 1:    mu_p    = mu_p.unsqueeze(0)
-    if mu_q.dim() == 1:    mu_q    = mu_q.unsqueeze(0)
-    if Sigma_p.dim() == 2: Sigma_p = Sigma_p.unsqueeze(0)
-    if Sigma_q.dim() == 2: Sigma_q = Sigma_q.unsqueeze(0)
+    # 1. Ensure means are [Batch, D]
+    if mu_p.dim() == 1: mu_p = mu_p.unsqueeze(0)
+    if mu_q.dim() == 1: mu_q = mu_q.unsqueeze(0)
+
+    # 2. Ensure Sigmas are [Batch, D, D]
+    # If they are [N, D], we make them [N, D, D]
+    if Sigma_p.dim() == 2:
+        Sigma_p = torch.diag_embed(Sigma_p) if Sigma_p.shape[1] > 1 else Sigma_p.unsqueeze(-1)
+    if Sigma_q.dim() == 2:
+        Sigma_q = torch.diag_embed(Sigma_q) if Sigma_q.shape[1] > 1 else Sigma_q.unsqueeze(-1)
+
+    # 3. Final safety check: if last two dims aren't square, we have a shape logic error
+    if Sigma_p.shape[-1] != Sigma_p.shape[-2]:
+        Sigma_p = Sigma_p.unsqueeze(-1)
+    if Sigma_q.shape[-1] != Sigma_q.shape[-2]:
+        Sigma_q = Sigma_q.unsqueeze(-1)
 
     D = mu_p.shape[-1]
 
-    def inner(m1, S1, w1, m2, S2, w2):
-        diff      = m1.unsqueeze(1) - m2.unsqueeze(0)
-        S_sum     = S1.unsqueeze(1) + S2.unsqueeze(0)
+    def inner(m1, S1, w1, m2, S2, w2, name=""):
+        diff = m1.unsqueeze(1) - m2.unsqueeze(0)  # [N1, N2, D]
+        S_sum = S1.unsqueeze(1) + S2.unsqueeze(0)  # [N1, N2, D, D]
+
+        # --- DEBUG PRINT ---
+        if S_sum.shape[-1] != S_sum.shape[-2]:
+            print(f"\n[DEBUG SHAPE ERROR in {name}]")
+            print(f"S_sum shape: {S_sum.shape}")
+            print(f"S1 shape: {S1.shape}, S2 shape: {S2.shape}")
+            print(f"Check if CONDITION_ON is causing 1D vs 2D mismatch.")
+
         _, logdet = torch.linalg.slogdet(S_sum)
-        inv_S     = torch.linalg.inv(S_sum)
-        quad      = torch.einsum('ijk,ijkl,ijl->ij', diff, inv_S, diff)
-        log_val   = -0.5 * (D * math.log(2 * math.pi) + logdet + quad)
-        log_w     = torch.log(w1).unsqueeze(1) + torch.log(w2).unsqueeze(0)
+        inv_S = torch.linalg.inv(S_sum)
+
+        quad = torch.einsum('ijk,ijkl,ijl->ij', diff, inv_S, diff)
+        log_val = -0.5 * (D * math.log(2 * math.pi) + logdet + quad)
+        log_w = torch.log(w1).unsqueeze(1) + torch.log(w2).unsqueeze(0)
         return torch.exp(log_w + log_val).sum()
 
-    pp = inner(mu_p, Sigma_p, w_p, mu_p, Sigma_p, w_p)
-    qq = inner(mu_q, Sigma_q, w_q, mu_q, Sigma_q, w_q)
-    pq = inner(mu_p, Sigma_p, w_p, mu_q, Sigma_q, w_q)
+    # Pass names to inner for better debugging
+    pp = inner(mu_p, Sigma_p, w_p, mu_p, Sigma_p, w_p, name="pp")
+    qq = inner(mu_q, Sigma_q, w_q, mu_q, Sigma_q, w_q, name="qq")
+    pq = inner(mu_p, Sigma_p, w_p, mu_q, Sigma_q, w_q, name="pq")
     return pp - 2 * pq + qq
-
 
 def compute_l2_gmm_loss_on_device(x0_sample, mu_list, Sigma_list, alpha,
                                   mog_means, mog_variances, weights, device):

@@ -45,7 +45,7 @@ ls -lh "$SCRIPT" || { echo "ERROR: script not found at $SCRIPT"; exit 1; }
 # ── cd into simulations so relative imports work ──────────────────────────────
 cd "$REPO_ROOT/simulations"
 echo "[3/4] Working dir: $(pwd)"
-echo "      Files here : $(ls src/)"
+echo "      .py files : $(ls *.py 2>/dev/null | tr '\n' ' ')"
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 echo "[4/4] Launching smoketest (config_id=0) ..."

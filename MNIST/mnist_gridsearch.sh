@@ -5,7 +5,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --partition=salmon
-#SBATCH --array=0-242
+#SBATCH --array=0-71
 
 REPO_ROOT="/sci/labs/orzuk/ori_m/conditional-matching-paper"
 ENV_PATH="/sci/labs/orzuk/ori_m/dps_env"
@@ -28,6 +28,7 @@ source "$ENV_PATH/bin/activate" || { echo "ERROR activating env"; exit 1; }
 
 export REPO_ROOT="$REPO_ROOT"
 export WANDB_API_KEY="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"
+export HF_TOKEN="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"
 
 cd "$REPO_ROOT/MNIST"
 

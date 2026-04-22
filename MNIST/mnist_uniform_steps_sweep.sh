@@ -30,9 +30,13 @@ python -c "import torch; print(f'GPU: {torch.cuda.is_available()}')"
 echo "============================================"
 
 # ── 5. Run ─────────────────────────────────────────────────────────────────
+# Ensure the log directory exists
 mkdir -p /sci/labs/orzuk/ori_m/conditional-matching-paper/MNIST/logs
 
-cd /sci/labs/orzuk/ori_m/conditional-matching-paper/MNIST/src
+# Corrected Directory: The .py file is in MNIST, not MNIST/src
+cd /sci/labs/orzuk/ori_m/conditional-matching-paper/MNIST
+
+# Execute the sweep script
 python mnist_uniform_steps_sweep.py --config_id ${SLURM_ARRAY_TASK_ID}
 
 echo "=== ARRAY TASK ${SLURM_ARRAY_TASK_ID} FINISHED ==="

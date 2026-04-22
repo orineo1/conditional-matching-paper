@@ -49,9 +49,9 @@ from huggingface_hub import hf_hub_download, login
 # ─────────────────────────────────────────────────────────────────────────────
 # Fixed hyperparameters
 # ─────────────────────────────────────────────────────────────────────────────
-NUM_INFERENCE_STEPS = 100
+NUM_INFERENCE_STEPS = 125
 NUM_X_T             = 10
-NSAMPLES            = 1000
+NSAMPLES            = 1500
 N_SEEDS             = 15
 GLOBAL_SEED         = 42
 
@@ -229,7 +229,7 @@ def load_or_train_classifier(device):
     return train_classifier(device)
 
 
-def classify_images(images_np, model, device, threshold=0.85):
+def classify_images(images_np, model, device, threshold=0.7):
     """Min-max normalize each image then classify. Returns list of int-or-None."""
     model.eval()
     preds = []

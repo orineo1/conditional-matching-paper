@@ -45,10 +45,10 @@ from diffusers    import DDPMScheduler, DDIMScheduler
 # ─────────────────────────────────────────────────────────────────────────────
 GRID = {
     "num_inference_steps": [100,150, 200,250],
-    "num_x_t":             [10],
+    "num_x_t":             [10,],
     "nsamples":            [1000, 1500],
-    "bimodal_var":         [200, 245, 300],
-    "unimodal_var":        [500, 620, 750],
+    "bimodal_var":         [120,150,200,230,250,275, 300],
+    "unimodal_var":        [500],
 }
 
 N_SEEDS     = 15

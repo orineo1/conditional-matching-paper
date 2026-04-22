@@ -68,8 +68,8 @@ NORM_STD  = 0.3081
 # Bimodal:  200 → 390  step 10 (with extras at edges/between for coverage)
 # Unimodal: 400 → 590  step 10  (same length, advance together)
 # ─────────────────────────────────────────────────────────────────────────────
-BIMODAL_VARS  = list(range(200, 350, 5))
-UNIMODAL_VARS = list(range(400, 550, 5))
+BIMODAL_VARS  = [271]
+UNIMODAL_VARS = [271]#list(range(400, 550, 5))
 
 
 CONFIGS = [

@@ -49,7 +49,7 @@ from huggingface_hub import hf_hub_download, login
 # ─────────────────────────────────────────────────────────────────────────────
 # Fixed hyperparameters
 # ─────────────────────────────────────────────────────────────────────────────
-NUM_INFERENCE_STEPS = 125
+NUM_INFERENCE_STEPS = 150
 NUM_X_T             = 10
 NSAMPLES            = 1500
 N_SEEDS             = 15
@@ -68,10 +68,9 @@ NORM_STD  = 0.3081
 # Bimodal:  200 → 390  step 10 (with extras at edges/between for coverage)
 # Unimodal: 400 → 590  step 10  (same length, advance together)
 # ─────────────────────────────────────────────────────────────────────────────
-BIMODAL_VARS  = list(range(200, 301))   # 200,201,...,300
-UNIMODAL_VARS = list(range(450, 551))   # 450,451,...,550
+BIMODAL_VARS  = list(range(200, 350, 5))
+UNIMODAL_VARS = list(range(400, 550, 5))
 
-assert len(BIMODAL_VARS) == len(UNIMODAL_VARS) == 101
 
 CONFIGS = [
     {"bimodal_var": b, "unimodal_var": u}

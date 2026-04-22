@@ -44,9 +44,9 @@ from diffusers    import DDPMScheduler, DDIMScheduler
 # Grid
 # ─────────────────────────────────────────────────────────────────────────────
 GRID = {
-    "num_inference_steps": [100, 200, 300],
-    "num_x_t":             [5, 10, 15],
-    "nsamples":            [300, 600, 900],
+    "num_inference_steps": [100,150, 200,250],
+    "num_x_t":             [10],
+    "nsamples":            [1000, 1500],
     "bimodal_var":         [200, 245, 300],
     "unimodal_var":        [500, 620, 750],
 }
@@ -191,6 +191,65 @@ from torch.utils.data import DataLoader
 NORM_MEAN = 0.1307
 NORM_STD  = 0.3081
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Download models from HuggingFace
+# ─────────────────────────────────────────────────────────────────────────────
+from huggingface_hub import hf_hub_download, login
+
+HF_TOKEN    = os.environ.get("HF_TOKEN", "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")
+HF_REPO_ID  = "Orineo/conditional-matching-paper"
+
+def download_models():
+    """Download cond + uncond checkpoints from HuggingFace. Cached after first run."""
+    login(token=HF_TOKEN, add_to_git_credential=False)
+
+    print("Downloading conditional model from HuggingFace...")
+    cond_path = hf_hub_download(
+        repo_id  = HF_REPO_ID,
+        filename = "MNIST/MnistConditional500Epoch.pt",
+        token    = HF_TOKEN,
+    )
+    print(f"  -> {cond_path}")
+
+    print("Downloading unconditional model from HuggingFace...")
+    uncond_path = hf_hub_download(
+        repo_id  = HF_REPO_ID,
+        filename = "MNIST/MnistUncond100Epoch.pth",
+        token    = HF_TOKEN,
+    )
+    print(f"  -> {uncond_path}")
+
+    return cond_path, uncond_path
+
+
+def load_generative_models(device):
+    cond_path, uncond_path = download_models()
+
+    # conditional consistency model
+    cond_model = CircularAngleConsistencyModel(
+        nfeatures=2, img_features=784, eps=0.002,
+        nunits=128, depth=5, device=str(device),
+    )
+    ckpt = torch.load(cond_path, map_location=device)
+    cond_model.load_state_dict(ckpt['model_state_dict'])
+    cond_model.eval()
+    print(f"Conditional model loaded (epoch {ckpt['epoch']})")
+
+    # unconditional diffusion model
+    uncond_model = UnconditionalUnet().to(device)
+    ckpt_u = torch.load(uncond_path, map_location=device)
+    uncond_model.load_state_dict(ckpt_u['model_state_dict'])
+    uncond_model.eval()
+    print(f"Unconditional model loaded (epoch {ckpt_u['epoch']})")
+
+    # noise scheduler
+    noise_scheduler = DDPMScheduler(
+        num_train_timesteps=1000,
+        beta_schedule='squaredcos_cap_v2'
+    )
+    print("Ready ✓")
+
+    return cond_model, uncond_model, noise_scheduler
 
 def _get_loaders(augment_heavy: bool, batch_size: int):
     if augment_heavy:
@@ -658,25 +717,15 @@ def run_config(cfg, args, smoke_test=False):
     )
 
     # ── load models ───────────────────────────────────────────────────────
+
     ckpt_dir    = os.path.join(REPO_ROOT, "MNIST", "checkpoints")
-    cond_path   = os.path.join(ckpt_dir, "MnistConditional500Epoch.pt")
-    uncond_path = os.path.join(ckpt_dir, "MnistUncond100Epoch.pth")
+
     base_clf_path = os.path.join(ckpt_dir, "baseline_classifier.pth")
     imp_clf_path  = os.path.join(ckpt_dir, "improved_classifier.pth")
 
-    cond_model = CircularAngleConsistencyModel(
-        nfeatures=2, img_features=784, eps=0.002,
-        nunits=128, depth=5, device=str(device),
-    )
-    cond_model.load_state_dict(
-        torch.load(cond_path, map_location=device)['model_state_dict']
-    )
-    cond_model.eval()
 
-    uncond_model = UnconditionalUnet().to(device)
-    uncond_model.load_state_dict(
-        torch.load(uncond_path, map_location=device)['model_state_dict']
-    )
+    cond_model, uncond_model, noise_scheduler = load_generative_models(device)
+    cond_model.eval()
     uncond_model.eval()
 
     noise_scheduler = DDPMScheduler(

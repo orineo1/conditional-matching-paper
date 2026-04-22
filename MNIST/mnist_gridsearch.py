@@ -51,7 +51,7 @@ from huggingface_hub import hf_hub_download, login
 # ─────────────────────────────────────────────────────────────────────────────
 NUM_INFERENCE_STEPS = 100
 NUM_X_T             = 10
-NSAMPLES            = 1500
+NSAMPLES            = 1000
 N_SEEDS             = 15
 GLOBAL_SEED         = 42
 

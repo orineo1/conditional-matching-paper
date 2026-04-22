@@ -323,22 +323,23 @@ def search_random_best(base_scr, proxy_target, gen_seed_base, n_proxy):
 
 
 
-def search_man_pool_best(seed, proxy_target, n_proxy, n_pool=None):
-    """Generate n_pool real man portraits via Sobel→HED (each a different face),
-    evaluate each scribble with n_proxy neutral images, return the one
-    with lowest MMD vs proxy_target.
-    Unlike random_best which perturbs one anchor, this searches over
-    genuinely different man face geometries."""
+def search_man_pool_best(hed_anchor, proxy_target, seed, n_proxy, n_pool=None):
+    """Generate n_pool man portraits conditioned on hed_anchor → extract HED
+    from each → evaluate vs proxy_target. Pick the scribble with lowest MMD."""
     if n_pool is None:
         n_pool = N_MAN_POOL
     best_scr, best_mmd, all_mmds = None, float('inf'), []
     for i in range(n_pool):
-        # Different seed per portrait → genuinely different man face each time
-        _, scr = bootstrap_hed(MAN_PROMPT, seed=seed * 200000 + i)
-        imgs   = generate_images(sprinter, NEUTRAL_PROMPT, scr, n_proxy,
-                                 seed=seed * 200000 + i)
-        embs   = clip_embed(imgs)
-        mmd    = compute_mmd(embs, proxy_target.detach()).item()
+        # Generate one man portrait conditioned on hed_anchor
+        imgs = generate_images(sprinter, MAN_PROMPT, hed_anchor, 1,
+                               seed=seed * 200000 + i)
+        # Extract HED from that portrait
+        scr  = hed(imgs[0], scribble=True)
+        # Evaluate this scribble: generate n_proxy neutral images → MMD
+        eval_imgs = generate_images(sprinter, NEUTRAL_PROMPT, scr, n_proxy,
+                                    seed=seed * 200000 + i)
+        embs = clip_embed(eval_imgs)
+        mmd  = compute_mmd(embs, proxy_target.detach()).item()
         all_mmds.append(float(mmd))
         if mmd < best_mmd:
             best_mmd = mmd
@@ -346,7 +347,6 @@ def search_man_pool_best(seed, proxy_target, n_proxy, n_pool=None):
         print(f'    pool {i+1:3d}/{n_pool}  mmd={mmd:.5f}  best={best_mmd:.5f}', end='\r')
     print()
     return best_scr, float(best_mmd), all_mmds
-
 
 def eval_scribble(scribble_pil, target_clip, n, seed=None):
     imgs = generate_images(sprinter, NEUTRAL_PROMPT, scribble_pil, n, seed=seed)
@@ -806,9 +806,9 @@ for seed in range(1, N_RUNS + 1):
 
     # [D2] Man pool best search
     t_d2 = time.time()
-    print(f'  [D2] Man pool best ({N_MAN_POOL} real man portraits → HED)...')
+    print(f'  [D2] Man pool best ({N_MAN_POOL} portraits from hed_anchor)...')
     scr_man_pool, man_pool_best_mmd, man_pool_all_mmds = search_man_pool_best(
-        seed, proxy_target, n_proxy
+        hed_anchor, proxy_target, seed, n_proxy
     )
     scr_man_pool.save(os.path.join(seed_dir, 'scribble_man_pool_best.png'))
     print(f'      best_mmd={man_pool_best_mmd:.5f}  done in {fmt(time.time() - t_d2)}')

@@ -64,7 +64,7 @@ TTA_ANGLES = [0, 90, 180, 270]
 
 RELEVANT_DIGITS = {
     "Bimodal":  {0, 1, 6, 8, 9},
-    "Unimodal": {2, 3, 6, 7},   # added 6 — rotated 6 looks like valid upright
+    "Unimodal": {2, 3,5, 7},   # added 6 — rotated 6 looks like valid upright
 }
 
 

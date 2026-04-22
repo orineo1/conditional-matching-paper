@@ -560,17 +560,37 @@ def run_config(cfg, args, smoke_test=False):
         plt.suptitle(f'{exp_name} | bi={bimodal_var} uni={unimodal_var}', fontsize=8)
         plt.tight_layout()
 
+        # top-5 figure
+        top_ix = np.argsort(losses)[:5]
+        k = len(top_ix)
+        fig_top, axes_top = plt.subplots(1, k, figsize=(k * 2.5, 3))
+        axes_top = np.array(axes_top).reshape(k)
+        for rank, idx in enumerate(top_ix):
+            axes_top[rank].imshow(payload['results'][idx].reshape(28, 28), cmap='gray')
+            axes_top[rank].set_title(
+                f'#{rank + 1} | s{payload["seed_log"][idx]}\n'
+                f'loss={losses[idx]:.3f} | {preds[idx] if preds[idx] is not None else "None"}',
+                fontsize=7
+            )
+            axes_top[rank].axis('off')
+        plt.suptitle(f'{exp_name} Top-5 | bi={bimodal_var} uni={unimodal_var}', fontsize=8)
+        plt.tight_layout()
+
         wandb.log({
-            f"{exp_name}/swd_mean":        float(losses.mean()),
-            f"{exp_name}/swd_std":         float(losses.std()),
-            f"{exp_name}/swd_top5_mean":   float(losses[top_ix].mean()),
-            f"{exp_name}/pct_classified":  100. * n_classified / n,
-            f"{exp_name}/pct_top5_clf":    100. * n_top_clf / len(top_ix),
-            f"{exp_name}/images":          wandb.Image(fig),
-            f"{exp_name}/bimodal_var":     bimodal_var,
-            f"{exp_name}/unimodal_var":    unimodal_var,
+            f"{exp_name}/swd_mean": float(losses.mean()),
+            f"{exp_name}/swd_std": float(losses.std()),
+            f"{exp_name}/swd_top5_mean": float(losses[top_ix].mean()),
+            f"{exp_name}/pct_classified": 100. * n_classified / n,
+            f"{exp_name}/pct_top5_clf": 100. * n_top_clf / len(top_ix),
+            f"{exp_name}/images_all": wandb.Image(fig),
+            f"{exp_name}/images_top5": wandb.Image(fig_top),
+            f"{exp_name}/bimodal_var": bimodal_var,
+            f"{exp_name}/unimodal_var": unimodal_var,
         })
         plt.close(fig)
+        plt.close(fig_top)
+
+
         print(f"[{exp_name}] classified {n_classified}/{n} | top-5 clf {n_top_clf}/5")
 
     wandb.finish()

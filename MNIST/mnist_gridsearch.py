@@ -68,12 +68,10 @@ NORM_STD  = 0.3081
 # Bimodal:  200 → 390  step 10 (with extras at edges/between for coverage)
 # Unimodal: 400 → 590  step 10  (same length, advance together)
 # ─────────────────────────────────────────────────────────────────────────────
-BIMODAL_VARS  = [200, 210, 225, 237, 250, 262, 275, 287, 300, 312,
-                 325, 337, 350, 362, 375, 387, 400, 415, 430, 450]
-UNIMODAL_VARS = [400, 412, 425, 437, 450, 462, 475, 487, 500, 512,
-                 525, 537, 550, 562, 575, 587, 600, 615, 630, 650]
+BIMODAL_VARS  = list(range(200, 301))   # 200,201,...,300
+UNIMODAL_VARS = list(range(450, 551))   # 450,451,...,550
 
-assert len(BIMODAL_VARS) == len(UNIMODAL_VARS) == 20, "Lists must have length 20"
+assert len(BIMODAL_VARS) == len(UNIMODAL_VARS) == 101
 
 CONFIGS = [
     {"bimodal_var": b, "unimodal_var": u}

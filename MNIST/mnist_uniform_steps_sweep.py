@@ -49,7 +49,7 @@ from huggingface_hub import hf_hub_download, login
 # ─────────────────────────────────────────────────────────────────────────────
 # Fixed hyperparameters
 # ─────────────────────────────────────────────────────────────────────────────
-NUM_X_T      = 3
+NUM_X_T      = 10
 NSAMPLES     = 1500
 N_SEEDS      = 15
 GLOBAL_SEED  = 42
@@ -71,7 +71,7 @@ NORM_STD  = 0.3081
 # Sweep configs — one per num_inference_steps value
 # 100, 125, 150, ..., 700  →  25 configs (indices 0–24)
 # ─────────────────────────────────────────────────────────────────────────────
-INFERENCE_STEPS_LIST = list(range(100, 725, 25))
+INFERENCE_STEPS_LIST = list(range(275, 325, 25))
 CONFIGS = [{"num_inference_steps": s} for s in INFERENCE_STEPS_LIST]
 
 # ─────────────────────────────────────────────────────────────────────────────

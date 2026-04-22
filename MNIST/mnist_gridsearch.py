@@ -49,7 +49,7 @@ from huggingface_hub import hf_hub_download, login
 # ─────────────────────────────────────────────────────────────────────────────
 # Fixed hyperparameters
 # ─────────────────────────────────────────────────────────────────────────────
-NUM_INFERENCE_STEPS = 175
+NUM_INFERENCE_STEPS = 200
 NUM_X_T             = 10
 NSAMPLES            = 1500
 N_SEEDS             = 15

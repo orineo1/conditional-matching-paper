@@ -5,7 +5,8 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --partition=salmon
-#SBATCH --array=0-100
+#SBATCH --array=0-29
+
 
 REPO_ROOT="/sci/labs/orzuk/ori_m/conditional-matching-paper"
 ENV_PATH="/sci/labs/orzuk/ori_m/dps_env"

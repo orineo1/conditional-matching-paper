@@ -9,8 +9,8 @@
 
 REPO_ROOT="/sci/labs/orzuk/ori_m/conditional-matching-paper"
 ENV_PATH="/sci/labs/orzuk/ori_m/dps_env"
-LOG_DIR="$REPO_ROOT/MNIST/logs/variance_sweep"
-SCRIPT="$REPO_ROOT/MNIST/mnist_variance_sweep.py"
+LOG_DIR="$REPO_ROOT/MNIST/logs/mnist_gridsearch"
+SCRIPT="$REPO_ROOT/MNIST/mnist_gridsearch.py"
 
 mkdir -p "$LOG_DIR"
 mkdir -p "$REPO_ROOT/MNIST/checkpoints"

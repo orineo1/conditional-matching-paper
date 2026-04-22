@@ -515,7 +515,7 @@ def run_config(cfg, args, smoke_test=False):
     n              = len(payload['results'])
     n_classified   = sum(1 for p in preds if p is not None)
     n_top_clf      = sum(1 for p in top_preds if p is not None)
-
+    num_digit_0 = sum(1 for p in preds if p == 0)
     # All seeds figure
     ncols = min(5, n)
     nrows = math.ceil(n / ncols)
@@ -572,6 +572,7 @@ def run_config(cfg, args, smoke_test=False):
         "Uniform/pct_classified":   100. * n_classified / n,
         "Uniform/pct_top5_clf":     100. * n_top_clf / len(top_ix),
         "Uniform/num_inference_steps": num_inference_steps,
+        "Uniform/count_digit_0": num_digit_0,
         "Uniform/images_all":       wandb.Image(fig),
         "Uniform/images_top5":      wandb.Image(fig_top),
         "Uniform/swd_per_seed":     wandb.Image(fig_loss),

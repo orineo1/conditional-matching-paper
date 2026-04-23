@@ -333,7 +333,7 @@ def main():
     device  = 'cuda' if torch.cuda.is_available() else 'cpu'
     SEED    = cfg['seed']
     jid     = cfg['best_jid']
-    run_dir = Path(cfg['runs_root']) / 'experiments' / args.experiment
+    run_dir = Path(args.repo_path) / 'experiments' / args.experiment
     out_dir = run_dir / 'baselines'
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -342,13 +342,12 @@ def main():
     # ── W&B init ──
     import wandb
     wandb.init(
-        project = 'eval-baselines',
-        entity  = 'conditional-matching',
-        name    = f'{args.experiment}_{jid}',
-        config  = dict(
-            experiment     = args.experiment,
-            best_jid       = jid,
-            lgd_cm_minutes = args.lgd_cm_minutes,
+        project='eval-baselines',
+        entity='conditional-matching',
+        name=f'{args.experiment}',
+        config=dict(
+            experiment=args.experiment,
+            lgd_cm_minutes=args.lgd_cm_minutes,
             **{k: v for k, v in cfg.items() if k != 'groups'},
         ),
     )
@@ -365,9 +364,6 @@ def main():
 
     # ── Load scribbles ──
     source_scribble = Image.open(run_dir / 'scribble.png')
-    lgd_scribble = Image.open(run_dir / 'mlgdd.png')
-    print('Scribbles loaded.')
-
     lgd_scribble = Image.open(run_dir / 'final_scribble_lgd_cm.png')
     print('Scribbles loaded.')
 

@@ -26,7 +26,7 @@ EXPERIMENT_CONFIGS = {
         best_jid         = 44430631,
         runs_root        = '/sci/labs/orzuk/ori_m/gdrive/conditional-matching/runs',
         seed             = 5,
-        n_eval_search    = 100,
+        n_eval_search    = 250,
         sdedit_start     = 125,
         n_steps          = 250,
         sdedit_cfg       = 7.5,
@@ -44,7 +44,7 @@ EXPERIMENT_CONFIGS = {
         best_jid         = 44424933,
         runs_root        = '/sci/labs/orzuk/ori_m/gdrive/conditional-matching/runs',
         seed             = 5,
-        n_eval_search    = 100,
+        n_eval_search    = 250,
         sdedit_start     = 125,
         n_steps          = 250,
         sdedit_cfg       = 7.5,
@@ -62,7 +62,7 @@ EXPERIMENT_CONFIGS = {
         best_jid         = 44432053,
         runs_root        = '/sci/labs/orzuk/ori_m/gdrive/conditional-matching/runs',
         seed             = 5,
-        n_eval_search    = 100,
+        n_eval_search    = 250,
         sdedit_start     = 125,
         n_steps          = 250,
         sdedit_cfg       = 7.5,
@@ -82,7 +82,7 @@ EXPERIMENT_CONFIGS = {
         best_jid         = 44492374,
         runs_root        = '/sci/labs/orzuk/ori_m/gdrive/conditional-matching/runs/InterpolationMenWomen',
         seed             = 42,
-        n_eval_search    = 120,
+        n_eval_search    = 240,
         sdedit_start     = 125,
         n_steps          = 250,
         sdedit_cfg       = 7.5,
@@ -198,7 +198,7 @@ def build_target_embeddings(cfg, source_scribble, sprinter, clip_model, clip_pro
     group_imgs = {}
 
     if mode in ('binary', 'multiclass'):
-        n_target = 500
+        n_target = cfg['n_eval_search']
         all_imgs = []
         for i, g in enumerate(cfg['groups']):
             n_i  = max(1, int(n_target * g['frac']))
@@ -372,6 +372,15 @@ def main():
     print(f'Target CLIP: {target_clip.shape}')
     save_target_previews(group_imgs, out_dir)
 
+    # ── Log target samples to W&B ──
+    print('\nLogging target samples to W&B...')
+    target_log = {}
+    for label, imgs in group_imgs.items():
+        safe = label.replace(' ', '_').replace('/', '_')
+        for j, img in enumerate(imgs[:3]):
+            target_log[f'target/{safe}_{j}'] = wandb.Image(img)
+    wandb.log(target_log)
+
     # ── Avg scribble ──
     print('\nBuilding avg scribble...')
     avg_scribble = build_avg_scribble(cfg, source_scribble, sprinter, hed, device)
@@ -403,8 +412,46 @@ def main():
 
     n_candidates = max(1, int(args.lgd_cm_minutes * 60 / sec_per_candidate))
     print(f'  First candidate: {sec_per_candidate:.1f}s → budget={args.lgd_cm_minutes}min → {n_candidates} candidates')
-    wandb.log({'sec_per_candidate': sec_per_candidate, 'n_candidates': n_candidates})
 
+    wandb.log({'sec_per_candidate': sec_per_candidate, 'n_candidates': n_candidates})
+    ###########################################################################3
+    # ── Sanity check: scribbles + neutral + conditional images ──
+    print('\nLogging sanity check to W&B...')
+    sanity_scribbles = {
+        'source': source_scribble,
+        'lgd_cm': lgd_scribble,
+        'avg': avg_scribble,
+        'sdedit': sdedit_scribble,
+        'sdedit_cand0': first_cand,
+    }
+    sanity_log = {}
+    for name, scribble in sanity_scribbles.items():
+        # scribble image
+        sanity_log[f'sanity/scribble_{name}'] = wandb.Image(scribble)
+        # neutral prompt images
+        neutral_imgs = gen_images(sprinter, scribble, cfg['neutral_prompt'],
+                                  4, cfg['controlnet_scale'], seed=SEED)
+        for j, img in enumerate(neutral_imgs):
+            sanity_log[f'sanity/neutral_{name}_{j}'] = wandb.Image(img)
+        # conditional images per group (binary/multiclass only)
+        if cfg['mode'] != 'age':
+            for g in cfg['groups']:
+                safe_g = g['label'].replace(' ', '_')
+                cond_imgs = gen_images(sprinter, scribble, g['prompt'],
+                                       2, cfg['controlnet_scale'], seed=SEED)
+                for j, img in enumerate(cond_imgs):
+                    sanity_log[f'sanity/cond_{name}_{safe_g}_{j}'] = wandb.Image(img)
+        else:
+            for age in [cfg['age_min'], (cfg['age_min'] + cfg['age_max']) // 2, cfg['age_max']]:
+                prompt_age = (f'a superrealistic portrait photograph of a {age}-year-old man, '
+                              'studio lighting, sharp focus, photographic')
+                age_imgs = gen_images(sprinter, scribble, prompt_age,
+                                      2, cfg['controlnet_scale'], seed=SEED)
+                for j, img in enumerate(age_imgs):
+                    sanity_log[f'sanity/cond_{name}_age{age}_{j}'] = wandb.Image(img)
+    wandb.log(sanity_log)
+    print('  Sanity check logged.')
+    ###########################################################################3
     # ── SDEdit best search ──
     print('\nSearching SDEdit best...')
     candidate_mmds      = [first_mmd]

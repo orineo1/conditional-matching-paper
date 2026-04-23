@@ -49,11 +49,10 @@ from huggingface_hub import hf_hub_download, login
 # ─────────────────────────────────────────────────────────────────────────────
 # Fixed hyperparameters
 # ─────────────────────────────────────────────────────────────────────────────
-NUM_X_T      = 5
 NSAMPLES     = 1500
 N_SEEDS      = 15
 GLOBAL_SEED  = 42
-
+NUM_INFERENCE_STEPS =300
 # Fixed uniform distribution params (from notebook)
 UNIFORM_MOG_MEANS     = [torch.tensor([180], dtype=torch.float64)]
 UNIFORM_MOG_VARIANCES = [torch.tensor([[60]], dtype=torch.float64)]
@@ -71,8 +70,9 @@ NORM_STD  = 0.3081
 # Sweep configs — one per num_inference_steps value
 # 100, 125, 150, ..., 700  →  25 configs (indices 0–24)
 # ─────────────────────────────────────────────────────────────────────────────
-INFERENCE_STEPS_LIST = list(range(275, 325, 25))
-CONFIGS = [{"num_inference_steps": s} for s in INFERENCE_STEPS_LIST]
+NUM_X_T_LIST = list(range(4, 21))   # 4,5,6,...,20
+CONFIGS = [{"num_x_t": x} for x in NUM_X_T_LIST]
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Determinism
@@ -433,32 +433,33 @@ def run_config(cfg, args, smoke_test=False):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     make_deterministic(GLOBAL_SEED)
 
-    num_inference_steps = cfg["num_inference_steps"]
+    # num_inference_steps = cfg["num_inference_steps"]
+    num_x_t = cfg["num_x_t"]
 
     print(f"\n{'='*65}")
-    print(f"Config: num_inference_steps={num_inference_steps}")
+    print(f"Config: num_x_t={num_x_t}")
     print(f"Device: {device}\n{'='*65}\n")
 
-    run_name = f"uniform_steps{num_inference_steps}"
+    run_name = f"uniform_xt{num_x_t}"
     save_dir = os.path.join(
-        REPO_ROOT, "MNIST", "results", "uniform_steps_sweep", run_name
+        REPO_ROOT, "MNIST", "results", "uniform_xt_sweep", run_name
     )
 
     wandb.init(
-        project = "mnist_uniform_steps_sweep",
-        entity  = args.wandb_entity or None,
-        config  = {
-            "num_inference_steps": num_inference_steps,
-            "num_x_t":             NUM_X_T,
-            "nsamples":            NSAMPLES,
-            "n_seeds":             N_SEEDS,
-            "global_seed":         GLOBAL_SEED,
-            "use_uniform":         True,
-            "smoke_test":          smoke_test,
+        project="mnist_uniform_xt_sweep",
+        entity=args.wandb_entity or None,
+        config={
+            "num_inference_steps": NUM_INFERENCE_STEPS,  # keep as fixed constant
+            "num_x_t": num_x_t,
+            "nsamples": NSAMPLES,
+            "n_seeds": N_SEEDS,
+            "global_seed": GLOBAL_SEED,
+            "use_uniform": True,
+            "smoke_test": smoke_test,
         },
-        name  = run_name,
-        tags  = ["mnist", "uniform", "steps_sweep"],
-        reinit = True,
+        name=run_name,
+        tags=["mnist", "uniform", "xt_sweep"],
+        reinit=True,
     )
 
     # ── load generative models ─────────────────────────────────────────────
@@ -492,18 +493,18 @@ def run_config(cfg, args, smoke_test=False):
     # ── run uniform experiment ─────────────────────────────────────────────
     seeds = range(2) if smoke_test else range(N_SEEDS)
 
-    experiment_name = f'Uniform_steps{num_inference_steps}'
+    experiment_name = f'Uniform_xt{num_x_t}'
     save_path, payload = run_and_save(
-        model_uncond        = uncond_model,
-        model_cond          = cond_model,
-        noise_scheduler     = noise_scheduler,
-        num_inference_steps = num_inference_steps,
-        experiment_name     = experiment_name,
-        save_dir            = save_dir,
-        seeds               = seeds,
-        nsamples            = NSAMPLES,
-        num_x_t             = NUM_X_T,
-        device              = str(device),
+        model_uncond=uncond_model,
+        model_cond=cond_model,
+        noise_scheduler=noise_scheduler,
+        num_inference_steps=NUM_INFERENCE_STEPS,
+        experiment_name=experiment_name,
+        save_dir=save_dir,
+        seeds=seeds,
+        nsamples=NSAMPLES,
+        num_x_t=num_x_t,  # ← now from config
+        device=str(device),
     )
 
     # ── classify + log to W&B ─────────────────────────────────────────────
@@ -533,7 +534,7 @@ def run_config(cfg, args, smoke_test=False):
     for i in range(n, nrows * ncols):
         r, c = divmod(i, ncols)
         axes[r, c].axis('off')
-    plt.suptitle(f'Uniform | steps={num_inference_steps}', fontsize=8)
+    plt.suptitle(f'Uniform | steps={num_x_t}', fontsize=8)
     plt.tight_layout()
 
     # Top-5 figure
@@ -548,7 +549,7 @@ def run_config(cfg, args, smoke_test=False):
             fontsize=7
         )
         axes_top[rank].axis('off')
-    plt.suptitle(f'Uniform Top-5 | steps={num_inference_steps}', fontsize=8)
+    plt.suptitle(f'Uniform Top-5 | steps={num_x_t}', fontsize=8)
     plt.tight_layout()
 
     # SWD over seeds plot
@@ -559,7 +560,7 @@ def run_config(cfg, args, smoke_test=False):
                     label=f'mean={losses.mean():.4f}')
     ax_loss.set_xlabel('Seed')
     ax_loss.set_ylabel('SWD loss')
-    ax_loss.set_title(f'Uniform SWD per seed | steps={num_inference_steps}')
+    ax_loss.set_title(f'Uniform SWD per seed | steps={num_x_t}')
     ax_loss.legend()
     ax_loss.grid(True, alpha=0.3)
     plt.tight_layout()
@@ -571,7 +572,7 @@ def run_config(cfg, args, smoke_test=False):
         "Uniform/swd_top5_mean":    float(losses[top_ix].mean()),
         "Uniform/pct_classified":   100. * n_classified / n,
         "Uniform/pct_top5_clf":     100. * n_top_clf / len(top_ix),
-        "Uniform/num_inference_steps": num_inference_steps,
+        "Uniform/num_inference_steps": NUM_INFERENCE_STEPS,
         "Uniform/count_digit_0": num_digit_0,
         "Uniform/images_all":       wandb.Image(fig),
         "Uniform/images_top5":      wandb.Image(fig_top),
@@ -582,13 +583,13 @@ def run_config(cfg, args, smoke_test=False):
     plt.close(fig_top)
     plt.close(fig_loss)
 
-    print(f"[Uniform steps={num_inference_steps}] "
+    print(f"[Uniform steps={num_x_t}] "
           f"classified {n_classified}/{n} | top-5 clf {n_top_clf}/5 | "
           f"swd_mean={losses.mean():.4f}")
 
     # Upload pkl as W&B artifact
     artifact = wandb.Artifact(
-        f'uniform_steps{num_inference_steps}', type='results'
+        f'uniform_steps_300_NUM_X_T{num_x_t}', type='results'
     )
     artifact.add_file(save_path)
     wandb.log_artifact(artifact)
@@ -608,7 +609,7 @@ if __name__ == "__main__":
     if args.list_configs:
         print(f"Total configs: {len(CONFIGS)}")
         for i, c in enumerate(CONFIGS):
-            print(f"  [{i:2d}] num_inference_steps={c['num_inference_steps']}")
+            print(f"  [{i:2d}] num_x_t={c['num_x_t']}")
         sys.exit(0)
 
     if args.train_classifier_only:

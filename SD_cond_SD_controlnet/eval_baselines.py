@@ -217,9 +217,7 @@ def build_target_embeddings(cfg, source_scribble, sprinter, clip_model, clip_pro
             for age in tqdm(ages, desc='Building age target'):
                 prompt = (f'a superrealistic portrait photograph of a {age}-year-old man, '
                           'studio lighting, sharp focus, photographic')
-                imgs, _ = __import__('generation').generate_and_store_cs(
-                    sprinter, prompt, source_scribble, n_per_age,
-                    batch_size=2, cn_scale=cn_scale, seed=SEED + age * 7)
+                imgs = gen_images(sprinter, source_scribble, prompt, n_per_age, cn_scale, seed=SEED + age * 7)
                 embs = encode_images_clip(pil_to_tensor(imgs, device), clip_model, clip_processor)
                 age_embs[age] = embs.cpu()
                 group_imgs[str(age)] = imgs

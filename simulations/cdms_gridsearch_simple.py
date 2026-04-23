@@ -63,7 +63,7 @@ NEPOCHS    = 40_000
 BATCH_SIZE = 1024
 
 NUM_X_T        = 1
-N_CDMS_SAMPLES = 200
+N_CDMS_SAMPLES = 1_000
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Grid — only clamp + diffusion_steps swept

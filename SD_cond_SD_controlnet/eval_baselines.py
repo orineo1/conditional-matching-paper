@@ -364,7 +364,7 @@ def main():
 
     # ── Load scribbles ──
     source_scribble = Image.open(run_dir / 'scribble.png')
-    lgd_scribble = Image.open(run_dir / 'final_scribble_lgd_cm.png')
+    lgd_scribble = Image.open(run_dir / 'mlgdd.png')
     print('Scribbles loaded.')
 
     # ── Build target (small, for search only) ──

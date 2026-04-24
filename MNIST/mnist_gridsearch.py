@@ -1,26 +1,25 @@
 """
-mnist_variance_sweep.py
+mnist_unimodal_sweep.py
 =======================
-Paired variance sweep for Bimodal + Unimodal experiments.
-Each SLURM array task = one (bimodal_var, unimodal_var) pair.
+Unimodal variance + num_x_t grid sweep.
+Each SLURM array task = one (unimodal_var, num_x_t) pair.
 
 Launch:
-    sbatch mnist_variance_sweep.sh
+    sbatch mnist_unimodal_sweep.sh
 Smoke test:
-    python mnist_variance_sweep.py --config_id 0 --smoke_test
+    python mnist_unimodal_sweep.py --config_id 0 --smoke_test
 List configs:
-    python mnist_variance_sweep.py --list_configs
+    python mnist_unimodal_sweep.py --list_configs
 Train classifier only:
-    python mnist_variance_sweep.py --train_classifier_only
+    python mnist_unimodal_sweep.py --train_classifier_only
 """
 
-import os, sys, math, json, argparse, random, time, pickle
+import os, sys, math, argparse, random, time, pickle
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-import torchvision.transforms.functional as TF
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -49,8 +48,7 @@ from huggingface_hub import hf_hub_download, login
 # ─────────────────────────────────────────────────────────────────────────────
 # Fixed hyperparameters
 # ─────────────────────────────────────────────────────────────────────────────
-NUM_INFERENCE_STEPS = 125
-NUM_X_T             = 10
+NUM_INFERENCE_STEPS = 300
 NSAMPLES            = 1500
 N_SEEDS             = 15
 GLOBAL_SEED         = 42
@@ -58,23 +56,20 @@ GLOBAL_SEED         = 42
 HF_TOKEN   = os.environ.get("HF_TOKEN", "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")
 HF_REPO_ID = "Orineo/conditional-matching-paper"
 
-CLF_PATH = os.path.join(REPO_ROOT, "MNIST", "checkpoints", "robust_classifier.pth")
-
+CLF_PATH  = os.path.join(REPO_ROOT, "MNIST", "checkpoints", "robust_classifier.pth")
 NORM_MEAN = 0.1307
 NORM_STD  = 0.3081
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Paired variance sweep — 20 pairs
-# Bimodal:  200 → 390  step 10 (with extras at edges/between for coverage)
-# Unimodal: 400 → 590  step 10  (same length, advance together)
+# Grid
 # ─────────────────────────────────────────────────────────────────────────────
-BIMODAL_VARS  = [252]
-UNIMODAL_VARS = [252]#list(range(400, 550, 5))
-
+NUM_X_T_VALUES = [3, 5, 10, 20]
+UNIMODAL_VARS  = list(range(400, 550, 5))
 
 CONFIGS = [
-    {"bimodal_var": b, "unimodal_var": u}
-    for b, u in zip(BIMODAL_VARS, UNIMODAL_VARS)
+    {"unimodal_var": u, "num_x_t": n}
+    for u in UNIMODAL_VARS
+    for n in NUM_X_T_VALUES
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -227,7 +222,6 @@ def load_or_train_classifier(device):
 
 
 def classify_images(images_np, model, device, threshold=0.7):
-    """Min-max normalize each image then classify. Returns list of int-or-None."""
     model.eval()
     preds = []
     with torch.no_grad():
@@ -235,11 +229,11 @@ def classify_images(images_np, model, device, threshold=0.7):
             t      = torch.tensor(img, dtype=torch.float32).flatten()
             lo, hi = t.min(), t.max()
             t      = (t - lo) / (hi - lo + 1e-8)
-            t      = (t - NORM_MEAN) / NORM_STD
-            t      = t.reshape(1, 1, 28, 28).to(device)
-            probs  = F.softmax(model(t), dim=1).squeeze()
+            t_norm = (t - NORM_MEAN) / NORM_STD
+            inp    = t_norm.reshape(1, 1, 28, 28).to(device)
+            probs  = F.softmax(model(inp), dim=1).squeeze()
             conf, pred = probs.max(0)
-            preds.append(pred.item() if conf.item() >= threshold else None)
+            preds.append(pred.item() if conf.item() > threshold else None)
     return preds
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -265,11 +259,11 @@ def generate_mog_samples(num_samples, means, variances, weights=None, device='cp
         weights = torch.ones(components, device=device) / components
     else:
         weights = weights.to(device)
-    weights  = weights / weights.sum()
-    means_t  = torch.stack([m.flatten() for m in means]).to(device)
-    covs_t   = torch.stack([torch.diag(v.flatten()) for v in variances]).to(device)
-    mix      = Categorical(weights)
-    comp     = MultivariateNormal(means_t, covs_t)
+    weights = weights / weights.sum()
+    means_t = torch.stack([m.flatten() for m in means]).to(device)
+    covs_t  = torch.stack([torch.diag(v.flatten()) for v in variances]).to(device)
+    mix     = Categorical(weights)
+    comp    = MultivariateNormal(means_t, covs_t)
     return MixtureSameFamily(mix, comp).sample((num_samples,))
 
 
@@ -313,25 +307,25 @@ def optimize_LGD(model_uncond, model_cond_cm, noise_scheduler,
     for i, t in enumerate(timesteps[:-1]):
         x_t      = x_t.detach().clone().requires_grad_(True)
         residual = model_uncond(x_t, torch.tensor([t], device=device))
-        alpha_t  = ddim.alphas_cumprod[t]
+        alpha_t      = ddim.alphas_cumprod[t]
         alpha_t_prev = (ddim.alphas_cumprod[timesteps[i+1]]
                         if i < len(timesteps)-2 else torch.tensor(1.0))
-        beta_t   = 1 - alpha_t
-        pred_x0  = (x_t - beta_t**0.5 * residual) / alpha_t**0.5
-        x_t_minus_1 = alpha_t_prev**0.5 * pred_x0 + (1 - alpha_t_prev)**0.5 * residual
+        beta_t       = 1 - alpha_t
+        pred_x0      = (x_t - beta_t**0.5 * residual) / alpha_t**0.5
+        x_t_minus_1  = alpha_t_prev**0.5 * pred_x0 + (1 - alpha_t_prev)**0.5 * residual
 
         r_t       = torch.sqrt(beta_t)
         step_size = r_t / (1 + r_t**2) + 5 * t / 1000
 
         losses = []
         for _ in range(num_x_t):
-            x0_sample    = pred_x0 + r_t**2 * torch.randn_like(pred_x0)
+            x0_sample     = pred_x0 + r_t**2 * torch.randn_like(pred_x0)
             target_angles = circular_to_angles(
                 model_cond_cm.sample(nsamples=nsamples, condition_x=x0_sample,
                                      ts=[150., 50., 20., 10., 5., 1.])[0]
             )
-            mog_ang  = generate_mog_samples(nsamples, mog_means, mog_variances,
-                                            weights).squeeze()
+            mog_ang = generate_mog_samples(
+                nsamples, mog_means, mog_variances, weights).squeeze()
             losses.append(-sliced_wasserstein_distance(
                 angles_to_circular(target_angles),
                 angles_to_circular(mog_ang),
@@ -343,7 +337,7 @@ def optimize_LGD(model_uncond, model_cond_cm, noise_scheduler,
         with torch.no_grad():
             x_t = x_t_minus_1.detach().clone() - step_size * grad
 
-    # Final DDIM step
+    # final DDIM step
     with torch.no_grad():
         last_t = timesteps[-1]
         res    = model_uncond(x_t, torch.tensor([last_t], device=device))
@@ -357,7 +351,8 @@ def optimize_LGD(model_uncond, model_cond_cm, noise_scheduler,
                              condition_x=x_final.view(1, 28, 28),
                              ts=[150., 50., 20., 10., 5., 1.])[0]
     )
-    ref_ang  = generate_mog_samples(final_n, mog_means, mog_variances, weights).squeeze()
+    ref_ang    = generate_mog_samples(
+        final_n, mog_means, mog_variances, weights).squeeze()
     final_loss = sliced_wasserstein_distance(
         angles_to_circular(final_ang),
         angles_to_circular(ref_ang),
@@ -370,7 +365,7 @@ def optimize_LGD(model_uncond, model_cond_cm, noise_scheduler,
     return x_final, final_loss
 
 # ─────────────────────────────────────────────────────────────────────────────
-# run_and_save — exact notebook PKL format
+# run_and_save
 # ─────────────────────────────────────────────────────────────────────────────
 def run_and_save(model_uncond, model_cond, noise_scheduler,
                  mog_means, mog_variances, weights,
@@ -410,7 +405,6 @@ def run_and_save(model_uncond, model_cond, noise_scheduler,
 
     x_range_np, target_pdf_np = _build_target(mog_means, mog_variances, weights)
 
-    # exact same payload format as the notebook
     payload = {
         'experiment_name': experiment_name,
         'results':         results,
@@ -438,45 +432,49 @@ def run_config(cfg, args, smoke_test=False):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     make_deterministic(GLOBAL_SEED)
 
-    bimodal_var  = cfg["bimodal_var"]
     unimodal_var = cfg["unimodal_var"]
+    num_x_t      = cfg["num_x_t"]
 
     print(f"\n{'='*65}")
-    print(f"Config: bimodal_var={bimodal_var}  unimodal_var={unimodal_var}")
+    print(f"Config: unimodal_var={unimodal_var}  num_x_t={num_x_t}")
     print(f"Device: {device}\n{'='*65}\n")
 
-    run_name = f"bi{bimodal_var}_uni{unimodal_var}"
-    save_dir = os.path.join(REPO_ROOT, "MNIST", "results", "variance_sweep", run_name)
+    run_name = f"uni{unimodal_var}_nxt{num_x_t}"
+    save_dir = os.path.join(
+        REPO_ROOT, "MNIST", "results", "unimodal_sweep", run_name)
 
     wandb.init(
-        project = "grid_mnist_orgniezd",
+        project = "mnist_unimodal_sweep",
         entity  = args.wandb_entity or None,
         config  = {
-            **cfg,
+            "unimodal_var":        unimodal_var,
+            "num_x_t":             num_x_t,
             "num_inference_steps": NUM_INFERENCE_STEPS,
-            "num_x_t":             NUM_X_T,
             "nsamples":            NSAMPLES,
             "n_seeds":             N_SEEDS,
             "global_seed":         GLOBAL_SEED,
             "smoke_test":          smoke_test,
         },
-        name  = run_name,
-        tags  = ["mnist", "variance_sweep"],
+        name   = run_name,
+        tags   = ["mnist", "unimodal_sweep"],
         reinit = True,
     )
 
-    # ── load generative models ────────────────────────────────────────────
+    # ── load models ───────────────────────────────────────────────────────
     login(token=HF_TOKEN, add_to_git_credential=False)
 
     print("Downloading conditional model...")
     cond_path = hf_hub_download(
-        repo_id=HF_REPO_ID, filename="MNIST/MnistConditional500Epoch.pt", token=HF_TOKEN)
+        repo_id=HF_REPO_ID, filename="MNIST/MnistConditional500Epoch.pt",
+        token=HF_TOKEN)
     print("Downloading unconditional model...")
     uncond_path = hf_hub_download(
-        repo_id=HF_REPO_ID, filename="MNIST/MnistUncond100Epoch.pth", token=HF_TOKEN)
+        repo_id=HF_REPO_ID, filename="MNIST/MnistUncond100Epoch.pth",
+        token=HF_TOKEN)
 
     cond_model = CircularAngleConsistencyModel(
-        nfeatures=2, img_features=784, eps=0.002, nunits=128, depth=5, device=str(device))
+        nfeatures=2, img_features=784, eps=0.002,
+        nunits=128, depth=5, device=str(device))
     ckpt = torch.load(cond_path, map_location=device)
     cond_model.load_state_dict(ckpt['model_state_dict'])
     cond_model.eval()
@@ -490,113 +488,100 @@ def run_config(cfg, args, smoke_test=False):
         num_train_timesteps=1000, beta_schedule='squaredcos_cap_v2')
     print("Generative models ready ✓")
 
-    # ── load classifier (shared checkpoint, trained once) ─────────────────
+    # ── classifier ───────────────────────────────────────────────────────
     classifier = load_or_train_classifier(device)
 
-    # ── experiments ───────────────────────────────────────────────────────
+    # ── run ───────────────────────────────────────────────────────────────
     seeds = range(2) if smoke_test else range(N_SEEDS)
 
-    experiments = {
-        "Bimodal": {
-            "mog_means":     [torch.tensor([180], dtype=torch.float64),
-                              torch.tensor([360], dtype=torch.float64)],
-            "mog_variances": [torch.tensor([[bimodal_var]], dtype=torch.float64),
-                              torch.tensor([[bimodal_var]], dtype=torch.float64)],
-            "weights":       torch.tensor([0.5, 0.5], dtype=torch.float64),
-        },
-        "Unimodal": {
-            "mog_means":     [torch.tensor([360], dtype=torch.float64)],
-            "mog_variances": [torch.tensor([[unimodal_var]], dtype=torch.float64)],
-            "weights":       torch.tensor([1.0], dtype=torch.float64),
-        },
-    }
+    mog_means     = [torch.tensor([360], dtype=torch.float64)]
+    mog_variances = [torch.tensor([[unimodal_var]], dtype=torch.float64)]
+    weights       = torch.tensor([1.0], dtype=torch.float64)
 
-    for exp_name, exp_cfg in experiments.items():
-        save_path, payload = run_and_save(
-            model_uncond        = uncond_model,
-            model_cond          = cond_model,
-            noise_scheduler     = noise_scheduler,
-            mog_means           = exp_cfg["mog_means"],
-            mog_variances       = exp_cfg["mog_variances"],
-            weights             = exp_cfg["weights"],
-            experiment_name     = exp_name,
-            save_dir            = save_dir,
-            seeds               = seeds,
-            nsamples            = NSAMPLES,
-            num_x_t             = NUM_X_T,
-            num_inference_steps = NUM_INFERENCE_STEPS,
-            device              = str(device),
-        )
+    save_path, payload = run_and_save(
+        model_uncond        = uncond_model,
+        model_cond          = cond_model,
+        noise_scheduler     = noise_scheduler,
+        mog_means           = mog_means,
+        mog_variances       = mog_variances,
+        weights             = weights,
+        experiment_name     = "Unimodal",
+        save_dir            = save_dir,
+        seeds               = seeds,
+        nsamples            = NSAMPLES,
+        num_x_t             = num_x_t,
+        num_inference_steps = NUM_INFERENCE_STEPS,
+        device              = str(device),
+    )
 
-        # classify and log
-        preds    = classify_images(payload['results'], classifier, device)
-        losses   = np.array(payload['loss_log'])
-        top_ix   = np.argsort(losses)[:5]
-        top_preds = [preds[i] for i in top_ix]
+    # ── classify ──────────────────────────────────────────────────────────
+    preds         = classify_images(payload['results'], classifier, device)
+    losses        = np.array(payload['loss_log'])
+    top_ix        = np.argsort(losses)[:5]
+    top_preds     = [preds[i] for i in top_ix]
+    n_classified  = sum(1 for p in preds if p is not None)
+    n_top_clf     = sum(1 for p in top_preds if p is not None)
 
-        n_classified = sum(1 for p in preds if p is not None)
-        n_top_clf    = sum(1 for p in top_preds if p is not None)
+    # ── all results figure ────────────────────────────────────────────────
+    n     = len(payload['results'])
+    ncols = min(5, n)
+    nrows = math.ceil(n / ncols)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 2.5, nrows * 3))
+    axes = np.array(axes).reshape(nrows, ncols)
+    for i, (img, loss, seed, pred) in enumerate(
+            zip(payload['results'], payload['loss_log'],
+                payload['seed_log'], preds)):
+        r, c = divmod(i, ncols)
+        axes[r, c].imshow(img.reshape(28, 28), cmap='gray')
+        axes[r, c].set_title(
+            f's{seed} | {loss:.3f}\n{pred if pred is not None else "None"}',
+            fontsize=6)
+        axes[r, c].axis('off')
+    for i in range(n, nrows * ncols):
+        r, c = divmod(i, ncols)
+        axes[r, c].axis('off')
+    plt.suptitle(f'Unimodal | uni={unimodal_var} nxt={num_x_t}', fontsize=8)
+    plt.tight_layout()
 
-        # strip figure for wandb
-        n     = len(payload['results'])
-        ncols = min(5, n)
-        nrows = math.ceil(n / ncols)
-        fig, axes = plt.subplots(nrows, ncols, figsize=(ncols*2.5, nrows*3))
-        axes = np.array(axes).reshape(nrows, ncols)
-        for i, (img, loss, seed, pred) in enumerate(
-                zip(payload['results'], payload['loss_log'], payload['seed_log'], preds)):
-            r, c = divmod(i, ncols)
-            axes[r, c].imshow(img.reshape(28, 28), cmap='gray')
-            axes[r, c].set_title(
-                f's{seed} | {loss:.3f}\n{pred if pred is not None else "None"}',
-                fontsize=6)
-            axes[r, c].axis('off')
-        for i in range(n, nrows*ncols):
-            r, c = divmod(i, ncols)
-            axes[r, c].axis('off')
-        plt.suptitle(f'{exp_name} | bi={bimodal_var} uni={unimodal_var}', fontsize=8)
-        plt.tight_layout()
+    # ── top-5 figure ──────────────────────────────────────────────────────
+    k = len(top_ix)
+    fig_top, axes_top = plt.subplots(1, k, figsize=(k * 2.5, 3))
+    axes_top = np.array(axes_top).reshape(k)
+    for rank, idx in enumerate(top_ix):
+        axes_top[rank].imshow(
+            payload['results'][idx].reshape(28, 28), cmap='gray')
+        axes_top[rank].set_title(
+            f'#{rank+1} | s{payload["seed_log"][idx]}\n'
+            f'loss={losses[idx]:.3f} | '
+            f'{preds[idx] if preds[idx] is not None else "None"}',
+            fontsize=7)
+        axes_top[rank].axis('off')
+    plt.suptitle(f'Unimodal Top-5 | uni={unimodal_var} nxt={num_x_t}', fontsize=8)
+    plt.tight_layout()
 
-        # top-5 figure
-        top_ix = np.argsort(losses)[:5]
-        k = len(top_ix)
-        fig_top, axes_top = plt.subplots(1, k, figsize=(k * 2.5, 3))
-        axes_top = np.array(axes_top).reshape(k)
-        for rank, idx in enumerate(top_ix):
-            axes_top[rank].imshow(payload['results'][idx].reshape(28, 28), cmap='gray')
-            axes_top[rank].set_title(
-                f'#{rank + 1} | s{payload["seed_log"][idx]}\n'
-                f'loss={losses[idx]:.3f} | {preds[idx] if preds[idx] is not None else "None"}',
-                fontsize=7
-            )
-            axes_top[rank].axis('off')
-        plt.suptitle(f'{exp_name} Top-5 | bi={bimodal_var} uni={unimodal_var}', fontsize=8)
-        plt.tight_layout()
+    # ── wandb log ─────────────────────────────────────────────────────────
+    wandb.log({
+        "swd_mean":       float(losses.mean()),
+        "swd_std":        float(losses.std()),
+        "swd_top5_mean":  float(losses[top_ix].mean()),
+        "pct_classified": 100. * n_classified / n,
+        "pct_top5_clf":   100. * n_top_clf / k,
+        "images_all":     wandb.Image(fig),
+        "images_top5":    wandb.Image(fig_top),
+        "unimodal_var":   unimodal_var,
+        "num_x_t":        num_x_t,
+    })
+    plt.close(fig)
+    plt.close(fig_top)
 
-        wandb.log({
-            f"{exp_name}/swd_mean": float(losses.mean()),
-            f"{exp_name}/swd_std": float(losses.std()),
-            f"{exp_name}/swd_top5_mean": float(losses[top_ix].mean()),
-            f"{exp_name}/pct_classified": 100. * n_classified / n,
-            f"{exp_name}/pct_top5_clf": 100. * n_top_clf / len(top_ix),
-            f"{exp_name}/images_all": wandb.Image(fig),
-            f"{exp_name}/images_top5": wandb.Image(fig_top),
-            f"{exp_name}/bimodal_var": bimodal_var,
-            f"{exp_name}/unimodal_var": unimodal_var,
-        })
-        plt.close(fig)
-        plt.close(fig_top)
-
-
-        print(f"[{exp_name}] classified {n_classified}/{n} | top-5 clf {n_top_clf}/5")
-
+    print(f"[Unimodal] classified {n_classified}/{n} | top-5 clf {n_top_clf}/5")
     wandb.finish()
 
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("--config_id",             type=int,  default=0)
-    p.add_argument("--wandb_entity",          type=str,  default="")
+    p.add_argument("--config_id",             type=int, default=0)
+    p.add_argument("--wandb_entity",          type=str, default="")
     p.add_argument("--list_configs",          action="store_true")
     p.add_argument("--smoke_test",            action="store_true")
     p.add_argument("--train_classifier_only", action="store_true")
@@ -605,7 +590,7 @@ if __name__ == "__main__":
     if args.list_configs:
         print(f"Total configs: {len(CONFIGS)}")
         for i, c in enumerate(CONFIGS):
-            print(f"  [{i:2d}] bimodal_var={c['bimodal_var']:3d}  unimodal_var={c['unimodal_var']:3d}")
+            print(f"  [{i:3d}] unimodal_var={c['unimodal_var']:3d}  num_x_t={c['num_x_t']:2d}")
         sys.exit(0)
 
     if args.train_classifier_only:

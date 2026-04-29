@@ -333,6 +333,8 @@ def optimize_LGD(model_uncond, model_cond_cm, noise_scheduler,
         log_me = -torch.logsumexp(torch.stack(losses), dim=0) + math.log(num_x_t)
         grad   = torch.autograd.grad(log_me, x_t, retain_graph=True)[0]
         with torch.no_grad():
+            if t<200:
+                step_size=0
             x_t = x_t_minus_1.detach().clone() - step_size * grad
 
     # Final DDIM step

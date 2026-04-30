@@ -75,7 +75,7 @@ NORM_STD  = 0.3081
 STEP_SIZE_MODES = ['original', 'dps', 'half', 'double', 'no_linear',"multiply2"]
 
 NSAMPLES_LIST           = [ 1500]
-NUM_INFERENCE_STEPS_LIST = [90,110,290,310]
+NUM_INFERENCE_STEPS_LIST = [250,260,270,280]
 NUM_X_T_LIST            = [10,]
 
 CONFIGS = [

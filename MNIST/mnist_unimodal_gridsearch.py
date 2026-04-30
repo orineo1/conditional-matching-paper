@@ -65,15 +65,15 @@ NORM_STD  = 0.3081
 
 # Digits of interest for unimodal (mode at 360° ≈ 0° → digit "0", rotationally
 # symmetric digits: 0, 1, 2, 3, 5, 7, 8)
-UNIMODAL_DIGITS_OF_INTEREST = [0, 1, 2, 3, 5, 7, 8]
+UNIMODAL_DIGITS_OF_INTEREST = [2, 3, 5, 7]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Grid
 # ─────────────────────────────────────────────────────────────────────────────
-STEP_SIZE_MODES          = ['original', 'dps', 'half', 'double', 'no_linear']
-UNIMODAL_VAR_LIST        = [200, 252, 300, 400, 500, 600, 800]
-NUM_INFERENCE_STEPS_LIST = [100, 200, 300, 400, 500]
-NUM_X_T_LIST             = [3, 5, 10, 15, 20]
+STEP_SIZE_MODES          = [  'half', 'double', 'no_linear']
+UNIMODAL_VAR_LIST        = [495,505,515,525]
+NUM_INFERENCE_STEPS_LIST = [100,200,300]
+NUM_X_T_LIST             = [3,10, 20]
 
 CONFIGS = [
     {

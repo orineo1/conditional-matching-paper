@@ -72,10 +72,10 @@ NORM_STD  = 0.3081
 # double    : 2.0 * (r_t / (1+r_t^2) + 5*t/1000)
 # no_linear : r_t / (1 + r_t^2)                     (drop the t-linear term)
 
-STEP_SIZE_MODES = ['original', 'dps', 'half', 'double', 'no_linear']
+STEP_SIZE_MODES = ['original', 'dps', 'half', 'double', 'no_linear',"multiply2"]
 
-NSAMPLES_LIST           = [ 1000, 1500, 2000]
-NUM_INFERENCE_STEPS_LIST = [100, 200, 300, 400]
+NSAMPLES_LIST           = [ 1500]
+NUM_INFERENCE_STEPS_LIST = [90,110,290,310]
 NUM_X_T_LIST            = [10,]
 
 CONFIGS = [
@@ -268,6 +268,8 @@ def compute_step_size(r_t, t, mode):
     t     : int timestep (0–999)
     mode  : one of STEP_SIZE_MODES
     """
+    if mode == 'multiply2':
+        return 2*(r_t / (1 + r_t**2) + 5 * t / 1000)
     if mode == 'original':
         return r_t / (1 + r_t**2) + 5 * t / 1000
     elif mode == 'dps':

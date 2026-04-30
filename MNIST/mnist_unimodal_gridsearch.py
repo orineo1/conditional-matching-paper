@@ -70,9 +70,9 @@ UNIMODAL_DIGITS_OF_INTEREST = [2, 3, 5, 7]
 # ─────────────────────────────────────────────────────────────────────────────
 # Grid
 # ─────────────────────────────────────────────────────────────────────────────
-STEP_SIZE_MODES          = [  'half', 'double', 'no_linear',"doubleLinear"]
+STEP_SIZE_MODES          = [  "tripleLinear"]
 UNIMODAL_VAR_LIST        = [495,505,515,525]
-NUM_INFERENCE_STEPS_LIST = [140,150,160]
+NUM_INFERENCE_STEPS_LIST = [100,120,130,140,150]
 NUM_X_T_LIST             = [3]
 
 CONFIGS = [
@@ -317,6 +317,8 @@ def compute_step_size(r_t, t, mode):
         return 1.0 / (r_t + 1e-8) * 0.1
     elif mode == 'half':
         return 0.5 * (r_t / (1 + r_t**2) + 5 * t / 1000)
+    elif mode == 'tripleLinear':
+        return  (r_t / (1 + r_t**2) + 15 * t / 1000)
     elif mode == 'doubleLinear':
         return  (r_t / (1 + r_t**2) + 10 * t / 1000)
     elif mode == 'double':

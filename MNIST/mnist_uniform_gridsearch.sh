@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=48G
 #SBATCH --partition=salmon
-#SBATCH --array=0-59   # 4 nsamples × 5 steps × 5 ss_modes × 5 num_x_t = 500
+#SBATCH --array=0-29   # 4 nsamples × 5 steps × 5 ss_modes × 5 num_x_t = 500
 
 # ── 1. Environment ─────────────────────────────────────────────────────────
 export ENV_PATH="/sci/labs/orzuk/ori_m/dps_env"

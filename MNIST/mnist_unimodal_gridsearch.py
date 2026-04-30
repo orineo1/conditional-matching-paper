@@ -72,7 +72,7 @@ UNIMODAL_DIGITS_OF_INTEREST = [2, 3, 5, 7]
 # ─────────────────────────────────────────────────────────────────────────────
 STEP_SIZE_MODES          = [  'half', 'double', 'no_linear',"doubleLinear"]
 UNIMODAL_VAR_LIST        = [495,505,515,525]
-NUM_INFERENCE_STEPS_LIST = [110,120,130]
+NUM_INFERENCE_STEPS_LIST = [140,150,160]
 NUM_X_T_LIST             = [3]
 
 CONFIGS = [

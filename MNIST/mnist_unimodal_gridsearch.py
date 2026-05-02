@@ -70,9 +70,9 @@ UNIMODAL_DIGITS_OF_INTEREST = [2, 3, 5, 7]
 # ─────────────────────────────────────────────────────────────────────────────
 # Grid
 # ─────────────────────────────────────────────────────────────────────────────
-STEP_SIZE_MODES          = [  "tripleLinear"]
-UNIMODAL_VAR_LIST        = [495,505,515,525]
-NUM_INFERENCE_STEPS_LIST = [100,120,130,140,150]
+STEP_SIZE_MODES          = ["double","tripleLinear"]
+UNIMODAL_VAR_LIST        = [512,514,516,518]
+NUM_INFERENCE_STEPS_LIST = [125,128,130,132,134]
 NUM_X_T_LIST             = [3]
 
 CONFIGS = [

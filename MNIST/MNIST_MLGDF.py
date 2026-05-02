@@ -59,7 +59,7 @@ N_SEEDS     = 15
 GLOBAL_SEED = 42
 
 HF_TOKEN   = os.environ.get("HF_TOKEN", "")
-HF_REPO_ID = "Orineo/conditional-matching-paper"
+HF_REPO_ID = "https://huggingface.co/anon-submission-cdm/cdm-inverse-design/"
 
 CLF_PATH  = os.path.join(REPO_ROOT, "MNIST", "checkpoints", "robust_classifier.pth")
 NORM_MEAN = 0.1307
@@ -684,10 +684,10 @@ def main():
 
     print("Downloading conditional model...")
     cond_path = hf_hub_download(
-        repo_id=HF_REPO_ID, filename="MNIST/MnistConditional500Epoch.pt", token=HF_TOKEN)
+        repo_id=HF_REPO_ID, filename="MnistConditional500Epoch.pt", token=HF_TOKEN)
     print("Downloading unconditional model...")
     uncond_path = hf_hub_download(
-        repo_id=HF_REPO_ID, filename="MNIST/MnistUncond100Epoch.pth", token=HF_TOKEN)
+        repo_id=HF_REPO_ID, filename="MnistUncond100Epoch.pth", token=HF_TOKEN)
 
     cond_model = CircularAngleConsistencyModel(
         nfeatures=2, img_features=784, eps=0.002,

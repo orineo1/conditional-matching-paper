@@ -72,11 +72,11 @@ NORM_STD  = 0.3081
 # double    : 2.0 * (r_t / (1+r_t^2) + 5*t/1000)
 # no_linear : r_t / (1 + r_t^2)                     (drop the t-linear term)
 
-STEP_SIZE_MODES = ['original', 'dps', 'half', 'double', 'no_linear',"multiply2"]
+STEP_SIZE_MODES = ['original', 'half','no_linear',]
 
-NSAMPLES_LIST           = [ 1500]
-NUM_INFERENCE_STEPS_LIST = [250,260,270,280]
-NUM_X_T_LIST            = [10,]
+NSAMPLES_LIST           = [ 600,1500,2000]
+NUM_INFERENCE_STEPS_LIST = [290]
+NUM_X_T_LIST            = [3,5,10,20]
 
 CONFIGS = [
     {

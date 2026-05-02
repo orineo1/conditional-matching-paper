@@ -75,17 +75,21 @@ UNIMODAL_VAR_LIST        = [512,514,516,518]
 NUM_INFERENCE_STEPS_LIST = [125,128,130,132,134]
 NUM_X_T_LIST             = [3]
 
+CLAMP_LIST = [ True]
+
 CONFIGS = [
     {
         "unimodal_var":        uv,
         "num_inference_steps": nsteps,
         "step_size_mode":      ssm,
         "num_x_t":             nxt,
+        "clamp":               clamp,
     }
     for uv     in UNIMODAL_VAR_LIST
     for nsteps in NUM_INFERENCE_STEPS_LIST
     for ssm    in STEP_SIZE_MODES
     for nxt    in NUM_X_T_LIST
+    for clamp  in CLAMP_LIST
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -334,7 +338,7 @@ def compute_step_size(r_t, t, mode):
 def optimize_LGD_unimodal(model_uncond, model_cond_cm, noise_scheduler,
                            mog_means, mog_variances, weights,
                            nsamples, num_x_t, num_inference_steps,
-                           step_size_mode, device, seed=None):
+                           step_size_mode, device, seed=None,clamp=False):
 
     if seed is not None:
         set_seed(seed)
@@ -377,8 +381,10 @@ def optimize_LGD_unimodal(model_uncond, model_cond_cm, noise_scheduler,
         grad   = torch.autograd.grad(log_me, x_t, retain_graph=True)[0]
         with torch.no_grad():
             x_t = x_t_minus_1.detach().clone() - step_size * grad
+            if clamp:  # ← add
+                x_t = x_t.clamp(-1.0, 1.0)
 
-    # Final DDIM step
+                # Final DDIM step
     with torch.no_grad():
         last_t = timesteps[-1]
         res    = model_uncond(x_t, torch.tensor([last_t], device=device))
@@ -412,7 +418,7 @@ def run_and_save(model_uncond, model_cond, noise_scheduler,
                  mog_means, mog_variances, weights,
                  nsamples, num_x_t, num_inference_steps, step_size_mode,
                  experiment_name, save_dir,
-                 seeds=range(15), device='cuda'):
+                 seeds=range(15), device='cuda', clamp=False):
 
     os.makedirs(save_dir, exist_ok=True)
     print(f'\n{"="*60}\n  EXPERIMENT: {experiment_name}\n{"="*60}')
@@ -435,6 +441,7 @@ def run_and_save(model_uncond, model_cond, noise_scheduler,
             step_size_mode      = step_size_mode,
             device              = device,
             seed                = seed,
+            clamp=clamp
         )
         elapsed  = time.time() - t0
         loss_val = loss.item()
@@ -481,6 +488,8 @@ def run_config(cfg, args, smoke_test=False):
     num_inference_steps = cfg["num_inference_steps"]
     step_size_mode      = cfg["step_size_mode"]
     num_x_t             = cfg["num_x_t"]
+    clamp = cfg["clamp"]
+
     # nsamples fixed for unimodal
     nsamples = 1500
 
@@ -489,7 +498,7 @@ def run_config(cfg, args, smoke_test=False):
           f"ss_mode={step_size_mode}  num_x_t={num_x_t}")
     print(f"Device: {device}\n{'='*65}\n")
 
-    run_name = f"uni_var{unimodal_var}_st{num_inference_steps}_ss{step_size_mode}_xt{num_x_t}"
+    run_name = f"uni_var{unimodal_var}_st{num_inference_steps}_ss{step_size_mode}_xt{num_x_t}_cl{int(clamp)}"  # ← add _cl{int(clamp)}
     save_dir = os.path.join(
         REPO_ROOT, "MNIST", "results", "unimodal_gridsearch", run_name)
 
@@ -506,6 +515,8 @@ def run_config(cfg, args, smoke_test=False):
             "global_seed":         GLOBAL_SEED,
             "smoke_test":          smoke_test,
             "experiment":          "unimodal",
+            "clamp": clamp,
+
         },
         name   = run_name,
         tags   = ["mnist", "unimodal", "gridsearch"],
@@ -562,6 +573,8 @@ def run_config(cfg, args, smoke_test=False):
         save_dir            = save_dir,
         seeds               = seeds,
         device              = str(device),
+        clamp=clamp,
+
     )
 
     # ── classify ──────────────────────────────────────────────────────────
@@ -676,6 +689,8 @@ def run_config(cfg, args, smoke_test=False):
         "config/num_inference_steps": num_inference_steps,
         "config/step_size_mode":      step_size_mode,
         "config/num_x_t":             num_x_t,
+        "config/clamp": int(clamp),
+
     }
     # per-digit counts (all seeds and top-5)
     for d in UNIMODAL_DIGITS_OF_INTEREST:

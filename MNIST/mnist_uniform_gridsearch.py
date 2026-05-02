@@ -77,9 +77,11 @@ STEP_SIZE_MODES = [
                    "double"]
 
 NSAMPLES_LIST           = [ 1000]
-NUM_INFERENCE_STEPS_LIST = [290,
-                            # 300,
-                            400]
+NUM_INFERENCE_STEPS_LIST = [
+    # 290,
+                            300,
+                            # 400
+]
 NUM_X_T_LIST            = [3,10,20]
 CLAMP_LIST = [True]
 

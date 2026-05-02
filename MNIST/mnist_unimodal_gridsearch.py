@@ -70,9 +70,9 @@ UNIMODAL_DIGITS_OF_INTEREST = [2, 3, 5, 7]
 # ─────────────────────────────────────────────────────────────────────────────
 # Grid
 # ─────────────────────────────────────────────────────────────────────────────
-STEP_SIZE_MODES          = ["original","half","double","no_linear"]
-UNIMODAL_VAR_LIST        = [485,495,505,515]
-NUM_INFERENCE_STEPS_LIST = [200,290,300]
+STEP_SIZE_MODES          = ["original","half"]
+UNIMODAL_VAR_LIST        = [400,410,420,430,440,450,460,470]
+NUM_INFERENCE_STEPS_LIST = [300]
 NUM_X_T_LIST             = [3,10]
 
 CLAMP_LIST = [ True]

@@ -2,10 +2,12 @@
 mnist_uniform_gridsearch.py
 ===========================
 Uniform experiment — grid search over:
-  - NSAMPLES              : [500, 1000, 1500, 2000]
-  - NUM_INFERENCE_STEPS   : [100, 200, 300, 400, 500]
-  - STEP_SIZE_MODE        : ['original', 'dps', 'half', 'double', 'no_linear']
-  - NUM_X_T               : [3, 5, 10, 15, 20]
+  - NSAMPLES              : [600, 1500, 2000]
+  - NUM_INFERENCE_STEPS   : [290]
+  - STEP_SIZE_MODE        : ['original', 'half', 'no_linear']
+  - NUM_X_T               : [3, 5, 10, 20]
+  - CLAMP                 : [False, True]           ← NEW
+  - EARLY_STOP_PATIENCE   : [None, 10, 20]          ← NEW
 
 W&B project: mnist_uniform_gridsearch
 
@@ -66,17 +68,12 @@ NORM_STD  = 0.3081
 # ─────────────────────────────────────────────────────────────────────────────
 # Step-size modes
 # ─────────────────────────────────────────────────────────────────────────────
-# original  : r_t / (1 + r_t^2) + 5*t/1000         (current code)
-# dps       : 1 / (r_t * sqrt(2*pi))                (DPS-style: 1/sigma * scale)
-# half      : 0.5 * (r_t / (1+r_t^2) + 5*t/1000)
-# double    : 2.0 * (r_t / (1+r_t^2) + 5*t/1000)
-# no_linear : r_t / (1 + r_t^2)                     (drop the t-linear term)
-
-STEP_SIZE_MODES = ['original', 'half','no_linear',]
-
-NSAMPLES_LIST           = [ 600,1500,2000]
+STEP_SIZE_MODES          = ['original', 'half']
+NSAMPLES_LIST            = [1500]
 NUM_INFERENCE_STEPS_LIST = [290]
-NUM_X_T_LIST            = [3,5,10,20]
+NUM_X_T_LIST             = [3, 10]
+CLAMP_LIST               = [False, True]           # ← NEW
+EARLY_STOP_PATIENCE_LIST = [None, 10, 20]          # ← NEW  (None = disabled)
 
 CONFIGS = [
     {
@@ -84,11 +81,15 @@ CONFIGS = [
         "num_inference_steps": nsteps,
         "step_size_mode":      ssm,
         "num_x_t":             nxt,
+        "clamp":               clamp,
+        "early_stop_patience": esp,
     }
-    for ns    in NSAMPLES_LIST
+    for ns     in NSAMPLES_LIST
     for nsteps in NUM_INFERENCE_STEPS_LIST
-    for ssm   in STEP_SIZE_MODES
-    for nxt   in NUM_X_T_LIST
+    for ssm    in STEP_SIZE_MODES
+    for nxt    in NUM_X_T_LIST
+    for clamp  in CLAMP_LIST
+    for esp    in EARLY_STOP_PATIENCE_LIST
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -273,14 +274,12 @@ def compute_step_size(r_t, t, mode):
     if mode == 'original':
         return r_t / (1 + r_t**2) + 5 * t / 1000
     elif mode == 'dps':
-        # DPS-style: step proportional to 1/sigma  (sigma = r_t)
         return 1.0 / (r_t + 1e-8) * 0.1
     elif mode == 'half':
         return 0.5 * (r_t / (1 + r_t**2) + 5 * t / 1000)
     elif mode == 'double':
         return 2.0 * (r_t / (1 + r_t**2) + 5 * t / 1000)
     elif mode == 'no_linear':
-        # drop the t-linear term that was causing step size blow-up
         return r_t / (1 + r_t**2)
     else:
         raise ValueError(f"Unknown step_size_mode: {mode}")
@@ -302,8 +301,17 @@ def sliced_wasserstein_distance(X, Y, n_projections=50, device='cpu'):
 # ─────────────────────────────────────────────────────────────────────────────
 def optimize_LGD_uniform(model_uncond, model_cond_cm, noise_scheduler,
                          nsamples, num_x_t, num_inference_steps,
-                         step_size_mode, device, seed=None):
-
+                         step_size_mode, device, seed=None,
+                         clamp=False, early_stop_patience=None):
+    """
+    Returns
+    -------
+    x_final    : (1,1,28,28) tensor
+    final_loss : scalar tensor
+    swd_history: list of per-step SWD proxy values (for W&B step chart)
+    stopped_at : int — which timestep index early stopping fired (or num_inference_steps-1)
+    pixel_stats: dict with per-step mean/std lists (for diagnosing dimming)
+    """
     if seed is not None:
         set_seed(seed)
 
@@ -312,6 +320,17 @@ def optimize_LGD_uniform(model_uncond, model_cond_cm, noise_scheduler,
     timesteps = ddim.timesteps
 
     x_t = torch.randn(1, 1, 28, 28, device=device, requires_grad=True)
+
+    # ── early-stopping state ──────────────────────────────────────────────
+    best_loss     = float('inf')
+    patience_left = early_stop_patience   # None → never triggered
+    best_x_t      = None
+    stopped_at    = len(timesteps) - 1    # default: ran all steps
+
+    # ── per-step diagnostics ──────────────────────────────────────────────
+    swd_history   = []   # SWD proxy at each step
+    pixel_mean_hist = [] # pixel mean  (dimming diagnostic)
+    pixel_std_hist  = [] # pixel std   (contrast diagnostic)
 
     for i, t in enumerate(timesteps[:-1]):
         x_t      = x_t.detach().clone().requires_grad_(True)
@@ -340,12 +359,45 @@ def optimize_LGD_uniform(model_uncond, model_cond_cm, noise_scheduler,
                 n_projections=50, device=device,
             ))
 
-        log_me = -torch.logsumexp(torch.stack(losses), dim=0) + math.log(num_x_t)
-        grad   = torch.autograd.grad(log_me, x_t, retain_graph=True)[0]
+        log_me   = -torch.logsumexp(torch.stack(losses), dim=0) + math.log(num_x_t)
+        step_swd = (-log_me).item()   # positive SWD proxy for monitoring
+        swd_history.append(step_swd)
+
+        grad = torch.autograd.grad(log_me, x_t, retain_graph=True)[0]
+
         with torch.no_grad():
             if t < 250:
                 step_size = 0
             x_t = x_t_minus_1.detach().clone() - step_size * grad
+
+            # ── clamp to diffusion model space ────────────────────────────
+            # Score model trained in ~[-1, 1]; clamping here prevents drift
+            # toward gray that causes the dimming artefact.
+            if clamp:
+                x_t = x_t.clamp(-1.0, 1.0)
+
+        # ── record pixel diagnostics ──────────────────────────────────────
+        with torch.no_grad():
+            pixel_mean_hist.append(x_t.mean().item())
+            pixel_std_hist.append(x_t.std().item())
+
+        # ── early stopping ────────────────────────────────────────────────
+        if early_stop_patience is not None:
+            if step_swd < best_loss:
+                best_loss     = step_swd
+                best_x_t      = x_t.detach().clone()
+                patience_left = early_stop_patience   # reset
+            else:
+                patience_left -= 1
+                if patience_left <= 0:
+                    print(f"    [early stop] fired at step {i} / {len(timesteps)-1}")
+                    stopped_at = i
+                    x_t = best_x_t   # restore best iterate
+                    break
+
+    # if early stopping never improved anything, fall back to last x_t
+    if best_x_t is None:
+        best_x_t = x_t
 
     # Final DDIM step
     with torch.no_grad():
@@ -371,7 +423,52 @@ def optimize_LGD_uniform(model_uncond, model_cond_cm, noise_scheduler,
     if str(device) == 'cuda':
         torch.cuda.empty_cache()
 
-    return x_final, final_loss
+    pixel_stats = {
+        "pixel_mean": pixel_mean_hist,
+        "pixel_std":  pixel_std_hist,
+    }
+
+    return x_final, final_loss, swd_history, stopped_at, pixel_stats
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Helper: make the per-step SWD curve figure
+# ─────────────────────────────────────────────────────────────────────────────
+def _make_step_curve_figure(swd_history, pixel_mean_hist, pixel_std_hist,
+                            stopped_at, seed, experiment_name):
+    steps = list(range(len(swd_history)))
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+
+    # SWD proxy
+    axes[0].plot(steps, swd_history, color='steelblue', linewidth=1.5)
+    if stopped_at < len(steps) - 1:
+        axes[0].axvline(stopped_at, color='red', linestyle='--',
+                        linewidth=1.2, label=f'early stop @ {stopped_at}')
+        axes[0].legend(fontsize=7)
+    axes[0].set_xlabel('Diffusion step')
+    axes[0].set_ylabel('SWD proxy')
+    axes[0].set_title(f'SWD proxy per step | seed={seed}')
+    axes[0].grid(True, alpha=0.3)
+
+    # pixel mean
+    axes[1].plot(steps, pixel_mean_hist, color='darkorange', linewidth=1.5)
+    axes[1].axhline(0, color='gray', linestyle=':', linewidth=1)
+    axes[1].set_xlabel('Diffusion step')
+    axes[1].set_ylabel('Pixel mean')
+    axes[1].set_title(f'Pixel mean per step | seed={seed}')
+    axes[1].grid(True, alpha=0.3)
+
+    # pixel std  (contrast)
+    axes[2].plot(steps, pixel_std_hist, color='seagreen', linewidth=1.5)
+    axes[2].set_xlabel('Diffusion step')
+    axes[2].set_ylabel('Pixel std')
+    axes[2].set_title(f'Pixel std (contrast) per step | seed={seed}')
+    axes[2].grid(True, alpha=0.3)
+
+    plt.suptitle(experiment_name, fontsize=8)
+    plt.tight_layout()
+    return fig
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # run_and_save
@@ -379,17 +476,25 @@ def optimize_LGD_uniform(model_uncond, model_cond_cm, noise_scheduler,
 def run_and_save(model_uncond, model_cond, noise_scheduler,
                  nsamples, num_x_t, num_inference_steps, step_size_mode,
                  experiment_name, save_dir,
+                 clamp=False, early_stop_patience=None,
                  seeds=range(15), device='cuda'):
 
     os.makedirs(save_dir, exist_ok=True)
     print(f'\n{"="*60}\n  EXPERIMENT: {experiment_name}\n{"="*60}')
 
-    results, loss_log, seed_log, time_log = [], [], [], []
+    results         = []
+    loss_log        = []
+    seed_log        = []
+    time_log        = []
+    swd_hist_log    = []   # list-of-lists: one SWD curve per seed
+    pixel_mean_log  = []   # list-of-lists
+    pixel_std_log   = []   # list-of-lists
+    stopped_at_log  = []   # int per seed
 
     for seed in seeds:
         print(f'[Seed {seed:2d}] optimizing...', end='  ', flush=True)
         t0 = time.time()
-        x_final, loss = optimize_LGD_uniform(
+        x_final, loss, swd_history, stopped_at, pixel_stats = optimize_LGD_uniform(
             model_uncond        = model_uncond,
             model_cond_cm       = model_cond,
             noise_scheduler     = noise_scheduler,
@@ -399,14 +504,22 @@ def run_and_save(model_uncond, model_cond, noise_scheduler,
             step_size_mode      = step_size_mode,
             device              = device,
             seed                = seed,
+            clamp               = clamp,
+            early_stop_patience = early_stop_patience,
         )
         elapsed  = time.time() - t0
         loss_val = loss.item()
+
         results.append(x_final.squeeze().cpu().numpy())
         loss_log.append(loss_val)
         seed_log.append(seed)
         time_log.append(elapsed)
-        print(f'loss = {loss_val:.4f}  time = {elapsed:.1f}s')
+        swd_hist_log.append(swd_history)
+        pixel_mean_log.append(pixel_stats["pixel_mean"])
+        pixel_std_log.append(pixel_stats["pixel_std"])
+        stopped_at_log.append(stopped_at)
+
+        print(f'loss = {loss_val:.4f}  stopped_at = {stopped_at}  time = {elapsed:.1f}s')
 
     # uniform target PDF
     x_range_np    = np.linspace(0, 360, 200)
@@ -418,10 +531,16 @@ def run_and_save(model_uncond, model_cond, noise_scheduler,
         'num_x_t':             num_x_t,
         'num_inference_steps': num_inference_steps,
         'step_size_mode':      step_size_mode,
+        'clamp':               clamp,
+        'early_stop_patience': early_stop_patience,
         'results':             results,
         'loss_log':            loss_log,
         'seed_log':            seed_log,
         'time_log':            time_log,
+        'swd_hist_log':        swd_hist_log,
+        'pixel_mean_log':      pixel_mean_log,
+        'pixel_std_log':       pixel_std_log,
+        'stopped_at_log':      stopped_at_log,
         'x_range':             x_range_np,
         'target_pdf':          target_pdf_np,
         'use_uniform':         True,
@@ -436,6 +555,7 @@ def run_and_save(model_uncond, model_cond, noise_scheduler,
     print(f'Best   → seed {seed_log[best_i]}, loss {loss_log[best_i]:.4f}')
     return save_path, payload
 
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Main run_config
 # ─────────────────────────────────────────────────────────────────────────────
@@ -447,13 +567,19 @@ def run_config(cfg, args, smoke_test=False):
     num_inference_steps = cfg["num_inference_steps"]
     step_size_mode      = cfg["step_size_mode"]
     num_x_t             = cfg["num_x_t"]
+    clamp               = cfg["clamp"]
+    early_stop_patience = cfg["early_stop_patience"]
+
+    esp_str = str(early_stop_patience) if early_stop_patience is not None else "off"
 
     print(f"\n{'='*65}")
     print(f"Config: nsamples={nsamples}  steps={num_inference_steps}  "
-          f"ss_mode={step_size_mode}  num_x_t={num_x_t}")
+          f"ss_mode={step_size_mode}  num_x_t={num_x_t}  "
+          f"clamp={clamp}  early_stop={esp_str}")
     print(f"Device: {device}\n{'='*65}\n")
 
-    run_name = f"unif_ns{nsamples}_st{num_inference_steps}_ss{step_size_mode}_xt{num_x_t}"
+    run_name = (f"unif_ns{nsamples}_st{num_inference_steps}_ss{step_size_mode}"
+                f"_xt{num_x_t}_cl{int(clamp)}_esp{esp_str}")
     save_dir = os.path.join(
         REPO_ROOT, "MNIST", "results", "uniform_gridsearch", run_name)
 
@@ -465,13 +591,17 @@ def run_config(cfg, args, smoke_test=False):
             "num_inference_steps": num_inference_steps,
             "step_size_mode":      step_size_mode,
             "num_x_t":             num_x_t,
+            "clamp":               clamp,
+            "early_stop_patience": early_stop_patience,
             "n_seeds":             N_SEEDS,
             "global_seed":         GLOBAL_SEED,
             "smoke_test":          smoke_test,
             "experiment":          "uniform",
         },
         name   = run_name,
-        tags   = ["mnist", "uniform", "gridsearch"],
+        tags   = ["mnist", "uniform", "gridsearch",
+                  f"clamp={'on' if clamp else 'off'}",
+                  f"esp={esp_str}"],
         reinit = True,
     )
 
@@ -518,6 +648,8 @@ def run_config(cfg, args, smoke_test=False):
         step_size_mode      = step_size_mode,
         experiment_name     = experiment_name,
         save_dir            = save_dir,
+        clamp               = clamp,
+        early_stop_patience = early_stop_patience,
         seeds               = seeds,
         device              = str(device),
     )
@@ -538,12 +670,17 @@ def run_config(cfg, args, smoke_test=False):
     n_top_clf_as_0    = sum(1 for p in top_preds if p == 0)
     top5_conf_mean    = float(np.mean([c for c in top_confs]))
 
+    # early-stop stats
+    stopped_at_arr = np.array(payload['stopped_at_log'])
+    n_early_stopped = int((stopped_at_arr < num_inference_steps - 1).sum())
+
     print(f"\n--- Classification Summary ---")
     print(f"  Total classified     : {n_classified}/{n}")
     print(f"  Classified as 0      : {n_classified_as_0}/{n}")
     print(f"  Top-5 classified     : {n_top_clf}/5")
     print(f"  Top-5 classified as 0: {n_top_clf_as_0}/5")
     print(f"  Top-5 mean conf      : {top5_conf_mean:.3f}")
+    print(f"  Early-stopped seeds  : {n_early_stopped}/{n}")
 
     # ── all seeds figure ──────────────────────────────────────────────────
     ncols = min(5, n)
@@ -565,7 +702,7 @@ def run_config(cfg, args, smoke_test=False):
         axes[r, c].axis('off')
     plt.suptitle(
         f'Uniform | ns={nsamples} steps={num_inference_steps} '
-        f'ss={step_size_mode} xt={num_x_t}',
+        f'ss={step_size_mode} xt={num_x_t} clamp={clamp} esp={esp_str}',
         fontsize=7)
     plt.tight_layout()
     fig_all = fig
@@ -584,7 +721,7 @@ def run_config(cfg, args, smoke_test=False):
         axes_top[rank].axis('off')
     plt.suptitle(
         f'Uniform Top-5 | ns={nsamples} steps={num_inference_steps} '
-        f'ss={step_size_mode} xt={num_x_t}',
+        f'ss={step_size_mode} xt={num_x_t} clamp={clamp} esp={esp_str}',
         fontsize=7)
     plt.tight_layout()
     fig_top5 = fig_top
@@ -599,23 +736,98 @@ def run_config(cfg, args, smoke_test=False):
     ax_loss.set_ylabel('SWD loss')
     ax_loss.set_title(
         f'Uniform SWD per seed | ns={nsamples} steps={num_inference_steps} '
-        f'ss={step_size_mode} xt={num_x_t}')
+        f'ss={step_size_mode} xt={num_x_t} clamp={clamp} esp={esp_str}')
     ax_loss.legend()
     ax_loss.grid(True, alpha=0.3)
     plt.tight_layout()
+    fig_loss_seed = fig_loss
 
-    # ── W&B log — images FIRST so they appear at top of run page ──────────
+    # ── NEW: per-step SWD curves (one per seed, overlaid) ─────────────────
+    fig_swd_steps, ax_swd_steps = plt.subplots(figsize=(10, 5))
+    for seed_i, (swd_hist, stopped_at) in enumerate(
+            zip(payload['swd_hist_log'], payload['stopped_at_log'])):
+        steps = list(range(len(swd_hist)))
+        ax_swd_steps.plot(steps, swd_hist, alpha=0.5, linewidth=1,
+                          label=f's{payload["seed_log"][seed_i]}')
+        if stopped_at < len(swd_hist) - 1:
+            ax_swd_steps.axvline(stopped_at, color='red', alpha=0.3,
+                                 linestyle='--', linewidth=0.8)
+    ax_swd_steps.set_xlabel('Diffusion step')
+    ax_swd_steps.set_ylabel('SWD proxy')
+    ax_swd_steps.set_title(
+        f'SWD proxy per diffusion step | clamp={clamp} esp={esp_str}')
+    ax_swd_steps.legend(fontsize=6, ncol=3)
+    ax_swd_steps.grid(True, alpha=0.3)
+    plt.tight_layout()
+
+    # ── NEW: pixel mean + std evolution (median across seeds) ─────────────
+    mean_arr = np.array([m for m in payload['pixel_mean_log']
+                         if len(m) > 0])
+    std_arr  = np.array([s for s in payload['pixel_std_log']
+                         if len(s) > 0])
+
+    fig_pixel, axes_px = plt.subplots(1, 2, figsize=(12, 4))
+    if mean_arr.size > 0:
+        med_mean = np.median(mean_arr, axis=0)
+        q1_mean  = np.percentile(mean_arr, 25, axis=0)
+        q3_mean  = np.percentile(mean_arr, 75, axis=0)
+        xs = list(range(len(med_mean)))
+        axes_px[0].plot(xs, med_mean, color='darkorange', linewidth=1.5,
+                        label='median')
+        axes_px[0].fill_between(xs, q1_mean, q3_mean, alpha=0.25,
+                                color='darkorange', label='IQR')
+        axes_px[0].axhline(0, color='gray', linestyle=':', linewidth=1)
+        axes_px[0].set_xlabel('Diffusion step')
+        axes_px[0].set_ylabel('Pixel mean')
+        axes_px[0].set_title(f'Pixel mean (dimming diagnostic) | clamp={clamp}')
+        axes_px[0].legend(fontsize=7)
+        axes_px[0].grid(True, alpha=0.3)
+
+    if std_arr.size > 0:
+        med_std = np.median(std_arr, axis=0)
+        q1_std  = np.percentile(std_arr, 25, axis=0)
+        q3_std  = np.percentile(std_arr, 75, axis=0)
+        xs = list(range(len(med_std)))
+        axes_px[1].plot(xs, med_std, color='seagreen', linewidth=1.5,
+                        label='median')
+        axes_px[1].fill_between(xs, q1_std, q3_std, alpha=0.25,
+                                color='seagreen', label='IQR')
+        axes_px[1].set_xlabel('Diffusion step')
+        axes_px[1].set_ylabel('Pixel std')
+        axes_px[1].set_title(f'Pixel std / contrast | clamp={clamp}')
+        axes_px[1].legend(fontsize=7)
+        axes_px[1].grid(True, alpha=0.3)
+
+    plt.suptitle(experiment_name, fontsize=8)
+    plt.tight_layout()
+
+    # ── W&B log ───────────────────────────────────────────────────────────
     wandb.log({
-        # images first → appear at top of W&B run page
+        # ── images ──────────────────────────────────────────────────────
         "images/top5":              wandb.Image(fig_top5),
         "images/all_seeds":         wandb.Image(fig_all),
-        "images/swd_per_seed":      wandb.Image(fig_loss),
-        # core metrics
+        "images/swd_per_seed":      wandb.Image(fig_loss_seed),
+        "images/swd_per_step":      wandb.Image(fig_swd_steps),    # ← NEW
+        "images/pixel_stats":       wandb.Image(fig_pixel),        # ← NEW
+
+        # ── core SWD metrics ────────────────────────────────────────────
         "swd/mean":                 float(losses.mean()),
         "swd/std":                  float(losses.std()),
         "swd/min":                  float(losses.min()),
         "swd/top5_mean":            float(losses[top_ix].mean()),
-        # classification metrics
+
+        # ── early-stopping metrics ──────────────────────────────────────  ← NEW
+        "early_stop/n_triggered":   n_early_stopped,
+        "early_stop/mean_stop_step": float(stopped_at_arr.mean()),
+        "early_stop/min_stop_step":  int(stopped_at_arr.min()),
+
+        # ── pixel quality metrics (final images) ────────────────────────  ← NEW
+        "pixel/final_mean_median":  float(np.median([
+            img.mean() for img in payload['results']])),
+        "pixel/final_std_median":   float(np.median([
+            img.std() for img in payload['results']])),
+
+        # ── classification metrics ──────────────────────────────────────
         "clf/n_classified":         n_classified,
         "clf/n_classified_as_0":    n_classified_as_0,
         "clf/pct_classified":       100. * n_classified / n,
@@ -623,15 +835,21 @@ def run_config(cfg, args, smoke_test=False):
         "clf/n_top5_classified":    n_top_clf,
         "clf/n_top5_as_0":          n_top_clf_as_0,
         "clf/top5_conf_mean":       top5_conf_mean,
-        # config echoes for easy filtering
+
+        # ── config echoes ────────────────────────────────────────────────
         "config/nsamples":            nsamples,
         "config/num_inference_steps": num_inference_steps,
         "config/step_size_mode":      step_size_mode,
         "config/num_x_t":             num_x_t,
+        "config/clamp":               int(clamp),               # ← NEW
+        "config/early_stop_patience": early_stop_patience if early_stop_patience is not None else -1,  # ← NEW
     })
+
     plt.close(fig_all)
     plt.close(fig_top5)
-    plt.close(fig_loss)
+    plt.close(fig_loss_seed)
+    plt.close(fig_swd_steps)
+    plt.close(fig_pixel)
 
     # ── upload pkl as W&B artifact ────────────────────────────────────────
     artifact = wandb.Artifact(
@@ -657,8 +875,10 @@ if __name__ == "__main__":
     if args.list_configs:
         print(f"Total configs: {len(CONFIGS)}")
         for i, c in enumerate(CONFIGS):
+            esp_str = str(c['early_stop_patience']) if c['early_stop_patience'] is not None else "off"
             print(f"  [{i:3d}] nsamples={c['nsamples']:4d}  steps={c['num_inference_steps']:3d}  "
-                  f"ss={c['step_size_mode']:12s}  num_x_t={c['num_x_t']:2d}")
+                  f"ss={c['step_size_mode']:12s}  num_x_t={c['num_x_t']:2d}  "
+                  f"clamp={str(c['clamp']):5s}  esp={esp_str}")
         sys.exit(0)
 
     if args.train_classifier_only:

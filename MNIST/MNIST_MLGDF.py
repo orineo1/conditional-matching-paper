@@ -1,24 +1,24 @@
 """
-mnist_lgd_run.py
-================
+MNIST_MLGDF.py
+==============
 Single run for unimodal / bimodal / uniform experiments.
 All hyperparameters passed via CLI — no grid search.
 
 Usage:
-    python mnist_lgd_run.py --experiment unimodal \
+    python MNIST_MLGDF.py --experiment unimodal \
         --unimodal_var 515 --num_inference_steps 130 \
         --step_size_mode double --num_x_t 3 --nsamples 1500 --clamp
 
-    python mnist_lgd_run.py --experiment bimodal \
+    python MNIST_MLGDF.py --experiment bimodal \
         --bimodal_var 252 --num_inference_steps 125 \
         --step_size_mode original --num_x_t 10 --nsamples 1500 --clamp
 
-    python mnist_lgd_run.py --experiment uniform \
+    python MNIST_MLGDF.py --experiment uniform \
         --num_inference_steps 290 \
         --step_size_mode original --num_x_t 3 --nsamples 600 --clamp
 
 Train classifier only:
-    python mnist_lgd_run.py --train_classifier_only
+    python MNIST_MLGDF.py --train_classifier_only
 """
 
 import os, sys, math, argparse, random, time, pickle
@@ -38,10 +38,7 @@ import wandb
 # ─────────────────────────────────────────────────────────────────────────────
 # Paths
 # ─────────────────────────────────────────────────────────────────────────────
-REPO_ROOT = os.environ.get(
-    "REPO_ROOT",
-    "/sci/labs/orzuk/ori_m/conditional-matching-paper"
-)
+REPO_ROOT = os.environ.get("REPO_ROOT", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 MNIST_SRC = os.path.join(REPO_ROOT, "MNIST", "src")
 for p in [REPO_ROOT, MNIST_SRC]:
     if p not in sys.path:
@@ -50,7 +47,7 @@ for p in [REPO_ROOT, MNIST_SRC]:
 from cond_model   import CircularAngleConsistencyModel, angles_to_circular, circular_to_angles
 from uncond_model import UnconditionalUnet
 from diffusers    import DDPMScheduler, DDIMScheduler
-from huggingface_hub import hf_hub_download, login
+from huggingface_hub import hf_hub_download
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Fixed
@@ -58,6 +55,8 @@ from huggingface_hub import hf_hub_download, login
 N_SEEDS     = 15
 GLOBAL_SEED = 42
 
+# HF_TOKEN is read from the environment variable HF_TOKEN (set in your shell or .env).
+# Do NOT hardcode tokens here.
 HF_TOKEN   = os.environ.get("HF_TOKEN", "")
 HF_REPO_ID = "anon-submission-cdm/cdm-inverse-design"
 
@@ -305,7 +304,6 @@ def compute_step_size(r_t, t, mode):
 def optimize_LGD(model_uncond, model_cond_cm, noise_scheduler,
                  nsamples, num_x_t, num_inference_steps,
                  step_size_mode, device, seed=None, clamp=False,
-                 # MoG target (None → uniform)
                  mog_means=None, mog_variances=None, weights=None):
     """
     Unified optimization loop for uniform, unimodal, and bimodal targets.
@@ -341,7 +339,6 @@ def optimize_LGD(model_uncond, model_cond_cm, noise_scheduler,
                                      ts=[150., 50., 20., 10., 5., 1.])[0]
             )
             if mog_means is None:
-                # uniform target
                 ref_ang = torch.rand(nsamples, device=device) * 360.0
             else:
                 ref_ang = generate_mog_samples(
@@ -357,7 +354,7 @@ def optimize_LGD(model_uncond, model_cond_cm, noise_scheduler,
         grad   = torch.autograd.grad(log_me, x_t, retain_graph=True)[0]
 
         with torch.no_grad():
-            if mog_means is None and t < 250:   # uniform-only gate
+            if mog_means is None and t < 250:
                 step_size = 0
             x_t = x_t_minus_1.detach().clone() - step_size * grad
             if clamp:
@@ -396,7 +393,7 @@ def optimize_LGD(model_uncond, model_cond_cm, noise_scheduler,
     return x_final, final_loss
 
 # ─────────────────────────────────────────────────────────────────────────────
-# run_and_save  (shared)
+# run_and_save
 # ─────────────────────────────────────────────────────────────────────────────
 def run_and_save(model_uncond, model_cond, noise_scheduler,
                  nsamples, num_x_t, num_inference_steps, step_size_mode,
@@ -435,7 +432,6 @@ def run_and_save(model_uncond, model_cond, noise_scheduler,
         time_log.append(elapsed)
         print(f'loss = {loss_val:.4f}  time = {elapsed:.1f}s')
 
-    # build target PDF for payload
     if mog_means is not None:
         x_range_np, target_pdf_np = _build_target_mog(mog_means, mog_variances, weights)
         use_uniform = False
@@ -470,7 +466,7 @@ def run_and_save(model_uncond, model_cond, noise_scheduler,
     return save_path, payload
 
 # ─────────────────────────────────────────────────────────────────────────────
-# W&B logging + figures  (shared)
+# W&B logging + figures
 # ─────────────────────────────────────────────────────────────────────────────
 def log_results(payload, preds, confs, digits_of_interest, experiment, args):
     losses  = np.array(payload['loss_log'])
@@ -498,7 +494,7 @@ def log_results(payload, preds, confs, digits_of_interest, experiment, args):
     print(f"  Top-5 classified  : {n_top_clf}/5")
     print(f"  Top-5 mean conf   : {top5_conf_mean:.3f}")
 
-    # ── all seeds figure ──────────────────────────────────────────────────
+    # all seeds figure
     ncols = min(5, n)
     nrows = math.ceil(n / ncols)
     fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 2.5, nrows * 3))
@@ -520,7 +516,7 @@ def log_results(payload, preds, confs, digits_of_interest, experiment, args):
     plt.tight_layout()
     fig_all = fig
 
-    # ── top-5 figure ──────────────────────────────────────────────────────
+    # top-5 figure
     k = len(top_ix)
     fig_top, axes_top = plt.subplots(1, k, figsize=(k * 2.5, 3))
     axes_top = np.array(axes_top).reshape(k)
@@ -536,7 +532,7 @@ def log_results(payload, preds, confs, digits_of_interest, experiment, args):
     plt.tight_layout()
     fig_top5 = fig_top
 
-    # ── SWD per seed ──────────────────────────────────────────────────────
+    # SWD per seed
     fig_loss, ax_loss = plt.subplots(figsize=(8, 4))
     ax_loss.plot(payload['seed_log'], payload['loss_log'],
                  marker='o', linewidth=1.5, color='steelblue')
@@ -549,7 +545,7 @@ def log_results(payload, preds, confs, digits_of_interest, experiment, args):
     ax_loss.grid(True, alpha=0.3)
     plt.tight_layout()
 
-    # ── W&B ───────────────────────────────────────────────────────────────
+    # W&B
     log_dict = {
         "images/top5":            wandb.Image(fig_top5),
         "images/all_seeds":       wandb.Image(fig_all),
@@ -583,11 +579,8 @@ def log_results(payload, preds, confs, digits_of_interest, experiment, args):
 # ─────────────────────────────────────────────────────────────────────────────
 def main():
     p = argparse.ArgumentParser()
-    # ── experiment type ───────────────────────────────────────────────────
     p.add_argument("--experiment", type=str, default="unimodal",
-                   choices=["unimodal", "bimodal", "uniform"],
-                   help="Which experiment to run")
-    # ── shared hyperparameters ────────────────────────────────────────────
+                   choices=["unimodal", "bimodal", "uniform"])
     p.add_argument("--num_inference_steps", type=int,   default=130)
     p.add_argument("--step_size_mode",      type=str,   default="double")
     p.add_argument("--num_x_t",             type=int,   default=3)
@@ -595,13 +588,12 @@ def main():
     p.add_argument("--clamp",               action="store_true", default=False)
     p.add_argument("--n_seeds",             type=int,   default=15)
     p.add_argument("--smoke_test",          action="store_true")
-    # ── unimodal / bimodal specific ───────────────────────────────────────
-    p.add_argument("--unimodal_var",  type=float, default=515,
-                   help="Variance for unimodal Gaussian target")
-    p.add_argument("--bimodal_var",   type=float, default=252,
-                   help="Variance for each mode in bimodal target")
-    # ── misc ──────────────────────────────────────────────────────────────
-    p.add_argument("--wandb_entity",          type=str, default="")
+    p.add_argument("--unimodal_var",        type=float, default=515)
+    p.add_argument("--bimodal_var",         type=float, default=252)
+    p.add_argument("--wandb_entity",        type=str,   default="")
+    p.add_argument("--wandb_mode",          type=str,   default="online",
+                   choices=["online", "offline", "disabled"],
+                   help="Set to 'disabled' to skip W&B logging entirely")
     p.add_argument("--train_classifier_only", action="store_true")
     args = p.parse_args()
 
@@ -612,7 +604,6 @@ def main():
         train_classifier(device)
         sys.exit(0)
 
-    # ── build target distribution ─────────────────────────────────────────
     experiment = args.experiment
     if experiment == "unimodal":
         mog_means     = [torch.tensor([360], dtype=torch.float64)]
@@ -630,14 +621,14 @@ def main():
         digits_of_interest = BIMODAL_DIGITS_OF_INTEREST
         var_str = f"_var{int(args.bimodal_var)}"
 
-    else:  # uniform
+    else:
         mog_means     = None
         mog_variances = None
         weights       = None
         digits_of_interest = list(range(10))
         var_str = ""
 
-    clamp_str = f"_cl1" if args.clamp else "_cl0"
+    clamp_str = "_cl1" if args.clamp else "_cl0"
     run_name  = (f"{experiment}{var_str}"
                  f"_st{args.num_inference_steps}"
                  f"_ss{args.step_size_mode}"
@@ -653,41 +644,38 @@ def main():
     print(f"Device     : {device}")
     print(f"{'='*65}\n")
 
-    # ── W&B init ──────────────────────────────────────────────────────────
-    wandb_config = {
-        "experiment":          experiment,
-        "num_inference_steps": args.num_inference_steps,
-        "step_size_mode":      args.step_size_mode,
-        "num_x_t":             args.num_x_t,
-        "nsamples":            args.nsamples,
-        "clamp":               args.clamp,
-        "n_seeds":             args.n_seeds,
-        "global_seed":         GLOBAL_SEED,
-        "smoke_test":          args.smoke_test,
-    }
-    if experiment == "unimodal":
-        wandb_config["unimodal_var"] = args.unimodal_var
-    elif experiment == "bimodal":
-        wandb_config["bimodal_var"] = args.bimodal_var
-
+    os.environ["WANDB_MODE"] = args.wandb_mode
     wandb.init(
         project = f"mnist_{experiment}_run",
         entity  = args.wandb_entity or None,
-        config  = wandb_config,
-        name    = run_name,
-        tags    = ["mnist", experiment, "single-run"],
-        reinit  = True,
+        config  = {
+            "experiment":          experiment,
+            "num_inference_steps": args.num_inference_steps,
+            "step_size_mode":      args.step_size_mode,
+            "num_x_t":             args.num_x_t,
+            "nsamples":            args.nsamples,
+            "clamp":               args.clamp,
+            "n_seeds":             args.n_seeds,
+            "global_seed":         GLOBAL_SEED,
+            "smoke_test":          args.smoke_test,
+            **({"unimodal_var": args.unimodal_var} if experiment == "unimodal" else {}),
+            **({"bimodal_var":  args.bimodal_var}  if experiment == "bimodal"  else {}),
+        },
+        name   = run_name,
+        tags   = ["mnist", experiment, "single-run"],
+        reinit = "finish_previous",
     )
 
-    # ── load models ───────────────────────────────────────────────────────
-    login(token=HF_TOKEN, add_to_git_credential=False)
-
+    # Load pretrained models from HuggingFace
+    # Set HF_TOKEN in your environment: export HF_TOKEN=<your_token>
     print("Downloading conditional model...")
     cond_path = hf_hub_download(
-        repo_id=HF_REPO_ID, filename="MnistConditional500Epoch.pt", token=HF_TOKEN)
+        repo_id=HF_REPO_ID, filename="MnistConditional500Epoch.pt",
+        token=HF_TOKEN or None)
     print("Downloading unconditional model...")
     uncond_path = hf_hub_download(
-        repo_id=HF_REPO_ID, filename="MnistUncond100Epoch.pth", token=HF_TOKEN)
+        repo_id=HF_REPO_ID, filename="MnistUncond100Epoch.pth",
+        token=HF_TOKEN or None)
 
     cond_model = CircularAngleConsistencyModel(
         nfeatures=2, img_features=784, eps=0.002,
@@ -707,7 +695,6 @@ def main():
 
     classifier = load_or_train_classifier(device)
 
-    # ── run ───────────────────────────────────────────────────────────────
     seeds = range(2) if args.smoke_test else range(args.n_seeds)
 
     save_path, payload = run_and_save(
@@ -729,10 +716,8 @@ def main():
     )
 
     preds, confs = classify_generated_images(payload['results'], classifier, device)
-
     log_results(payload, preds, confs, digits_of_interest, experiment, args)
 
-    # ── upload artifact ───────────────────────────────────────────────────
     artifact = wandb.Artifact(f'{experiment}_run_{run_name}', type='results')
     artifact.add_file(save_path)
     wandb.log_artifact(artifact)

@@ -1,5 +1,5 @@
 """
-lgd_visualization.py
+MLGDF_visualization.py
 ====================
 Visualization & evaluation script for the LGD MNIST experiments.
 
@@ -8,7 +8,7 @@ robust classifier, downloads the conditional model from HuggingFace, then
 produces all plots and the final results table.
 
 Usage (local):
-    python lgd_visualization.py
+    python MLGDF_visualization.py
 
 Usage (Colab):
     Set HF_TOKEN and GITHUB_TOKEN in Colab secrets, then run.

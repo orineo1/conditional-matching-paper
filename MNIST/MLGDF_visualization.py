@@ -444,7 +444,7 @@ def main():
     # ── Conditional model ────────────────────────────────────────────────────
     cond_pt = os.path.join(ckpt_dir, 'MnistConditional500Epoch.pt')
     if not os.path.exists(cond_pt):
-        alt = os.path.join(MNIST_DIR, 'checkpoints_and_results', 'MnistConditional500Epoch.pt')
+        alt = os.path.join(MNIST_DIR, 'checkpoints', 'MnistConditional500Epoch.pt')
         if os.path.exists(alt):
             cond_pt = alt
         else:

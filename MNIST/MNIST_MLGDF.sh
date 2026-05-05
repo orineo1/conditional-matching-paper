@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --job-name=mnist-lgd
-#SBATCH --output=logs/lgd_%j.log
-#SBATCH --error=logs/lgd_%j.err
+#SBATCH --job-name=mnist-MLGDF
+#SBATCH --output=logs/MLGDF_%j.log
+#SBATCH --error=logs/MLGDF_%j.err
 #SBATCH --time=12:00:00
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4

@@ -105,23 +105,11 @@ def run_dps_step_clip(
     """
     Compute DPS gradient via CLIP-MMD guidance.
 
-    Gradient flows: latents_step → UNet → pred_x0 → VAE decode → pixels
-                    → sprinter (num_variations times) → VAE decode → CLIP → MMD
+    Gradient flows: latents_step -> UNet -> pred_x0 -> VAE(fp32) -> pixel_x0_norm
+                    -> sprinter (num_variations times) -> VAE decode -> CLIP -> MMD
 
-    Args:
-        latents_step: current latent (requires_grad=True)
-        pixel_x0_norm: decoded pred_x0 in [0,1], used as sprinter conditioning
-        sprinter: ControlNet pipeline
-        all_clip_embeddings: [N, 768] target CLIP embeddings (detached)
-        num_variations: number of sprinter samples for MMD estimate
-        variation_batch_size: sprinter batch size (1 recommended for VRAM)
-        base_zeta_prime: DPS step size numerator (zeta = base_zeta / loss_norm)
-        clip_model, clip_processor: frozen CLIP model
-        vae: sprinter VAE for decoding variation latents
-        vae_scaling_factor: sprinter.vae.config.scaling_factor
-        variation_prompt: text prompt for sprinter variations
-        loss_fn: callable(x, y) → scalar loss (compute_mmd or compute_swd)
-        loss_scale: multiply loss before grad computation
+    pixel_x0_norm is passed directly into each checkpoint call so the autograd
+    graph from latents_step is preserved all the way to the loss.
 
     Returns:
         grad, loss_scaled, zeta_i, loss_norm, variation_clip_embs_np
@@ -131,15 +119,16 @@ def run_dps_step_clip(
     device = pixel_x0_norm.device
     clip_model.to(device)
 
-    variation_clip_list = []
-    for start_idx in range(0, num_variations, variation_batch_size):
-        end_idx = min(start_idx + variation_batch_size, num_variations)
-        bs = end_idx - start_idx
-        ctrl_batch = pixel_x0_norm[0].unsqueeze(0).repeat(bs, 1, 1, 1)
+    print(f"      [grad] pixel_x0_norm.requires_grad={pixel_x0_norm.requires_grad}  "
+          f"grad_fn={pixel_x0_norm.grad_fn}", flush=True)
 
+    variation_clip_list = []
+    for _ in range(num_variations):
+
+        # pixel_x0_norm is passed as the checkpoint input so grad flows through it
         def sprinter_vae_clip_forward(ctrl):
             var_latents = sprinter(
-                prompt=[variation_prompt] * ctrl.shape[0],
+                prompt=[variation_prompt],
                 image=ctrl,
                 num_inference_steps=2,
                 guidance_scale=0.0,
@@ -150,20 +139,28 @@ def run_dps_step_clip(
             var_pixels = vae.decode(
                 (var_latents.float() / vae_scaling_factor).to(vae.dtype)
             ).sample
-            var_pixels = torch.clamp((var_pixels.float() + 1.0) / 2.0, 0.0, 1.0)
-            with torch.cuda.amp.autocast(enabled=False):
+            var_pixels = (var_pixels.float() + 1.0) / 2.0
+            var_pixels = var_pixels.clamp(0.0, 1.0)
+            with torch.amp.autocast("cuda", enabled=False):
                 return encode_images_clip(var_pixels.float(), clip_model, clip_processor)
 
         var_clip = torch.utils.checkpoint.checkpoint(
-            sprinter_vae_clip_forward, ctrl_batch, use_reentrant=False
+            sprinter_vae_clip_forward, pixel_x0_norm, use_reentrant=False
         )
         variation_clip_list.append(var_clip)
+
+    print(f"      [grad] var_clip.requires_grad={var_clip.requires_grad}  "
+          f"grad_fn={var_clip.grad_fn}", flush=True)
 
     variation_clip_embs = torch.cat(variation_clip_list, dim=0)
     torch.cuda.empty_cache()
 
     loss_value = loss_fn(variation_clip_embs, all_clip_embeddings.detach())
     loss_scaled = loss_value * loss_scale
+
+    print(f"      [grad] loss_scaled.requires_grad={loss_scaled.requires_grad}  "
+          f"grad_fn={loss_scaled.grad_fn}", flush=True)
+
     loss_norm = loss_scaled.detach()
     zeta_i = base_zeta_prime / loss_norm
 

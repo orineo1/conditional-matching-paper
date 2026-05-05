@@ -98,7 +98,7 @@ cd "$REPO_ROOT/MNIST"
 CLF="$REPO_ROOT/MNIST/checkpoints/robust_classifier.pth"
 if [ ! -f "$CLF" ]; then
     echo "No classifier found — training..."
-    python MNIST_MLGDF.py --train_classifier_only
+    python run_mlgdf.py --train_classifier_only
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════

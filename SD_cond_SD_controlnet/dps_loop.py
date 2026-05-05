@@ -300,16 +300,19 @@ def run_mlgdf_loop(
                 scheduler_regular, noise_pred_regular, t, latents_step_regular
             )
 
-        # Decode pred_x0 → pixel space (keep grad for MLGD-F path)
-        pred_x0_scaled = pred_x0 / architect.vae.config.scaling_factor
+        # Decode pred_x0 → pixel space (keep grad for MLGD-F path).
+        # VAE must be float32 for gradient to flow — cast it temporarily.
+        architect.vae.to(dtype=torch.float32)
+        pred_x0_scaled = pred_x0.float() / architect.vae.config.scaling_factor
 
         def vae_decode_checkpoint(lat):
-            return architect.vae.decode(lat.to(architect.vae.dtype)).sample
+            return architect.vae.decode(lat).sample
 
         pixel_x0 = torch.utils.checkpoint.checkpoint(
             vae_decode_checkpoint, pred_x0_scaled, use_reentrant=False
         )
-        pixel_x0_norm = torch.clamp((pixel_x0 + 1.0) / 2.0, 0.0, 1.0)
+        pixel_x0_norm = (pixel_x0 + 1.0) / 2.0
+        pixel_x0_norm = pixel_x0_norm.clamp(0.0, 1.0)
 
         # CLIP-MMD gradient
         grad, loss_value, zeta_i, loss_norm, vl_clip_flat = run_dps_step_clip(
@@ -333,6 +336,9 @@ def run_mlgdf_loop(
         zeta_val = zeta_i.item() if isinstance(zeta_i, torch.Tensor) else zeta_i
         print(f"  loss={loss_value.item():.6f}  "
               f"ζi={zeta_val:.4f}  ∥∇∥={grad_norm:.6f}", flush=True)
+
+        # Restore architect VAE to float16 now that gradient has been computed
+        architect.vae.to(dtype=torch.float16)
 
         if torch.isnan(grad).any():
             print(f"  WARNING: NaN in gradient at step {i} — skipping correction",

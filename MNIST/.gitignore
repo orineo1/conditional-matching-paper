@@ -1,0 +1,31 @@
+# Credentials — NEVER commit these
+.env
+*.env
+secrets.sh
+
+# Model checkpoints and results (large files)
+checkpoints/
+results/
+wandb/
+data/
+
+# Logs
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Plots generated at runtime
+plots/
+
+# OS
+.DS_Store

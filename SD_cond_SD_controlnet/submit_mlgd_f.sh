@@ -49,7 +49,7 @@ python scripts/run_mlgd_f.py \
     --loss_scale 1.0 \
     --bandwidth_scale 1.0 \
     --kernel_alpha 1.0 \
-    --architect_model_id "stabilityai/sdxl-turbo" \
+#    --architect_model_id "stabilityai/sdxl-turbo" \
     --sprinter_model_id "stabilityai/sdxl-turbo" \
     --controlnet_model_id "xinsir/controlnet-scribble-sdxl-1.0" \
     --seed 1

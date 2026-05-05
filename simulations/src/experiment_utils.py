@@ -62,7 +62,8 @@ def get_environment_info():
         "cuda_available": torch.cuda.is_available(),
         "cuda_version": torch.version.cuda if torch.cuda.is_available() else None,
         "device_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu",
-        "package_versions": versions,
+        "packages": versions,
+
     }
 
 
@@ -152,6 +153,34 @@ def load_model_checkpoint(model, model_name: str, save_dir: str,
     return True
 
 
+from huggingface_hub import hf_hub_download
+
+HF_REPO_ID = "anon-submission-cdm/cdm-inverse-design"
+
+
+def load_checkpoint_with_hf_fallback(model, model_name, checkpoint_dir, experiment_name, seed, device):
+    """Load checkpoint locally, or download from HuggingFace if not found."""
+    local_path = os.path.join(checkpoint_dir, f"{experiment_name}_{model_name}_seed{seed}.pt")
+
+    if not os.path.exists(local_path):
+        print(f"[Checkpoint] Not found locally, downloading from HuggingFace...")
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        hf_path = f"simulations/checkpoints/{experiment_name}/{experiment_name}_{model_name}_seed{seed}.pt"
+        try:
+            downloaded = hf_hub_download(
+                repo_id=HF_REPO_ID,
+                filename=hf_path,
+                local_dir=os.path.dirname(os.path.dirname(os.path.dirname(checkpoint_dir))),  # add one more dirname
+                local_dir_use_symlinks=False,
+            )
+            print(f"[Checkpoint] Downloaded to {downloaded}")
+        except Exception as e:
+            print(f"[Checkpoint] HuggingFace download failed: {e}")
+            return False
+
+    return load_model_checkpoint(model, model_name, checkpoint_dir, experiment_name, seed, device)
+
+
 # ============================================================
 # RESULTS SUMMARY HELPERS
 # ============================================================
@@ -190,69 +219,3 @@ def top10_stats(name, final_loss, l2_gmm, l2_x, times):
     }
 
 
-# ============================================================
-# RESULTS SAVING
-# ============================================================
-
-def to_python(val):
-    """Convert tensors/numpy to plain Python for JSON serialization."""
-    if isinstance(val, torch.Tensor):
-        return val.detach().cpu().tolist()
-    if isinstance(val, np.ndarray):
-        return val.tolist()
-    if hasattr(val, "item"):
-        return val.item()
-    return val
-
-
-def save_results_json(results: dict, save_dir: str,
-                      experiment_name: str, seed: int):
-    """Save optimization results to JSON."""
-    path = os.path.join(
-        save_dir,
-        f"{experiment_name}_results_seed{seed}.json"
-    )
-    with open(path, "w") as f:
-        json.dump(results, f, indent=2)
-    print(f"[Results] Saved to {path}")
-    return path
-
-
-def build_results_dict(
-    experiment_name, seed, env_info,
-    best_x_t_LGD_list,    final_loss_LGD,       l2_gmm_LGD_list,    l2_x_LGD_list,    lgd_times,
-    best_x_t_LGD_CM_list, final_loss_LGD_CM,    l2_gmm_LGD_CM_list, l2_x_LGD_CM_list, lgd_cm_times,
-    x_optim_dflow_list,   final_loss_dflow_list, l2_gmm_dflow_list,  l2_x_dflow_list,  dflow_times,
-    n_attemp_optim, nsamples_in_optim_for_mmd, x_star
-):
-    return {
-        "experiment":  experiment_name,
-        "seed":        seed,
-        "environment": env_info,
-        "LGD": {
-            "x_pred":     [to_python(x) for x in best_x_t_LGD_list],
-            "final_loss": [to_python(l) for l in final_loss_LGD],
-            "l2_gmm":     l2_gmm_LGD_list,
-            "l2_x":       l2_x_LGD_list,
-            "times":      lgd_times,
-        },
-        "LGD-CM": {
-            "x_pred":     [to_python(x) for x in best_x_t_LGD_CM_list],
-            "final_loss": [to_python(l) for l in final_loss_LGD_CM],
-            "l2_gmm":     l2_gmm_LGD_CM_list,
-            "l2_x":       l2_x_LGD_CM_list,
-            "times":      lgd_cm_times,
-        },
-        "D-Flow": {
-            "x_pred":     [to_python(x) for x in x_optim_dflow_list],
-            "final_loss": [to_python(l) for l in final_loss_dflow_list],
-            "l2_gmm":     l2_gmm_dflow_list,
-            "l2_x":       l2_x_dflow_list,
-            "times":      dflow_times,
-        },
-        "meta": {
-            "n_attemp_optim":            n_attemp_optim,
-            "nsamples_in_optim_for_mmd": nsamples_in_optim_for_mmd,
-            "x_star":                    to_python(x_star),
-        },
-    }

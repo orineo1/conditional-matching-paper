@@ -59,7 +59,7 @@ N_SEEDS     = 15
 GLOBAL_SEED = 42
 
 HF_TOKEN   = os.environ.get("HF_TOKEN", "")
-HF_REPO_ID = "https://huggingface.co/anon-submission-cdm/cdm-inverse-design/"
+HF_REPO_ID = "anon-submission-cdm/cdm-inverse-design"
 
 CLF_PATH  = os.path.join(REPO_ROOT, "MNIST", "checkpoints", "robust_classifier.pth")
 NORM_MEAN = 0.1307

@@ -1,8 +1,5 @@
 import matplotlib.pyplot as plt
-import numpy as np
-import torch
 from sklearn.decomposition import PCA
-from image_utils import latent_to_pil
 import wandb
 import matplotlib.cm as cm
 
@@ -21,7 +18,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from sklearn.decomposition import PCA
-from image_utils import latent_to_pil
+from SD_cond_SD_controlnet.src.image_utils import latent_to_pil
 import wandb
 
 def plot_row(images, title, count=5, save_path=None):

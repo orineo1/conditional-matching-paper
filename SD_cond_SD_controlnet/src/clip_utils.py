@@ -4,10 +4,7 @@ from transformers import CLIPModel, CLIPProcessor
 
 
 def load_clip_model(device, model_id="openai/clip-vit-large-patch14"):
-    """
-    Load and freeze CLIP model.
-    Returns (clip_model, clip_processor).
-    """
+    """Load and freeze CLIP ViT-L/14. Returns (clip_model, clip_processor)."""
     clip_processor = CLIPProcessor.from_pretrained(model_id)
     clip_model = CLIPModel.from_pretrained(model_id).to(device)
     clip_model.eval()
@@ -18,16 +15,19 @@ def load_clip_model(device, model_id="openai/clip-vit-large-patch14"):
 
 def encode_images_clip(pixel_tensor, clip_model, clip_processor):
     """
-    Encode a batch of images through CLIP.
-    pixel_tensor: [B, 3, H, W] float, values in [0, 1]
-    Returns: [B, 768] normalized embeddings (differentiable w.r.t pixel_tensor)
+    Encode a batch of images through CLIP (differentiable).
+
+    Args:
+        pixel_tensor: [B, 3, H, W] float in [0, 1]
+    Returns:
+        [B, 768] L2-normalized embeddings
     """
-    # Resize to 224x224 — differentiable
     resized = F.interpolate(pixel_tensor, size=(224, 224), mode="bilinear", align_corners=False)
 
-    # Normalize with CLIP's own mean/std
-    mean = torch.tensor([0.48145466, 0.4578275,  0.40821073], device=pixel_tensor.device).view(1, 3, 1, 1)
-    std  = torch.tensor([0.26862954, 0.26130258, 0.27577711], device=pixel_tensor.device).view(1, 3, 1, 1)
+    mean = torch.tensor([0.48145466, 0.4578275, 0.40821073],
+                        device=pixel_tensor.device).view(1, 3, 1, 1)
+    std = torch.tensor([0.26862954, 0.26130258, 0.27577711],
+                       device=pixel_tensor.device).view(1, 3, 1, 1)
     normalized = (resized - mean) / std
 
     emb = clip_model.vision_model(pixel_values=normalized).pooler_output

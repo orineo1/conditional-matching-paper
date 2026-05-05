@@ -71,7 +71,7 @@ from classifier import load_or_train_classifier
 from cond_model import (
     CircularAngleConsistencyModel, angles_to_circular, circular_to_angles
 )
-from MNIST_MLGDF import (
+from run_mlgdf import (
     mog_pdf,
     classify_generated_images,
     sliced_wasserstein_distance,

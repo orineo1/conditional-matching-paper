@@ -57,7 +57,7 @@ export ENV_PATH=/path/to/venv    # Your Python environment (for SLURM scripts)
 
 ```bash
 cd MNIST/
-python MNIST_MLGDF.py \
+python run_mlgdf.py \
     --experiment unimodal \
     --smoke_test \
     --wandb_mode disabled
@@ -67,7 +67,7 @@ python MNIST_MLGDF.py \
 
 **Unimodal target** (digits upright, near 0°):
 ```bash
-python MNIST_MLGDF.py \
+python run_mlgdf.py \
     --experiment unimodal \
     --unimodal_var 515 \
     --num_inference_steps 130 \
@@ -79,7 +79,7 @@ python MNIST_MLGDF.py \
 
 **Bimodal target** (digits valid at 0° and 180°):
 ```bash
-python MNIST_MLGDF.py \
+python run_mlgdf.py \
     --experiment bimodal \
     --bimodal_var 252 \
     --num_inference_steps 125 \
@@ -91,7 +91,7 @@ python MNIST_MLGDF.py \
 
 **Uniform target** (digits valid at any angle):
 ```bash
-python MNIST_MLGDF.py \
+python run_mlgdf.py \
     --experiment uniform \
     --num_inference_steps 290 \
     --step_size_mode original \
@@ -110,7 +110,7 @@ Edit `MNIST_MLGDF.sh` to set your partition name, then:
 export REPO_ROOT=/path/to/repo
 export ENV_PATH=/path/to/your/env
 export HF_TOKEN=hf_...
-sbatch MNIST_MLGDF.sh
+sbatch run_mlgdf.sh
 ```
 
 Monitor:
@@ -125,7 +125,7 @@ If the classifier checkpoint is missing, it is trained automatically.
 You can also trigger this explicitly:
 
 ```bash
-python MNIST_MLGDF.py --train_classifier_only
+python run_mlgdf.py --train_classifier_only
 ```
 
 ## Visualization
@@ -133,7 +133,7 @@ python MNIST_MLGDF.py --train_classifier_only
 After running an experiment, visualize results with:
 
 ```bash
-python MLGDF_visualization.py \
+python visualize.py \
     --results_dir results/unimodal_run/unimodal_var515_st130_ssdouble_xt3_ns1500_cl0/
 ```
 
@@ -157,7 +157,7 @@ Edit `MLGDF_visualization.sh` to set `RESULTS_DIR` and your partition, then:
 
 ```bash
 export HF_TOKEN=hf_...
-sbatch MLGDF_visualization.sh
+sbatch visualize.sh
 ```
 
 ## W&B Logging
@@ -166,7 +166,7 @@ Results are logged to Weights & Biases by default.
 To disable:
 
 ```bash
-python MNIST_MLGDF.py --experiment unimodal --wandb_mode disabled
+python run_mlgdf.py --experiment unimodal --wandb_mode disabled
 ```
 
 Or set `WANDB_MODE=disabled` in your environment.

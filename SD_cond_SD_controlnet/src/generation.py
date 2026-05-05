@@ -48,7 +48,19 @@ def generate_and_store(pipe, prompt, sobel_cond_pil, num_samples, batch_size=2):
 
 def generate_and_store_cs(pipe, prompt, cond_pil, num_samples,
                           batch_size=2, cn_scale=0.5):
-    """generate_and_store with configurable controlnet_conditioning_scale."""
+    """generate_and_store with configurable controlnet_conditioning_scale.
+
+    cond_pil may be None — in that case a blank white 512×512 PIL image is
+    used as a neutral ControlNet conditioning (mimics the old placeholder
+    behaviour that run_gender.py and run_age.py rely on for the unconditioned
+    first-pass target generation before HED extraction).
+    """
+    from PIL import Image as _PILImage
+    if cond_pil is None:
+        print("  [generate_and_store_cs] cond_pil is None — using blank white 512×512",
+              flush=True)
+        cond_pil = _PILImage.new("RGB", (512, 512), color=(255, 255, 255))
+
     original_vae_dtype = pipe.vae.dtype
     pipe.vae.to(dtype=torch.float16)
     all_images, all_lats = [], []

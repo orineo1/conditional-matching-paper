@@ -1,8 +1,11 @@
 torch>=2.0.0
 numpy
-flow_matching
-POT
 matplotlib
 pandas
 tqdm
 scikit-learn
+scipy
+flow_matching
+POT
+jupyter
+ipykernel

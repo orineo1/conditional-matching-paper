@@ -152,6 +152,33 @@ def load_model_checkpoint(model, model_name: str, save_dir: str,
     return True
 
 
+from huggingface_hub import hf_hub_download
+
+HF_REPO_ID = "anon-submission-cdm/cdm-inverse-design"
+
+
+def load_checkpoint_with_hf_fallback(model, model_name, checkpoint_dir, experiment_name, seed, device):
+    """Load checkpoint locally, or download from HuggingFace if not found."""
+    local_path = os.path.join(checkpoint_dir, f"{experiment_name}_{model_name}_seed{seed}.pt")
+
+    if not os.path.exists(local_path):
+        print(f"[Checkpoint] Not found locally, downloading from HuggingFace...")
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        hf_path = f"simulations/checkpoints/{experiment_name}/{experiment_name}_{model_name}_seed{seed}.pt"
+        try:
+            downloaded = hf_hub_download(
+                repo_id=HF_REPO_ID,
+                filename=hf_path,
+                local_dir=os.path.dirname(os.path.dirname(checkpoint_dir)),  # simulations/
+                local_dir_use_symlinks=False,
+            )
+            print(f"[Checkpoint] Downloaded to {downloaded}")
+        except Exception as e:
+            print(f"[Checkpoint] HuggingFace download failed: {e}")
+            return False
+
+    return experiment_utils.load_model_checkpoint(model, model_name, checkpoint_dir, experiment_name, seed, device)
+
 # ============================================================
 # RESULTS SUMMARY HELPERS
 # ============================================================

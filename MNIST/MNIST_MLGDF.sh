@@ -26,7 +26,7 @@ NUM_INFERENCE_STEPS=130
 STEP_SIZE_MODE="double"          # original | half | double | tripleLinear | doubleLinear | no_linear | dps
 NUM_X_T=3
 NSAMPLES=1500
-CLAMP=true                       # true | false
+CLAMP=false                       # true | false
 
 # ── Misc ──────────────────────────────────────────────────────────────────────
 SMOKE_TEST=false                 # true = 2 seeds only, for quick debug

@@ -1,3 +1,22 @@
+"""
+models.py — load Architect + Sprinter pipelines.
+
+Critical fix vs old src/models.py:
+  The sprinter's StableDiffusionXLControlNetPipeline.__call__ is decorated with
+  @torch.no_grad() by diffusers. This kills gradients through the sprinter during
+  the DPS variation forward pass.
+
+  We monkey-patch __call__ to call __wrapped__ (the original undecorated function)
+  so that when run_dps_step_clip calls sprinter(...) inside a gradient checkpoint,
+  autograd can differentiate through the sprinter VAE decode all the way back to
+  pixel_x0_norm → pred_x0 → latents_step.
+
+  Without this patch: var_latents.requires_grad = False  (broken)
+  With this patch:    var_latents.requires_grad = True   (working)
+
+  Source: SD_cond_SD_controlnet/models.py (working notebook version, Ori Meidler)
+"""
+
 import os
 import zipfile
 
@@ -53,6 +72,44 @@ def _resolve_lora_path(lora_path: str) -> str:
     return local_path
 
 
+def _patch_sprinter_no_grad(sprinter):
+    """
+    Remove the @torch.no_grad() wrapper from the sprinter pipeline's __call__.
+
+    diffusers wraps StableDiffusionXLControlNetPipeline.__call__ with
+    @torch.no_grad(), which detaches all outputs from the autograd graph.
+    During the DPS variation forward pass we NEED gradients to flow through
+    the sprinter's VAE decode back to pixel_x0_norm.
+
+    The original undecorated function is stored by functools.wraps as __wrapped__.
+    We replace __call__ with a lambda that calls __wrapped__ directly, bypassing
+    the no_grad decorator while keeping all other pipeline behaviour intact.
+
+    This patch is applied per-instance so it doesn't affect other pipelines.
+    """
+    original_call = StableDiffusionXLControlNetPipeline.__call__
+
+    if not hasattr(original_call, "__wrapped__"):
+        print(
+            "  [models] WARNING: sprinter __call__ has no __wrapped__ attribute. "
+            "The no_grad patch could not be applied — gradients through the "
+            "sprinter will be dead. Check your diffusers version.",
+            flush=True,
+        )
+        return
+
+    # Replace at the class level (affects all instances, but that's fine here —
+    # we only ever have one sprinter and we want this behaviour globally).
+    StableDiffusionXLControlNetPipeline.__call__ = (
+        lambda self, *args, **kwargs: original_call.__wrapped__(self, *args, **kwargs)
+    )
+    print(
+        "  [models] ✅ Sprinter no_grad patch applied — "
+        "gradients will flow through sprinter __call__.",
+        flush=True,
+    )
+
+
 def load_models(
     device,
     architect_lora_path=None,
@@ -64,8 +121,8 @@ def load_models(
     """
     Load the Architect (SDXL) and Sprinter (SDXL + ControlNet-Scribble) pipelines.
 
-    Optionally loads a fine-tuned architect U-Net or a LoRA adapter.
-    Both VAEs are cast to float32 for gradient stability.
+    Applies the no_grad bypass patch to the sprinter so that gradient checkpointing
+    in run_dps_step_clip can differentiate through it.
 
     Returns: (architect, sprinter)
     """
@@ -94,16 +151,20 @@ def load_models(
         architect.unet = UNet2DConditionModel.from_pretrained(
             architect_unet_path, torch_dtype=torch.float16,
         ).to(device)
-        print(f"Loaded fine-tuned architect U-Net from {architect_unet_path}")
+        print(f"  [models] Loaded fine-tuned architect U-Net from {architect_unet_path}",
+              flush=True)
     elif architect_lora_path:
         resolved_path = _resolve_lora_path(architect_lora_path)
         architect.unet = PeftModel.from_pretrained(architect.unet, resolved_path)
-        print(f"Loaded architect LoRA from {resolved_path}")
+        print(f"  [models] Loaded architect LoRA from {resolved_path}", flush=True)
 
     architect.vae.to(dtype=torch.float32)
     sprinter.vae.to(dtype=torch.float32)
     architect.set_progress_bar_config(disable=True)
     sprinter.set_progress_bar_config(disable=True)
+
+    # ── Critical: remove no_grad wrapper from sprinter so DPS grads survive ──
+    _patch_sprinter_no_grad(sprinter)
 
     return architect, sprinter
 

@@ -53,10 +53,6 @@ python run_age.py \
     \
     --sprinter_variation_prompt  "a superrealistic professional photograph of" \
     --sprinter_eval_prompt       "a superrealistic professional photograph of" \
-    \
-    --architect_model_id  "stabilityai/sdxl-turbo" \
-    --sprinter_model_id   "stabilityai/sdxl-turbo" \
-    --controlnet_model_id "xinsir/controlnet-scribble-sdxl-1.0" \
     --seed 1
 
 echo "Done. Outputs in $OUTPUT_DIR"

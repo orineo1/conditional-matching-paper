@@ -66,8 +66,8 @@ def parse_args():
     p.add_argument("--output_dir",          type=str, default="output/mlgd_f_run")
     p.add_argument("--lora_path",           type=str, default=None)
     p.add_argument("--architect_unet_path", type=str, default=None)
-    p.add_argument("--wandb_project",       type=str, default="mlgd_f")
-    p.add_argument("--wandb_entity",        type=str, default="conditional-matching")
+    p.add_argument("--wandb_project",       type=str, default="MLGDF-EXP")
+    p.add_argument("--wandb_entity",        type=str, default="")
 
     # Scheduler / loop
     p.add_argument("--n_steps",    type=int, default=30)
@@ -310,7 +310,7 @@ def main():
 
     run = wandb.init(
         project=args.wandb_project,
-        entity=args.wandb_entity,
+        entity=args.wandb_entity or None,  # None = use whoever is logged in
         config={
             "prompt":                       args.prompt,
             "negative_prompt":              args.negative_prompt,

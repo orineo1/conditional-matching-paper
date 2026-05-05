@@ -104,7 +104,7 @@ fi
 # ══════════════════════════════════════════════════════════════════════════════
 # 7. Build and run python command
 # ══════════════════════════════════════════════════════════════════════════════
-CMD="python MNIST_MLGDF.py \
+CMD="python run_mlgdf.py \
     --experiment            $EXPERIMENT \
     --num_inference_steps   $NUM_INFERENCE_STEPS \
     --step_size_mode        $STEP_SIZE_MODE \

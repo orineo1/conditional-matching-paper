@@ -1,26 +1,10 @@
-import gc
-
-import numpy as np
 import torch
+import numpy as np
+import gc
+from metrics import compute_mmd
 
-from src.metrics import compute_mmd
 
-
-def generate_and_store_cs(pipe, prompt, cond_pil, num_samples,
-                           batch_size=2, cn_scale=0.5):
-    """
-    Generate num_samples images from the sprinter conditioned on cond_pil.
-
-    cond_pil may be None for the initial unconditioned generation pass
-    (before a real scribble is available). In that case a blank white image
-    is used as a neutral ControlNet conditioning input.
-
-    Returns: (pil_images, latents_numpy [N, flat_dim])
-    """
-    if cond_pil is None:
-        from PIL import Image
-        cond_pil = Image.new("RGB", (512, 512), color=(255, 255, 255))
-
+def generate_and_store(pipe, prompt, sobel_cond_pil, num_samples, batch_size=2):
     original_vae_dtype = pipe.vae.dtype
     pipe.vae.to(dtype=torch.float16)
     all_images, all_lats = [], []
@@ -32,6 +16,34 @@ def generate_and_store_cs(pipe, prompt, cond_pil, num_samples,
 
     for i in range(0, num_samples, batch_size):
         curr = min(batch_size, num_samples - i)
+        result = pipe(
+            prompt=[prompt] * curr, image=[sobel_cond_pil] * curr,
+            num_inference_steps=2, guidance_scale=0.0,
+            controlnet_conditioning_scale=1.0,
+            callback_on_step_end=latents_callback,
+        )
+        all_images.extend(result.images)
+        all_lats.append(pipe._current_latents.reshape(curr, -1))
+        print(f"  Progress: {len(all_images)}/{num_samples}", end="\r")
+
+    print()
+    pipe.vae.to(dtype=original_vae_dtype)
+    return all_images, np.vstack(all_lats)
+
+
+def generate_and_store_cs(pipe, prompt, cond_pil, num_samples, batch_size=2, cn_scale=0.5):
+    """generate_and_store but with configurable controlnet_conditioning_scale."""
+    original_vae_dtype = pipe.vae.dtype
+    pipe.vae.to(dtype=torch.float16)
+    all_images, all_lats = [], []
+
+    def latents_callback(p, step_index, timestep, cb_kwargs):
+        if step_index == p.num_timesteps - 1:
+            p._current_latents = cb_kwargs["latents"].detach().cpu().numpy()
+        return cb_kwargs
+
+    for i in range(0, num_samples, batch_size):
+        curr   = min(batch_size, num_samples - i)
         result = pipe(
             prompt=[prompt] * curr,
             image=[cond_pil] * curr,
@@ -49,127 +61,179 @@ def generate_and_store_cs(pipe, prompt, cond_pil, num_samples,
     return all_images, np.vstack(all_lats)
 
 
-def predict_noise_cfg(unet, scheduler, latents_in, t,
-                      encoder_states, added_cond, gs):
-    """Classifier-free guidance noise prediction."""
+def predict_noise_cfg(unet, scheduler, latents_in, t, encoder_states, added_cond, gs):
     lmi = scheduler.scale_model_input(torch.cat([latents_in] * 2), t)
-    np_out = unet(
-        lmi, t,
-        encoder_hidden_states=encoder_states,
-        added_cond_kwargs=added_cond,
-        return_dict=False,
-    )[0]
+    np_out = unet(lmi, t, encoder_hidden_states=encoder_states,
+                  added_cond_kwargs=added_cond, return_dict=False)[0]
     np_u, np_t = np_out.chunk(2)
     return np_u + gs * (np_t - np_u)
 
 
+def compute_pred_x0(scheduler, noise_pred, t, latents_in):
+    so = scheduler.step(noise_pred, t, latents_in, return_dict=True)
+    if hasattr(so, 'pred_original_sample') and so.pred_original_sample is not None:
+        return so.pred_original_sample
+    alpha = scheduler.alphas_cumprod[t.long().cpu()].to(latents_in.device)
+    return (latents_in - (1 - alpha)**0.5 * noise_pred) / alpha**0.5
+
+
 def compute_pred_x0_direct(scheduler, noise_pred, t, latents_in):
-    """
-    Compute pred_x0 without calling scheduler.step() (avoids step_index side effects).
-    Uses the diffusion formula: x0 = (x_t - sqrt(1-alpha) * eps) / sqrt(alpha)
-    """
-    if hasattr(scheduler, "alphas_cumprod"):
+    """Compute pred_x0 without calling scheduler.step() (avoids step_index side effects)."""
+    if hasattr(scheduler, 'alphas_cumprod'):
         alpha = scheduler.alphas_cumprod[t.long().cpu()].to(latents_in.device)
     else:
         sigma = scheduler.sigmas[scheduler.step_index]
-        alpha = (1 / (sigma ** 2 + 1)).to(latents_in.device)
-    return (latents_in - (1 - alpha) ** 0.5 * noise_pred) / alpha ** 0.5
+        alpha = (1 / (sigma**2 + 1)).to(latents_in.device)
+    return (latents_in - (1 - alpha)**0.5 * noise_pred) / alpha**0.5
 
 
 def denoise_step(scheduler, noise_pred, t, latents_in, correction=None):
-    """Apply one scheduler denoising step, optionally adding a DPS correction."""
-    x_t_minus_1 = scheduler.step(
-        noise_pred, t, latents_in, return_dict=True
-    ).prev_sample
+    x_t_minus_1 = scheduler.step(noise_pred, t, latents_in, return_dict=True).prev_sample
     if correction is not None:
         x_t_minus_1 = x_t_minus_1 + correction
     return x_t_minus_1.detach()
 
 
-def run_dps_step_clip(
-    latents_step,
-    pixel_x0_norm,
-    sprinter,
-    all_clip_embeddings,
-    num_variations,
-    variation_batch_size,
-    base_zeta_prime,
-    clip_model,
-    clip_processor,
-    vae,
-    vae_scaling_factor,
-    variation_prompt,
-    loss_fn=compute_mmd,
-    loss_scale=1.0,
-):
-    """
-    Compute DPS gradient via CLIP-MMD guidance.
+def run_dps_step(latents, latents_step, noise_pred, pixel_x0_norm,
+                 sprinter, all_latents, num_variations, variation_batch_size, base_zeta_prime):
+    variation_latents_list = []
+    print(f"  Generating {num_variations} variations...")
 
-    Gradient flows: latents_step -> UNet -> pred_x0 -> VAE(fp32) -> pixel_x0_norm
-                    -> sprinter (num_variations times) -> VAE decode -> CLIP -> MMD
+    for start_idx in range(0, num_variations, variation_batch_size):
+        end_idx = min(start_idx + variation_batch_size, num_variations)
+        bs = end_idx - start_idx
+        ctrl_batch = pixel_x0_norm[0].unsqueeze(0).repeat(bs, 1, 1, 1)
 
-    pixel_x0_norm is passed directly into each checkpoint call so the autograd
-    graph from latents_step is preserved all the way to the loss.
+        def sprinter_forward(ctrl):
+            return sprinter(
+                prompt=["a superrealistic professional photograph of"] * ctrl.shape[0],
+                image=ctrl, num_inference_steps=2, guidance_scale=0.0,
+                controlnet_conditioning_scale=0.8, output_type="latent", return_dict=True,
+            ).images
 
-    Returns:
-        grad, loss_scaled, zeta_i, loss_norm, variation_clip_embs_np
-    """
-    from src.clip_utils import encode_images_clip
+        with torch.cuda.amp.autocast():
+            vl = torch.utils.checkpoint.checkpoint(sprinter_forward, ctrl_batch, use_reentrant=False)
+        variation_latents_list.append(vl)
+
+    variation_latents = torch.cat(variation_latents_list, dim=0)
+    torch.cuda.empty_cache()
+    mmd_squared = compute_mmd(variation_latents, torch.tensor(all_latents, device=variation_latents.device))
+    mmd_loss = torch.sqrt(mmd_squared.abs() + 1e-8)
+    loss_norm = mmd_loss.detach()
+    zeta_i = base_zeta_prime / loss_norm
+
+    grad = torch.autograd.grad(mmd_loss, latents_step, retain_graph=False, create_graph=False)[0]
+    vl_flat = variation_latents.detach().cpu().numpy().reshape(variation_latents.shape[0], -1)
+    del variation_latents_list, variation_latents
+
+    return grad, mmd_loss, zeta_i, loss_norm, vl_flat
+
+
+def run_dps_step_clip(latents, latents_step, noise_pred, pixel_x0_norm,
+                      sprinter, all_clip_embeddings, num_variations,
+                      variation_batch_size, base_zeta_prime,
+                      clip_model, clip_processor, vae, vae_scaling_factor, variation_prompt,
+                      _debug_step=False):  # ← added _debug_step flag
+    from clip_utils import encode_images_clip
 
     device = pixel_x0_norm.device
     clip_model.to(device)
 
-    print(f"      [grad] pixel_x0_norm.requires_grad={pixel_x0_norm.requires_grad}  "
-          f"grad_fn={pixel_x0_norm.grad_fn}", flush=True)
+    # ── DIAGNOSTIC A: check that pixel_x0_norm carries grad into this function ──
+    print(f"  [DIAG-A] pixel_x0_norm.requires_grad = {pixel_x0_norm.requires_grad}", flush=True)
+    print(f"  [DIAG-A] pixel_x0_norm.dtype         = {pixel_x0_norm.dtype}", flush=True)
+    print(f"  [DIAG-A] pixel_x0_norm.grad_fn       = {pixel_x0_norm.grad_fn}", flush=True)
+    print(f"  [DIAG-A] latents_step.requires_grad  = {latents_step.requires_grad}", flush=True)
+
+    if _debug_step:
+        # Quick end-to-end grad test BEFORE running sprinter (cheap)
+        try:
+            test_loss = pixel_x0_norm.float().sum()
+            test_grad = torch.autograd.grad(test_loss, latents_step, retain_graph=True)[0]
+            print(f"  [DIAG-A] ✅ grad flows through pixel_x0_norm → latents_step  "
+                  f"norm={test_grad.norm().item():.6f}", flush=True)
+            del test_grad
+        except Exception as e:
+            print(f"  [DIAG-A] ❌ GRAD BROKEN at pixel_x0_norm: {e}", flush=True)
+            print(f"           This means the architect VAE decode severed the graph.", flush=True)
+        del test_loss
 
     variation_clip_list = []
-    for _ in range(num_variations):
+    for start_idx in range(0, num_variations, variation_batch_size):
+        end_idx = min(start_idx + variation_batch_size, num_variations)
+        bs = end_idx - start_idx
+        ctrl_batch = pixel_x0_norm[0].unsqueeze(0).repeat(bs, 1, 1, 1)
 
-        # pixel_x0_norm is passed as the checkpoint input so grad flows through it
         def sprinter_vae_clip_forward(ctrl):
             var_latents = sprinter(
-                prompt=[variation_prompt],
-                image=ctrl,
-                num_inference_steps=2,
-                guidance_scale=0.0,
-                controlnet_conditioning_scale=0.5,
-                output_type="latent",
-                return_dict=True,
+                prompt=[variation_prompt] * ctrl.shape[0],
+                image=ctrl, num_inference_steps=2, guidance_scale=0.0,
+                controlnet_conditioning_scale=0.8,
+                output_type="latent", return_dict=True,
             ).images
-            var_pixels = vae.decode(
-                (var_latents.float() / vae_scaling_factor).to(vae.dtype)
-            ).sample
-            var_pixels = (var_pixels.float() + 1.0) / 2.0
-            var_pixels = var_pixels.clamp(0.0, 1.0)
-            with torch.amp.autocast("cuda", enabled=False):
-                return encode_images_clip(var_pixels.float(), clip_model, clip_processor)
 
-        var_clip = torch.utils.checkpoint.checkpoint(
-            sprinter_vae_clip_forward, pixel_x0_norm, use_reentrant=False
-        )
+            # ── DIAGNOSTIC B: sprinter output dtype ──────────────────────────
+            print(f"    [DIAG-B] var_latents.dtype        = {var_latents.dtype}", flush=True)
+            print(f"    [DIAG-B] var_latents.requires_grad= {var_latents.requires_grad}", flush=True)
+            print(f"    [DIAG-B] vae.dtype                = {vae.dtype}", flush=True)
+
+            with torch.amp.autocast('cuda', enabled=False):
+                var_pixels_raw = vae.decode(var_latents.float() / vae_scaling_factor).sample
+
+            # ── DIAGNOSTIC C: pixels after sprinter VAE decode ───────────────
+            print(f"    [DIAG-C] var_pixels_raw.dtype         = {var_pixels_raw.dtype}", flush=True)
+            print(f"    [DIAG-C] var_pixels_raw.requires_grad = {var_pixels_raw.requires_grad}", flush=True)
+            print(f"    [DIAG-C] var_pixels_raw.grad_fn       = {var_pixels_raw.grad_fn}", flush=True)
+
+            var_pixels = torch.clamp((var_pixels_raw.float() + 1.0) / 2.0, 0.0, 1.0)
+            clip_emb = encode_images_clip(var_pixels, clip_model, clip_processor)
+
+            # ── DIAGNOSTIC D: CLIP embedding ─────────────────────────────────
+            print(f"    [DIAG-D] clip_emb.requires_grad = {clip_emb.requires_grad}", flush=True)
+            print(f"    [DIAG-D] clip_emb.grad_fn       = {clip_emb.grad_fn}", flush=True)
+            print(f"    [DIAG-D] clip_emb nan count     = {torch.isnan(clip_emb).sum().item()}", flush=True)
+
+            return clip_emb
+
+        with torch.amp.autocast('cuda', enabled=False):
+            var_clip = torch.utils.checkpoint.checkpoint(
+                sprinter_vae_clip_forward, ctrl_batch, use_reentrant=False)
+
         variation_clip_list.append(var_clip)
-
-    print(f"      [grad] var_clip.requires_grad={var_clip.requires_grad}  "
-          f"grad_fn={var_clip.grad_fn}", flush=True)
 
     variation_clip_embs = torch.cat(variation_clip_list, dim=0)
     torch.cuda.empty_cache()
 
-    loss_value = loss_fn(variation_clip_embs, all_clip_embeddings.detach())
-    loss_scaled = loss_value * loss_scale
+    # ── DIAGNOSTIC E: MMD inputs ─────────────────────────────────────────────
+    print(f"  [DIAG-E] variation_clip_embs.shape        = {variation_clip_embs.shape}", flush=True)
+    print(f"  [DIAG-E] variation_clip_embs.requires_grad= {variation_clip_embs.requires_grad}", flush=True)
+    print(f"  [DIAG-E] variation_clip_embs.grad_fn      = {variation_clip_embs.grad_fn}", flush=True)
+    print(f"  [DIAG-E] all_clip_embeddings.requires_grad= {all_clip_embeddings.requires_grad}", flush=True)
 
-    print(f"      [grad] loss_scaled.requires_grad={loss_scaled.requires_grad}  "
-          f"grad_fn={loss_scaled.grad_fn}", flush=True)
+    mmd_squared = compute_mmd(variation_clip_embs, all_clip_embeddings.detach())
+    mmd_loss    = torch.sqrt(mmd_squared.abs() + 1e-8)
 
-    loss_norm = loss_scaled.detach()
-    zeta_i = base_zeta_prime / loss_norm
+    # ── DIAGNOSTIC F: loss ───────────────────────────────────────────────────
+    print(f"  [DIAG-F] mmd_squared.item()         = {mmd_squared.item():.8f}", flush=True)
+    print(f"  [DIAG-F] mmd_loss.item()            = {mmd_loss.item():.8f}", flush=True)
+    print(f"  [DIAG-F] mmd_loss.requires_grad     = {mmd_loss.requires_grad}", flush=True)
+    print(f"  [DIAG-F] mmd_loss.grad_fn           = {mmd_loss.grad_fn}", flush=True)
+
+    loss_norm   = mmd_loss.detach()
+    zeta_i      = base_zeta_prime / loss_norm
 
     grad = torch.autograd.grad(
-        loss_scaled, latents_step,
-        retain_graph=False, create_graph=False,
+        mmd_loss, latents_step, retain_graph=False, create_graph=False
     )[0]
 
-    variation_clip_np = variation_clip_embs.detach().cpu().numpy()
+    # ── DIAGNOSTIC G: final gradient ─────────────────────────────────────────
+    print(f"  [DIAG-G] grad.norm()    = {grad.norm().item():.8f}", flush=True)
+    print(f"  [DIAG-G] grad.isnan()  = {torch.isnan(grad).any().item()}", flush=True)
+    print(f"  [DIAG-G] grad.max()    = {grad.abs().max().item():.8f}", flush=True)
+    print(f"  [DIAG-G] zeta_i        = {zeta_i.item():.6f}", flush=True)
+    print(f"  [DIAG-G] correction_norm = {(zeta_i * grad.norm()).item():.8f}", flush=True)
+
+    vl_clip_flat = variation_clip_embs.detach().cpu().numpy()
     del variation_clip_list, variation_clip_embs
 
-    return grad, loss_scaled, zeta_i, loss_norm, variation_clip_np
+    return grad, mmd_loss, zeta_i, loss_norm, vl_clip_flat

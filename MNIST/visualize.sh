@@ -56,7 +56,7 @@ cd "$REPO_ROOT/MNIST"
 NO_TITLES_FLAG=""
 [ "$NO_TITLES" = "true" ] && NO_TITLES_FLAG="--no_titles"
 
-python MLGDF_visualization.py \
+python visualize.py \
     --results_dir "$RESULTS_DIR" \
     --top_k       $TOP_K \
     --dpi         $DPI \

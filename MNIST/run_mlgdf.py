@@ -1,24 +1,24 @@
 """
-MNIST_MLGDF.py
+run_mlgdf.py
 ==============
 Single run for unimodal / bimodal / uniform experiments.
 All hyperparameters passed via CLI — no grid search.
 
 Usage:
-    python MNIST_MLGDF.py --experiment unimodal \
+    python run_mlgdf.py --experiment unimodal \
         --unimodal_var 515 --num_inference_steps 130 \
         --step_size_mode double --num_x_t 3 --nsamples 1500 --clamp
 
-    python MNIST_MLGDF.py --experiment bimodal \
+    python run_mlgdf.py --experiment bimodal \
         --bimodal_var 252 --num_inference_steps 125 \
         --step_size_mode original --num_x_t 10 --nsamples 1500 --clamp
 
-    python MNIST_MLGDF.py --experiment uniform \
+    python run_mlgdf.py --experiment uniform \
         --num_inference_steps 290 \
         --step_size_mode original --num_x_t 3 --nsamples 600 --clamp
 
 Train classifier only:
-    python MNIST_MLGDF.py --train_classifier_only
+    python run_mlgdf.py --train_classifier_only
 """
 
 import os, sys, math, argparse, random, time, pickle

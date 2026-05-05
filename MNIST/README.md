@@ -158,4 +158,4 @@ The exact hyperparameters used in the paper are:
 | Bimodal    | 125 | `original` | 10 | 1500 | 252 |
 | Uniform    | 290 | `original` | 3  | 600  | —   |
 
-All runs use `--clamp` and 15 seeds. Top-5 results by SWD loss are reported.
+All runs on 15 seeds. Top-5 results by SWD loss are reported.

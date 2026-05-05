@@ -6,3 +6,4 @@ matplotlib
 pandas
 tqdm
 scikit-learn
+huggingface_hub

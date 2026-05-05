@@ -325,9 +325,9 @@ def main():
         config={
             "experiment": "gender",
             "groups": {
-                name: {"prompt": prompt, "n_samples": n, "pct": pct}
-                for name, prompt, n, _, _ in
-                [(g[0], g[1], g[2], None, None) for g in groups]
+                name: {"prompt": prompt, "n_samples": n, "pct": g[2]}
+                for g, (name, prompt, n, _, _) in
+                zip(groups, [(g[0], g[1], g[2], None, None) for g in groups])
             },
             "n_targets": N_total,
             "n_steps": args.n_steps,

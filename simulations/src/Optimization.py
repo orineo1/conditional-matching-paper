@@ -4,8 +4,6 @@ import Diffusion
 from LossFunctions import MMDLoss,RBF
 from dist_utils import generate_mog_samples,generate_mog_samples_not_differentiable
 import ConsistencyModels
-import  FlowMatching
-from ConsistencyModels import ConsistencyModel
 import dist_utils
 import torch.nn.functional as F
 import torch

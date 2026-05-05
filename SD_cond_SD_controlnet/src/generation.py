@@ -11,8 +11,16 @@ def generate_and_store_cs(pipe, prompt, cond_pil, num_samples,
     """
     Generate num_samples images from the sprinter conditioned on cond_pil.
 
+    cond_pil may be None for the initial unconditioned generation pass
+    (before a real scribble is available). In that case a blank white image
+    is used as a neutral ControlNet conditioning input.
+
     Returns: (pil_images, latents_numpy [N, flat_dim])
     """
+    if cond_pil is None:
+        from PIL import Image
+        cond_pil = Image.new("RGB", (512, 512), color=(255, 255, 255))
+
     original_vae_dtype = pipe.vae.dtype
     pipe.vae.to(dtype=torch.float16)
     all_images, all_lats = [], []

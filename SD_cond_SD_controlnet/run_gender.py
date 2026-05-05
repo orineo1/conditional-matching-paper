@@ -106,6 +106,16 @@ def parse_args():
     p.add_argument("--lora_path", type=str, default=None)
     p.add_argument("--architect_unet_path", type=str, default=None)
 
+    # Optional: provide a scribble directly instead of generating one
+    p.add_argument(
+        "--scribble_image", type=str, default=None,
+        help=(
+            "Path to an existing scribble image (.png/.jpg). "
+            "When provided, skips unconditioned target generation and HED extraction. "
+            "Target images are generated directly conditioned on this scribble."
+        ),
+    )
+
     return p.parse_args()
 
 
@@ -187,39 +197,74 @@ def main():
     clip_model, clip_processor = load_clip_model(device)
     print("Models loaded.", flush=True)
 
-    # Generate target images per group
-    print("Generating target images...", flush=True)
-    target_images_per_group = {}
-    with torch.no_grad():
-        for name, prompt, n, _, _ in groups:
-            imgs, _ = generate_and_store_cs(
-                sprinter, prompt,
-                None,  # placeholder — scribble set after HED extraction below
-                n, batch_size=2, cn_scale=args.controlnet_scale,
-            )
-            target_images_per_group[name] = imgs
-            plot_row(imgs, f"Target: {name}",
-                     save_path=os.path.join(args.output_dir,
-                                            f"target_samples_{name}.png"))
-            print(f"  {name}: {len(imgs)} images", flush=True)
+    # ── Scribble: load from file or extract from generated targets ────────────
+    if args.scribble_image is not None:
+        # Path provided — load directly, skip unconditioned generation
+        from PIL import Image as _PIL
+        if not os.path.exists(args.scribble_image):
+            raise FileNotFoundError(f"--scribble_image not found: {args.scribble_image}")
+        scribble_pil = _PIL.open(args.scribble_image).convert("RGB")
+        source_image = scribble_pil  # use scribble itself as the "source" for logging
+        print(f"Using provided scribble: {args.scribble_image}  "
+              f"size={scribble_pil.size}", flush=True)
 
-    # Extract HED scribble from first image of first group
-    print("Extracting HED scribble...", flush=True)
-    source_image = target_images_per_group[group_names[0]][2]
-    scribble_pil = extract_scribble_hed(source_image)
+        # Generate targets conditioned on the provided scribble
+        print("Generating target images conditioned on provided scribble...", flush=True)
+        target_images_per_group = {}
+        with torch.no_grad():
+            for name, prompt, n, _, _ in groups:
+                imgs, _ = generate_and_store_cs(
+                    sprinter, prompt, scribble_pil,
+                    n, batch_size=2, cn_scale=args.controlnet_scale,
+                )
+                target_images_per_group[name] = imgs
+                plot_row(imgs, f"Target: {name}",
+                         save_path=os.path.join(args.output_dir,
+                                                f"target_samples_{name}.png"))
+                print(f"  {name}: {len(imgs)} images", flush=True)
+
+    else:
+        # No scribble provided — generate unconditioned targets, extract HED scribble,
+        # then re-generate targets conditioned on the scribble.
+        print("Generating target images (unconditioned, for scribble extraction)...",
+              flush=True)
+        target_images_per_group = {}
+        with torch.no_grad():
+            for name, prompt, n, _, _ in groups:
+                imgs, _ = generate_and_store_cs(
+                    sprinter, prompt,
+                    None,  # blank white placeholder — see generate_and_store_cs
+                    n, batch_size=2, cn_scale=args.controlnet_scale,
+                )
+                target_images_per_group[name] = imgs
+                plot_row(imgs, f"Target: {name}",
+                         save_path=os.path.join(args.output_dir,
+                                                f"target_samples_{name}_uncond.png"))
+                print(f"  {name}: {len(imgs)} images", flush=True)
+
+        # Extract HED scribble from first group (use index 2 if available, else 0)
+        print("Extracting HED scribble...", flush=True)
+        first_group_imgs = target_images_per_group[group_names[0]]
+        source_image = first_group_imgs[min(2, len(first_group_imgs) - 1)]
+        scribble_pil = extract_scribble_hed(source_image)
+
+        # Re-generate targets conditioned on the actual scribble
+        print("Re-generating targets with scribble conditioning...", flush=True)
+        with torch.no_grad():
+            for name, prompt, n, _, _ in groups:
+                imgs, _ = generate_and_store_cs(
+                    sprinter, prompt, scribble_pil,
+                    n, batch_size=2, cn_scale=args.controlnet_scale,
+                )
+                target_images_per_group[name] = imgs
+                plot_row(imgs, f"Target: {name}",
+                         save_path=os.path.join(args.output_dir,
+                                                f"target_samples_{name}.png"))
+                print(f"  {name}: {len(imgs)} images", flush=True)
+
     source_image.save(os.path.join(args.output_dir, "source_portrait.png"))
     scribble_pil.save(os.path.join(args.output_dir, "scribble.png"))
-    print(f"HED scribble ready  size={scribble_pil.size}", flush=True)
-
-    # Re-generate targets conditioned on the actual scribble
-    print("Re-generating targets with scribble conditioning...", flush=True)
-    with torch.no_grad():
-        for name, prompt, n, _, _ in groups:
-            imgs, _ = generate_and_store_cs(
-                sprinter, prompt, scribble_pil,
-                n, batch_size=2, cn_scale=args.controlnet_scale,
-            )
-            target_images_per_group[name] = imgs
+    print(f"Scribble ready  size={scribble_pil.size}", flush=True)
 
     # Encode targets to CLIP
     print("Encoding targets to CLIP...", flush=True)

@@ -91,6 +91,16 @@ def parse_args():
     p.add_argument("--lora_path", type=str, default=None)
     p.add_argument("--architect_unet_path", type=str, default=None)
 
+    # Optional: provide a scribble directly instead of generating one
+    p.add_argument(
+        "--scribble_image", type=str, default=None,
+        help=(
+            "Path to an existing scribble image (.png/.jpg). "
+            "When provided, skips unconditioned target generation and HED extraction. "
+            "Target images are generated directly conditioned on this scribble."
+        ),
+    )
+
     return p.parse_args()
 
 
@@ -140,46 +150,72 @@ def main():
     clip_model, clip_processor = load_clip_model(device)
     print("Models loaded.", flush=True)
 
-    # Generate age target images (without scribble conditioning first,
-    # then re-generate once scribble is extracted)
-    print("Generating initial age targets for scribble extraction...", flush=True)
-    age_images = {}
-    with torch.no_grad():
-        for age in AGES:
-            prompt = age_prompt(age, args.age_gender)
-            imgs, _ = generate_and_store_cs(
-                sprinter, prompt,
-                None,  # no conditioning yet
-                N_PER_AGE, batch_size=2, cn_scale=args.controlnet_scale,
-            )
-            age_images[age] = imgs
+    # ── Scribble: load from file or extract from generated targets ────────────
+    if args.scribble_image is not None:
+        # Path provided — load directly, skip unconditioned generation
+        from PIL import Image as _PIL
+        if not os.path.exists(args.scribble_image):
+            raise FileNotFoundError(f"--scribble_image not found: {args.scribble_image}")
+        scribble_pil = _PIL.open(args.scribble_image).convert("RGB")
+        source_image = scribble_pil
+        print(f"Using provided scribble: {args.scribble_image}  "
+              f"size={scribble_pil.size}", flush=True)
 
-    # Extract HED scribble from a young-adult image
-    ref_age = AGES[min(2, len(AGES) - 1)]
-    source_image = age_images[ref_age][0]
-    print(f"Extracting HED scribble from age-{ref_age} image...", flush=True)
-    scribble_pil = extract_scribble_hed(source_image)
+        # Generate all age targets conditioned on the provided scribble
+        print("Generating age targets conditioned on provided scribble...", flush=True)
+        age_images = {}
+        with torch.no_grad():
+            for age in AGES:
+                prompt = age_prompt(age, args.age_gender)
+                imgs, _ = generate_and_store_cs(
+                    sprinter, prompt, scribble_pil,
+                    N_PER_AGE, batch_size=2, cn_scale=args.controlnet_scale,
+                )
+                age_images[age] = imgs
+                print(f"  Age {age:3d}: {len(imgs)} images", flush=True)
+
+    else:
+        # No scribble provided — generate unconditioned targets, extract HED scribble,
+        # then re-generate conditioned on it.
+        print("Generating initial age targets for scribble extraction...", flush=True)
+        age_images = {}
+        with torch.no_grad():
+            for age in AGES:
+                prompt = age_prompt(age, args.age_gender)
+                imgs, _ = generate_and_store_cs(
+                    sprinter, prompt,
+                    None,  # blank white placeholder
+                    N_PER_AGE, batch_size=2, cn_scale=args.controlnet_scale,
+                )
+                age_images[age] = imgs
+
+        ref_age = AGES[min(2, len(AGES) - 1)]
+        source_image = age_images[ref_age][0]
+        print(f"Extracting HED scribble from age-{ref_age} image...", flush=True)
+        scribble_pil = extract_scribble_hed(source_image)
+
+        # Re-generate all ages conditioned on the scribble
+        print("Re-generating targets with scribble conditioning...", flush=True)
+        with torch.no_grad():
+            for age in AGES:
+                prompt = age_prompt(age, args.age_gender)
+                imgs, _ = generate_and_store_cs(
+                    sprinter, prompt, scribble_pil,
+                    N_PER_AGE, batch_size=2, cn_scale=args.controlnet_scale,
+                )
+                age_images[age] = imgs
+                print(f"  Age {age:3d}: {len(imgs)} images", flush=True)
+
     source_image.save(os.path.join(args.output_dir, "source_portrait.png"))
     scribble_pil.save(os.path.join(args.output_dir, "scribble.png"))
-
-    # Re-generate targets conditioned on the scribble
-    print("Re-generating targets with scribble conditioning...", flush=True)
-    with torch.no_grad():
-        for age in AGES:
-            prompt = age_prompt(age, args.age_gender)
-            imgs, _ = generate_and_store_cs(
-                sprinter, prompt, scribble_pil,
-                N_PER_AGE, batch_size=2, cn_scale=args.controlnet_scale,
-            )
-            age_images[age] = imgs
-            print(f"  Age {age:3d}: {len(imgs)} images", flush=True)
 
     all_imgs_flat = [img for age in AGES for img in age_images[age]]
 
     # Save sample rows for inspection
-    plot_row(all_imgs_flat[:10], f"Age samples ({AGES[0]}–{AGES[9]})",
+    n_show = min(10, len(all_imgs_flat))
+    plot_row(all_imgs_flat[:n_show], f"Age samples ({AGES[0]}–{AGES[min(n_show-1, len(AGES)-1)]})",
              save_path=os.path.join(args.output_dir, "target_samples_young.png"))
-    plot_row(all_imgs_flat[-10:], f"Age samples ({AGES[-10]}–{AGES[-1]})",
+    plot_row(all_imgs_flat[-n_show:], f"Age samples ({AGES[max(0, len(AGES)-n_show)]}–{AGES[-1]})",
              save_path=os.path.join(args.output_dir, "target_samples_old.png"))
 
     # Encode to CLIP

@@ -1,125 +1,77 @@
 """
-MLGDF_visualization.py
-====================
+MLGDF.py
+========
 Visualization & evaluation script for the LGD MNIST experiments.
 
-Loads precomputed results from checkpoints_and_results/, trains or loads the
-robust classifier, downloads the conditional model from HuggingFace, then
-produces all plots and the final results table.
+Accepts a results directory containing .pkl files, skips any missing
+experiments, and produces all plots and the final results table.
 
-Usage (local):
-    python MLGDF_visualization.py
+Usage:
+    python MLGDF.py --results_dir /path/to/results/unimodal_run/my_run/
+    python MLGDF.py --results_dir checkpoints_and_results/
+    python MLGDF.py --results_dir results/ --top_k 5 --dpi 150
 
-Usage (Colab):
-    Set HF_TOKEN and GITHUB_TOKEN in Colab secrets, then run.
-
-Environment variables:
-    HF_TOKEN        – HuggingFace token (required to download checkpoints)
-    REPO_ROOT       – root of this repository (auto-detected if not set)
+Arguments:
+    --results_dir   Directory containing .pkl result files (required)
+    --ckpt_dir      Directory with model checkpoints (default: checkpoints_and_results/)
+    --plots_dir     Where to save plots (default: plots/ inside results_dir)
+    --top_k         How many top images to show (default: 5)
+    --dpi           Plot DPI (default: 150)
+    --no_titles     Save additional copies of plots without titles
 """
 
-import os, sys, math, pickle, random
+import os, sys, math, pickle, random, argparse
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
 import torch.nn.functional as F
-from huggingface_hub import hf_hub_download, login
 import pandas as pd
+from huggingface_hub import hf_hub_download, login
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Args
+# ─────────────────────────────────────────────────────────────────────────────
+def parse_args():
+    p = argparse.ArgumentParser()
+    p.add_argument('--results_dir', type=str, required=True,
+                   help='Directory containing .pkl result files')
+    p.add_argument('--ckpt_dir',    type=str, default=None,
+                   help='Directory with model checkpoints (default: checkpoints_and_results/ next to script)')
+    p.add_argument('--plots_dir',   type=str, default=None,
+                   help='Where to save plots (default: plots/ inside results_dir)')
+    p.add_argument('--top_k',       type=int, default=5)
+    p.add_argument('--dpi',         type=int, default=150)
+    p.add_argument('--no_titles',   action='store_true',
+                   help='Also save plots without titles')
+    return p.parse_args()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Paths
 # ─────────────────────────────────────────────────────────────────────────────
-def _is_colab():
-    try:
-        import google.colab  # noqa: F401
-        return True
-    except ImportError:
-        return False
-
-IS_COLAB = _is_colab()
-
-if IS_COLAB:
-    import getpass
-    import subprocess
-
-    # Install dependencies
-    subprocess.run(['pip', 'install', '-q',
-                    'diffusers', 'transformers', 'accelerate',
-                    'xformers', 'scikit-learn', 'Pillow', 'tqdm', 'wandb'],
-                   check=False)
-
-    # GitHub token — set in Colab secrets as 'GITHUB_TOKEN'
-    try:
-        from google.colab import userdata as _ud
-        github_token = _ud.get('GITHUB_TOKEN')
-    except Exception:
-        github_token = None
-    if not github_token:
-        github_token = getpass.getpass('GitHub PAT (for private repo): ')
-
-    # ── CONFIGURE THESE BEFORE PUBLISHING ────────────────────────────────
-    GITHUB_USERNAME = 'YOUR_GITHUB_USERNAME'   # <-- fill in
-    REPO_NAME       = 'YOUR_REPO_NAME'         # <-- fill in
-    BRANCH          = 'main'                   # <-- change if needed
-    # ─────────────────────────────────────────────────────────────────────
-
-    repo_url = f'https://{github_token}@github.com/{GITHUB_USERNAME}/{REPO_NAME}.git'
-    if not os.path.exists(REPO_NAME):
-        subprocess.run(['git', 'clone', repo_url], check=True)
-    else:
-        subprocess.run(['git', '-C', REPO_NAME, 'pull'], check=True)
-    subprocess.run(['git', '-C', REPO_NAME, 'checkout', BRANCH], check=True)
-
-    MNIST_DIR = f'/content/{REPO_NAME}/MNIST'
-    SRC_DIR   = f'{MNIST_DIR}/src'
-    CKPT_DIR  = f'{MNIST_DIR}/checkpoints_and_results'
-    PLOTS_DIR = f'{MNIST_DIR}/notebooks/plots'
-
-else:
-    # Local: derive paths relative to this script
-    HERE      = os.path.dirname(os.path.abspath(__file__))
-    MNIST_DIR = os.path.dirname(os.path.abspath(__file__))
-    SRC_DIR = os.path.join(MNIST_DIR, 'src')
-    CKPT_DIR = os.path.join(MNIST_DIR, 'checkpoints_and_results')
-    PLOTS_DIR = os.path.join(MNIST_DIR, 'plots')
-
+HERE     = os.path.dirname(os.path.abspath(__file__))
+MNIST_DIR = HERE
+SRC_DIR   = os.path.join(MNIST_DIR, 'src')
 for p in [SRC_DIR, MNIST_DIR]:
     if p not in sys.path:
         sys.path.insert(0, p)
 
-os.makedirs(PLOTS_DIR, exist_ok=True)
-
 # ─────────────────────────────────────────────────────────────────────────────
 # HuggingFace login
 # ─────────────────────────────────────────────────────────────────────────────
-# Set HF_TOKEN in Colab secrets (key: 'HF_TOKEN') or as an env variable.
-# Never hardcode tokens here.
-if IS_COLAB:
-    try:
-        from google.colab import userdata as _ud
-        hf_token = _ud.get('HF_TOKEN')
-    except Exception:
-        hf_token = None
-else:
-    hf_token = os.environ.get('HF_TOKEN', None)
-
+hf_token = os.environ.get('HF_TOKEN', None)
 if hf_token:
     login(token=hf_token, add_to_git_credential=False)
 else:
-    login()  # interactive prompt
+    login()
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Imports from repo src  (after sys.path is set)
+# Imports from repo src
 # ─────────────────────────────────────────────────────────────────────────────
-from classifier import load_or_train_classifier                          # noqa: E402
-from cond_model import (                                                 # noqa: E402
+from classifier import load_or_train_classifier
+from cond_model import (
     CircularAngleConsistencyModel, angles_to_circular, circular_to_angles
 )
-
-# Reuse shared utilities already defined in MNIST_MLGDF.py
-# (mog_pdf, classify_generated_images, sliced_wasserstein_distance)
-sys.path.insert(0, MNIST_DIR)
-from MNIST_MLGDF import (                                                # noqa: E402
+from MNIST_MLGDF import (
     mog_pdf,
     classify_generated_images,
     sliced_wasserstein_distance,
@@ -127,81 +79,25 @@ from MNIST_MLGDF import (                                                # noqa:
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Global seed & device
+# Constants
 # ─────────────────────────────────────────────────────────────────────────────
 GLOBAL_SEED = 42
+NORM_MEAN   = 0.1307
+NORM_STD    = 0.3081
+HF_REPO_ID  = 'anon-submission-cdm/cdm-inverse-design'
 
-def set_global_seed(seed: int):
+def set_global_seed(seed):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark     = False
-    print(f'[Seed] All random seeds set to {seed}')
-
-set_global_seed(GLOBAL_SEED)
-
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
-print(f'Device : {device}')
-print(f'CKPT   : {CKPT_DIR}')
-print(f'PLOTS  : {PLOTS_DIR}')
-print(f'SRC    : {SRC_DIR}')
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Constants  (shared with MNIST_MLGDF.py)
+# Load pkl — skips if file not found
 # ─────────────────────────────────────────────────────────────────────────────
-NORM_MEAN  = 0.1307
-NORM_STD   = 0.3081
-HF_REPO_ID = 'anon-submission-cdm/cdm-inverse-design'
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 1 · Load / train classifier
-# ─────────────────────────────────────────────────────────────────────────────
-CLF_PATH = os.path.join(CKPT_DIR, 'robust_classifier.pth')
-
-digit_classifier = load_or_train_classifier(
-    save_path  = CLF_PATH,
-    device     = device,
-    epochs     = 10,
-    batch_size = 128,
-    lr         = 1e-3,
-    seed       = GLOBAL_SEED,
-)
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 2 · Load conditional model from HuggingFace
-# ─────────────────────────────────────────────────────────────────────────────
-COND_PT = os.path.join(CKPT_DIR, 'MnistConditional500Epoch.pt')
-
-if not os.path.exists(COND_PT):
-    print('Downloading conditional model from HuggingFace...')
-    COND_PT = hf_hub_download(
-        repo_id  = HF_REPO_ID,
-        filename = 'MnistConditional500Epoch.pt',
-        token    = hf_token or None,
-    )
-    print(f'Downloaded → {COND_PT}')
-else:
-    print(f'Found → {COND_PT}')
-
-cond_model = CircularAngleConsistencyModel(
-    nfeatures=2, img_features=784, eps=0.002,
-    nunits=128, depth=5, device=device,
-)
-ckpt = torch.load(COND_PT, map_location=device)
-cond_model.load_state_dict(ckpt['model_state_dict'])
-cond_model.eval()
-print(f'Conditional model loaded (epoch {ckpt["epoch"]}) ✓')
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 3 · Load pkl payloads
-# ─────────────────────────────────────────────────────────────────────────────
-def apply_clamp_normalization(payload: dict) -> dict:
-    """
-    Post-hoc contrast fix: clamps to [-1, 1] then rescales to [0, 1] for display.
-    Equivalent to what in-loop clamping prevents during generation.
-    """
+def apply_clamp_normalization(payload):
     fixed = []
     for img in payload['results']:
         t = torch.tensor(img, dtype=torch.float32)
@@ -213,32 +109,46 @@ def apply_clamp_normalization(payload: dict) -> dict:
     return payload
 
 
-def load_pkl(name: str) -> dict:
-    path = os.path.join(CKPT_DIR, f'{name}.pkl')
+def load_pkl(path):
+    """Load a single pkl by full path. Returns None if not found."""
+    if not os.path.exists(path):
+        print(f'[SKIP] Not found: {path}')
+        return None
     with open(path, 'rb') as f:
         payload = pickle.load(f)
-    print(f'Loaded {name}.pkl  ({len(payload["results"])} seeds)')
-    return payload
+    print(f'[OK]   Loaded {os.path.basename(path)}  ({len(payload["results"])} seeds)')
+    return apply_clamp_normalization(payload)
 
 
-payload_uniform  = apply_clamp_normalization(load_pkl('unif_ns600_st290_ssoriginal_xt3'))
-payload_bimodal  = apply_clamp_normalization(load_pkl('Bimodal'))
-payload_unimodal = apply_clamp_normalization(load_pkl('uni_var515_st130_ssdouble_xt3'))
+def find_pkls(results_dir):
+    """
+    Find all .pkl files in results_dir (recursively) and return them as
+    a list of (label, payload) pairs, skipping any that can't be loaded.
+    """
+    found = []
+    for root, _, files in os.walk(results_dir):
+        for fname in sorted(files):
+            if fname.endswith('.pkl'):
+                full = os.path.join(root, fname)
+                payload = load_pkl(full)
+                if payload is not None:
+                    label = os.path.splitext(fname)[0]
+                    found.append((label, payload))
+    return found
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 4 · Plot helpers
+# Plot helpers
 # ─────────────────────────────────────────────────────────────────────────────
-def plot_all_images(payload, ncols=5, dpi=100,
-                    save_path=None, save_no_title=False,
-                    classifier=None, device=None):
-    """Grid of all seed images with optional classifier labels."""
+def plot_all_images(payload, plots_dir, ncols=5, dpi=100,
+                    save_no_title=False, classifier=None, device=None):
     results, loss_log, seed_log = (
         payload['results'], payload['loss_log'], payload['seed_log']
     )
+    experiment_name = payload['experiment_name']
     n     = len(results)
     nrows = math.ceil(n / ncols)
-    preds = (classify_generated_images(results, classifier, device, threshold=0.75)
-             if classifier is not None else [None] * n)
+    preds, _ = (classify_generated_images(results, classifier, device, threshold=0.75)
+                if classifier is not None else ([None]*n, [None]*n))
 
     for row in range(nrows):
         start, end  = row * ncols, min(row * ncols + ncols, n)
@@ -248,12 +158,12 @@ def plot_all_images(payload, ncols=5, dpi=100,
         row_preds   = preds[start:end]
         n_in_row    = len(row_results)
 
-        def _make(show_titles, _rp=row_preds):
+        def _make(show_titles):
             fig, axes = plt.subplots(1, ncols, figsize=(ncols * 3, 3),
                                      gridspec_kw=dict(wspace=0.02))
             axes = np.array(axes).reshape(ncols)
             for c, (img, loss, seed, pred) in enumerate(
-                    zip(row_results, row_losses, row_seeds, _rp)):
+                    zip(row_results, row_losses, row_seeds, row_preds)):
                 axes[c].imshow(img, cmap='gray')
                 if show_titles:
                     title = f'Seed {seed} | Loss {loss:.4f}'
@@ -266,22 +176,20 @@ def plot_all_images(payload, ncols=5, dpi=100,
             plt.tight_layout(pad=0.1, h_pad=0.1, w_pad=0.1)
             return fig
 
-        fig_titled = _make(show_titles=True)
-        if save_path:
-            base, ext = os.path.splitext(save_path)
-            fig_titled.savefig(f'{base}_row{row+1}{ext}', dpi=dpi, bbox_inches='tight')
-        plt.show()
+        base = os.path.join(plots_dir, f'{experiment_name}_all_row{row+1}.png')
+        fig  = _make(show_titles=True)
+        fig.savefig(base, dpi=dpi, bbox_inches='tight')
+        plt.close(fig)
+        print(f'  Saved: {base}')
 
         if save_no_title:
-            fig_clean = _make(show_titles=False)
-            base, ext = os.path.splitext(save_path) if save_path else ('all_images', '.png')
-            fig_clean.savefig(f'{base}_row{row+1}_notitle{ext}', dpi=dpi, bbox_inches='tight')
-            plt.close(fig_clean)
+            base_nt = os.path.join(plots_dir, f'{experiment_name}_all_row{row+1}_notitle.png')
+            fig_c   = _make(show_titles=False)
+            fig_c.savefig(base_nt, dpi=dpi, bbox_inches='tight')
+            plt.close(fig_c)
 
 
-def plot_top_k_images(payload, top_k=5, dpi=100,
-                      save_path=None, save_no_title=False):
-    """Ranked grid of the top-k images by SWD loss. Returns top_ix."""
+def plot_top_k_images(payload, plots_dir, top_k=5, dpi=100, save_no_title=False):
     results, loss_log, seed_log = (
         payload['results'], payload['loss_log'], payload['seed_log']
     )
@@ -302,8 +210,7 @@ def plot_top_k_images(payload, top_k=5, dpi=100,
             if show_titles:
                 axes[r, c].set_title(
                     f'Rank {rank+1} | Loss {loss_log[idx]:.4f} | Seed {seed_log[idx]}',
-                    fontsize=7, pad=2
-                )
+                    fontsize=7, pad=2)
             axes[r, c].axis('off')
         for rank in range(k, nrows * ncols):
             r, c = divmod(rank, ncols)
@@ -314,25 +221,23 @@ def plot_top_k_images(payload, top_k=5, dpi=100,
         plt.tight_layout(pad=0.1, h_pad=0.1, w_pad=0.1)
         return fig
 
-    fig_titled = _make(show_titles=True)
-    if save_path:
-        fig_titled.savefig(save_path, dpi=dpi, bbox_inches='tight')
-    plt.show()
-    plt.close(fig_titled)
+    base = os.path.join(plots_dir, f'{experiment_name}_top{k}.png')
+    fig  = _make(show_titles=True)
+    fig.savefig(base, dpi=dpi, bbox_inches='tight')
+    plt.close(fig)
+    print(f'  Saved: {base}')
 
     if save_no_title:
-        fig_clean = _make(show_titles=False)
-        base, ext = os.path.splitext(save_path) if save_path else (f'top{k}_clean', '.png')
-        fig_clean.savefig(f'{base}_notitle{ext}', dpi=dpi, bbox_inches='tight')
-        plt.show()
-        plt.close(fig_clean)
+        base_nt = os.path.join(plots_dir, f'{experiment_name}_top{k}_notitle.png')
+        fig_c   = _make(show_titles=False)
+        fig_c.savefig(base_nt, dpi=dpi, bbox_inches='tight')
+        plt.close(fig_c)
 
     return top_ix
 
 
-def plot_top_k_distributions(payload, model_cond, top_ix, top_k_dist=5,
-                              save_path=None, dpi=150, save_no_title=False):
-    """Cartesian + polar angle distribution plots for the top-k results."""
+def plot_top_k_distributions(payload, model_cond, top_ix, plots_dir,
+                              top_k_dist=5, dpi=150, save_no_title=False, device='cpu'):
     results, loss_log, seed_log = (
         payload['results'], payload['loss_log'], payload['seed_log']
     )
@@ -343,7 +248,6 @@ def plot_top_k_distributions(payload, model_cond, top_ix, top_k_dist=5,
     dist_k  = min(top_k_dist, len(top_ix))
     dist_ix = top_ix[:dist_k]
 
-    # Pre-sample angles for all top-k images
     all_max_y = target_pdf_np.max()
     temp_angs = []
     for idx in dist_ix:
@@ -368,8 +272,7 @@ def plot_top_k_distributions(payload, model_cond, top_ix, top_k_dist=5,
     for ang in temp_angs:
         counts, _ = np.histogram(
             np.deg2rad(ang.detach().cpu().numpy()),
-            bins=np.linspace(0, 2 * np.pi, 37), density=True
-        )
+            bins=np.linspace(0, 2 * np.pi, 37), density=True)
         local_polar_max = max(local_polar_max, counts.max() if len(counts) else 0)
     polar_ylim = local_polar_max * 1.1
 
@@ -383,40 +286,32 @@ def plot_top_k_distributions(payload, model_cond, top_ix, top_k_dist=5,
                     range=(0, 360), density=True, label='Sampled')
             ax.plot(x_range_np, target_pdf_np, color='orange', linewidth=2, label='Target')
             ax.fill_between(x_range_np, target_pdf_np, alpha=0.25, color='orange')
-            ax.set_xlim(0, 360)
-            ax.set_ylim(0, y_lim)
+            ax.set_xlim(0, 360); ax.set_ylim(0, y_lim)
             ax.set_xlabel('Angle (°)', fontsize=13)
             ax.set_xticks([0, 90, 180, 270, 360])
-            ax.tick_params(axis='x', labelsize=12)
-            ax.tick_params(axis='y', labelsize=11)
+            ax.tick_params(axis='x', labelsize=12); ax.tick_params(axis='y', labelsize=11)
             ax.grid(True, alpha=0.3)
             if show_titles:
-                ax.set_title(
-                    f'Rank {rank+1} | Loss {loss_log[idx]:.4f} | Seed {seed_log[idx]}',
-                    fontsize=9
-                )
+                ax.set_title(f'Rank {rank+1} | Loss {loss_log[idx]:.4f} | Seed {seed_log[idx]}',
+                             fontsize=9)
             if rank == 0:
                 ax.set_ylabel('Density', fontsize=12)
                 if show_legend:
                     ax.legend(fontsize=8)
         if show_titles:
-            fig.suptitle(
-                f'[{experiment_name}] Top {dist_k} Angle Distributions — Cartesian',
-                fontsize=13, fontweight='bold'
-            )
+            fig.suptitle(f'[{experiment_name}] Top {dist_k} Distributions — Cartesian',
+                         fontsize=13, fontweight='bold')
         fig.tight_layout()
         return fig
 
     def _make_polar(show_titles, show_legend):
-        fig, polar_axes = plt.subplots(
-            1, dist_k, figsize=(dist_k * 4, 4),
-            subplot_kw={'projection': 'polar'}
-        )
+        fig, polar_axes = plt.subplots(1, dist_k, figsize=(dist_k * 4, 4),
+                                       subplot_kw={'projection': 'polar'})
         polar_axes = np.array(polar_axes).reshape(dist_k)
         for rank, (idx, ang) in enumerate(zip(dist_ix, temp_angs)):
-            ang_rad     = np.deg2rad(ang.detach().cpu().numpy())
-            bin_edges   = np.linspace(0, 2 * np.pi, 37)
-            counts, _   = np.histogram(ang_rad, bins=bin_edges, density=True)
+            ang_rad   = np.deg2rad(ang.detach().cpu().numpy())
+            bin_edges = np.linspace(0, 2 * np.pi, 37)
+            counts, _ = np.histogram(ang_rad, bins=bin_edges, density=True)
             bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
             width       = bin_edges[1] - bin_edges[0]
             ax = polar_axes[rank]
@@ -426,46 +321,36 @@ def plot_top_k_distributions(payload, model_cond, top_ix, top_k_dist=5,
                     color='orange', alpha=0.35, zorder=3)
             ax.plot(target_rad_x_closed, target_rad_y_closed,
                     color='orange', linewidth=2.5, zorder=4, label='Target')
-            ax.set_theta_zero_location('N')
-            ax.set_theta_direction(-1)
-            ax.set_yticklabels([])
-            ax.set_yticks([])
+            ax.set_theta_zero_location('N'); ax.set_theta_direction(-1)
+            ax.set_yticklabels([]); ax.set_yticks([])
             ax.tick_params(axis='x', labelsize=12)
             ax.set_ylim(0, polar_ylim)
             if show_titles:
-                ax.set_title(
-                    f'Rank {rank+1} | Loss {loss_log[idx]:.4f} | Seed {seed_log[idx]}',
-                    fontsize=9, pad=14
-                )
+                ax.set_title(f'Rank {rank+1} | Loss {loss_log[idx]:.4f} | Seed {seed_log[idx]}',
+                             fontsize=9, pad=14)
             if rank == 0 and show_legend:
                 ax.legend(fontsize=8, loc='upper right', bbox_to_anchor=(1.35, 1.15))
         if show_titles:
-            fig.suptitle(
-                f'[{experiment_name}] Top {dist_k} Angle Distributions — Polar',
-                fontsize=13, fontweight='bold'
-            )
+            fig.suptitle(f'[{experiment_name}] Top {dist_k} Distributions — Polar',
+                         fontsize=13, fontweight='bold')
         fig.tight_layout()
         return fig
 
-    fig_cart  = _make_cart(show_titles=True, show_legend=True)
-    fig_polar = _make_polar(show_titles=True, show_legend=True)
-    if save_path:
-        base, ext = os.path.splitext(save_path)
-        fig_cart .savefig(f'{base}_cart{ext}',  dpi=dpi, bbox_inches='tight')
-        fig_polar.savefig(f'{base}_polar{ext}', dpi=dpi, bbox_inches='tight')
-    plt.show()
+    base_cart  = os.path.join(plots_dir, f'{experiment_name}_dist_cart.png')
+    base_polar = os.path.join(plots_dir, f'{experiment_name}_dist_polar.png')
+    _make_cart(True, True).savefig(base_cart,  dpi=dpi, bbox_inches='tight'); plt.close()
+    _make_polar(True, True).savefig(base_polar, dpi=dpi, bbox_inches='tight'); plt.close()
+    print(f'  Saved: {base_cart}')
+    print(f'  Saved: {base_polar}')
 
     if save_no_title:
-        base, ext   = os.path.splitext(save_path) if save_path else ('dist', '.png')
-        fig_cart_c  = _make_cart(show_titles=False, show_legend=False)
-        fig_polar_c = _make_polar(show_titles=False, show_legend=False)
-        fig_cart_c .savefig(f'{base}_cart_notitle{ext}',  dpi=dpi, bbox_inches='tight')
-        fig_polar_c.savefig(f'{base}_polar_notitle{ext}', dpi=dpi, bbox_inches='tight')
-        plt.close(fig_cart_c)
-        plt.close(fig_polar_c)
+        _make_cart(False, False).savefig(
+            base_cart.replace('.png', '_notitle.png'),  dpi=dpi, bbox_inches='tight'); plt.close()
+        _make_polar(False, False).savefig(
+            base_polar.replace('.png', '_notitle.png'), dpi=dpi, bbox_inches='tight'); plt.close()
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 5 · Quantitative results table
+# Results table
 # ─────────────────────────────────────────────────────────────────────────────
 def compute_experiment_stats(payload, classifier, device, top_k=5, threshold=0.75):
     losses = np.array(payload['loss_log'])
@@ -473,16 +358,15 @@ def compute_experiment_stats(payload, classifier, device, top_k=5, threshold=0.7
     n      = len(losses)
     top_ix = np.argsort(losses)[:top_k]
 
-    # reuse classify_generated_images from MNIST_MLGDF
-    preds = classify_generated_images(payload['results'], classifier, device,
-                                      threshold=threshold)
+    preds, _ = classify_generated_images(payload['results'], classifier, device,
+                                         threshold=threshold)
     digit_counts   = {d: 0 for d in range(10)}
     n_unclassified = 0
-    for p in preds:
-        if p is None:
+    for pr in preds:
+        if pr is None:
             n_unclassified += 1
         else:
-            digit_counts[p] += 1
+            digit_counts[pr] += 1
 
     return {
         'swd_all_mean':     losses.mean(),
@@ -501,7 +385,7 @@ def compute_experiment_stats(payload, classifier, device, top_k=5, threshold=0.7
     }
 
 
-def render_results_table(stats: dict, top_k: int = 5) -> pd.DataFrame:
+def render_results_table(stats, top_k=5):
     rows = []
     for exp_name, s in stats.items():
         row = {
@@ -518,67 +402,98 @@ def render_results_table(stats: dict, top_k: int = 5) -> pd.DataFrame:
     return pd.DataFrame(rows).set_index('Experiment')
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 6 · Run all plots & table
+# Main
 # ─────────────────────────────────────────────────────────────────────────────
-def run_all():
-    experiments = [
-        ('uniform',  payload_uniform),
-        ('bimodal',  payload_bimodal),
-        ('unimodal', payload_unimodal),
-    ]
+def main():
+    args = parse_args()
 
+    results_dir = os.path.abspath(args.results_dir)
+    ckpt_dir    = os.path.abspath(args.ckpt_dir) if args.ckpt_dir \
+                  else os.path.join(MNIST_DIR, 'checkpoints_and_results')
+    plots_dir   = os.path.abspath(args.plots_dir) if args.plots_dir \
+                  else os.path.join(results_dir, 'plots')
+
+    os.makedirs(ckpt_dir,  exist_ok=True)
+    os.makedirs(plots_dir, exist_ok=True)
+
+    set_global_seed(GLOBAL_SEED)
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    print(f'\nDevice     : {device}')
+    print(f'Results dir: {results_dir}')
+    print(f'Plots dir  : {plots_dir}')
+    print(f'Ckpt dir   : {ckpt_dir}\n')
+
+    # ── Load all pkls found in results_dir ──────────────────────────────────
+    experiments = find_pkls(results_dir)
+    if not experiments:
+        print(f'ERROR: No .pkl files found in {results_dir}')
+        sys.exit(1)
+    print(f'\nFound {len(experiments)} experiment(s): {[e[0] for e in experiments]}\n')
+
+    # ── Classifier ──────────────────────────────────────────────────────────
+    clf_path = os.path.join(ckpt_dir, 'robust_classifier.pth')
+    # also check default checkpoints/ dir
+    if not os.path.exists(clf_path):
+        alt = os.path.join(MNIST_DIR, 'checkpoints', 'robust_classifier.pth')
+        if os.path.exists(alt):
+            clf_path = alt
+    digit_classifier = load_or_train_classifier(
+        save_path=clf_path, device=device, epochs=10, batch_size=128, lr=1e-3, seed=GLOBAL_SEED)
+
+    # ── Conditional model ────────────────────────────────────────────────────
+    cond_pt = os.path.join(ckpt_dir, 'MnistConditional500Epoch.pt')
+    if not os.path.exists(cond_pt):
+        alt = os.path.join(MNIST_DIR, 'checkpoints_and_results', 'MnistConditional500Epoch.pt')
+        if os.path.exists(alt):
+            cond_pt = alt
+        else:
+            print('Downloading conditional model from HuggingFace...')
+            cond_pt = hf_hub_download(
+                repo_id=HF_REPO_ID, filename='MnistConditional500Epoch.pt',
+                token=hf_token or None)
+    cond_model = CircularAngleConsistencyModel(
+        nfeatures=2, img_features=784, eps=0.002, nunits=128, depth=5, device=device)
+    ckpt = torch.load(cond_pt, map_location=device)
+    cond_model.load_state_dict(ckpt['model_state_dict'])
+    cond_model.eval()
+    print(f'Conditional model loaded (epoch {ckpt["epoch"]}) ✓\n')
+
+    # ── Per-experiment plots ─────────────────────────────────────────────────
     top_ix_map = {}
     for name, payload in experiments:
-        label = name.capitalize()
-        print(f'\n{"="*50}\n  {label}\n{"="*50}')
+        print(f'\n{"="*55}\n  {name}\n{"="*55}')
 
-        # All images
-        plot_all_images(
-            payload, ncols=5, dpi=100,
-            save_path     = os.path.join(PLOTS_DIR, f'{label}_all.png'),
-            save_no_title = True,
-            classifier    = digit_classifier,
-            device        = device,
-        )
+        plot_all_images(payload, plots_dir, ncols=5, dpi=args.dpi,
+                        save_no_title=args.no_titles,
+                        classifier=digit_classifier, device=device)
 
-        # Top-5 images
-        top_ix = plot_top_k_images(
-            payload, top_k=5, dpi=100,
-            save_path     = os.path.join(PLOTS_DIR, f'{label}_top5.png'),
-            save_no_title = True,
-        )
+        top_ix = plot_top_k_images(payload, plots_dir, top_k=args.top_k,
+                                   dpi=args.dpi, save_no_title=args.no_titles)
         top_ix_map[name] = top_ix
 
-        # Top-5 distributions
-        plot_top_k_distributions(
-            payload, cond_model, top_ix, top_k_dist=5,
-            save_path     = os.path.join(PLOTS_DIR, f'{label}_dist.png'),
-            save_no_title = True,
-            dpi           = 150,
-        )
+        plot_top_k_distributions(payload, cond_model, top_ix, plots_dir,
+                                 top_k_dist=args.top_k, dpi=args.dpi,
+                                 save_no_title=args.no_titles, device=device)
 
-    # Results table
-    print('\n' + '='*50 + '\n  Quantitative Results\n' + '='*50)
-    TOP_K_TABLE = 5
+    # ── Results table ────────────────────────────────────────────────────────
+    print(f'\n{"="*55}\n  Quantitative Results\n{"="*55}')
     stats = {}
     for name, payload in experiments:
-        label = name.capitalize()
-        print(f'Classifying {label}...')
-        stats[label] = compute_experiment_stats(
-            payload, digit_classifier, device, top_k=TOP_K_TABLE
-        )
-        s = stats[label]
+        print(f'Classifying {name}...')
+        stats[name] = compute_experiment_stats(
+            payload, digit_classifier, device, top_k=args.top_k)
+        s = stats[name]
         print(f'  SWD all:     {s["swd_all_mean"]:.4f} ± {s["swd_all_std"]:.4f}')
-        print(f'  SWD top-{TOP_K_TABLE}: {s["swd_top_mean"]:.4f} ± {s["swd_top_std"]:.4f}')
+        print(f'  SWD top-{args.top_k}: {s["swd_top_mean"]:.4f} ± {s["swd_top_std"]:.4f}')
         print(f'  Time:        {s["time_mean"]:.1f} ± {s["time_std"]:.1f} s')
-        print(f'  Digits:      {s["predicted_labels"]}')
 
-    df_results = render_results_table(stats, top_k=TOP_K_TABLE)
-    table_path = os.path.join(PLOTS_DIR, 'results_table.csv')
-    df_results.to_csv(table_path)
+    df = render_results_table(stats, top_k=args.top_k)
+    table_path = os.path.join(plots_dir, 'results_table.csv')
+    df.to_csv(table_path)
     print(f'\nTable saved → {table_path}')
-    print(df_results.to_string())
+    print(df.to_string())
 
 
 if __name__ == '__main__':
-    run_all()
+    main()

@@ -170,7 +170,7 @@ def load_checkpoint_with_hf_fallback(model, model_name, checkpoint_dir, experime
             downloaded = hf_hub_download(
                 repo_id=HF_REPO_ID,
                 filename=hf_path,
-                local_dir=os.path.dirname(os.path.dirname(checkpoint_dir)),  # simulations/
+                local_dir=os.path.dirname(os.path.dirname(os.path.dirname(checkpoint_dir))),  # add one more dirname
                 local_dir_use_symlinks=False,
             )
             print(f"[Checkpoint] Downloaded to {downloaded}")

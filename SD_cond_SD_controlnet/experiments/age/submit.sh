@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --job-name=mlgdf-gender
-#SBATCH --output=mlgdf_gender_%j.log
-#SBATCH --error=mlgdf_gender_%j.err
+#SBATCH --job-name=mlgdf-age
+#SBATCH --output=mlgdf_age_%j.log
+#SBATCH --error=mlgdf_age_%j.err
 #SBATCH --time=06:00:00
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
@@ -25,12 +25,12 @@ python -c "import torch; print('GPU:', torch.cuda.is_available(), torch.cuda.get
 
 # ── 3. Run ────────────────────────────────────────────────────────────────────
 cd <YOUR_REPO_DIR>
-OUTPUT_DIR="output/mlgdf_gender_${SLURM_JOB_ID}"
+OUTPUT_DIR="output/mlgdf_age_${SLURM_JOB_ID}"
 mkdir -p "$OUTPUT_DIR"
 
-python run_gender.py \
+python run_age.py \
     --output_dir        "$OUTPUT_DIR" \
-    --wandb_project     "mlgdf-gender" \
+    --wandb_project     "mlgdf-age" \
     \
     --n_steps           30 \
     --start_step        15 \
@@ -44,15 +44,15 @@ python run_gender.py \
     --kernel_alpha      1.0 \
     \
     --num_variations    6 \
-    --n_targets         100 \
     --n_eval            10 \
+    \
+    --age_min           10 \
+    --age_max           80 \
+    --age_step          1 \
+    --age_gender        man \
     \
     --sprinter_variation_prompt  "a superrealistic professional photograph of" \
     --sprinter_eval_prompt       "a superrealistic professional photograph of" \
-    \
-    --groups \
-        "Woman:a superrealistic portrait photograph of a woman, studio lighting:50" \
-        "Man:a superrealistic portrait photograph of a man, studio lighting:50" \
     \
     --architect_model_id  "stabilityai/sdxl-turbo" \
     --sprinter_model_id   "stabilityai/sdxl-turbo" \

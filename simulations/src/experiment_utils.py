@@ -62,7 +62,8 @@ def get_environment_info():
         "cuda_available": torch.cuda.is_available(),
         "cuda_version": torch.version.cuda if torch.cuda.is_available() else None,
         "device_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu",
-        "package_versions": versions,
+        "packages": versions,
+
     }
 
 
@@ -177,7 +178,8 @@ def load_checkpoint_with_hf_fallback(model, model_name, checkpoint_dir, experime
             print(f"[Checkpoint] HuggingFace download failed: {e}")
             return False
 
-    return experiment_utils.load_model_checkpoint(model, model_name, checkpoint_dir, experiment_name, seed, device)
+    return load_model_checkpoint(model, model_name, checkpoint_dir, experiment_name, seed, device)
+
 
 # ============================================================
 # RESULTS SUMMARY HELPERS

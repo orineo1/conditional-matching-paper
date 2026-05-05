@@ -29,7 +29,7 @@ export WANDB_API_KEY=YOUR_WANDB_API_KEY_HERE
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # Repo root — adjust to wherever you cloned the repo
-REPO="$(cd "$(dirname "$0")" && pwd)"
+REPO=YOUR_REPO
 cd "$REPO"
 
 OUTPUT_DIR="output/mlgd_f_${SLURM_JOB_ID}"

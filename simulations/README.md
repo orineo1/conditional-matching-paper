@@ -50,6 +50,14 @@ Open the corresponding notebook in `notebooks/` and run all cells. Each notebook
 3. Evaluates the learned conditional against the true GMM conditional
 4. Saves metrics to `results/`
 
+### Pre-trained Weights
+
+For the three main experiment notebooks (`Exp_2D_cond_1D`, `Exp_5D_cond_1D`, `Exp_10D_cond_1D`), pre-trained model checkpoints are available and will be **downloaded automatically** from HuggingFace the first time each notebook is run — no manual setup required. This applies as long as the default configuration (seed, architecture hyperparameters) is left unchanged.
+
+The `toy_example_with_beta_sweep.ipynb` notebook does not have pre-trained weights and will train from scratch.
+
+To force retraining from scratch for any notebook, set `FORCE_RETRAIN = True` in the configuration cell.
+
 ## Metrics
 
 - **L2-GMM distance**: closed-form L2 distance between two GMMs

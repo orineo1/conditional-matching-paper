@@ -9,22 +9,24 @@ $\mathcal{P}(Y \mid X = x^*)$ matches a user-specified target $\mathcal{G}(Y)$
 
 ```
 MNIST/
-├── MNIST_MLGDF.py          # Main inference script (run this)
-├── MNIST_MLGDF.sh          # SLURM job script for the inference run
-├── requirements.txt        # Python dependencies
+├── MNIST_MLGDF.py              # Main inference script (run this)
+├── MNIST_MLGDF.sh              # SLURM job script for the inference run
+├── MLGDF_visualization.py      # Visualization & evaluation script
+├── MLGDF_visualization.sh      # SLURM job script for visualization
+├── requirements.txt            # Python dependencies
 ├── src/
-│   ├── cond_model.py       # Conditional iCT model (CircularAngleConsistencyModel)
-│   ├── uncond_model.py     # Unconditional DDPM UNet wrapper
-│   ├── classifier.py       # Noise-robust MNIST digit classifier
-│   └── dataset.py          # AugmentedMNISTDataset for conditional model training
+│   ├── cond_model.py           # Conditional iCT model (CircularAngleConsistencyModel)
+│   ├── uncond_model.py         # Unconditional DDPM UNet wrapper
+│   ├── classifier.py           # Noise-robust MNIST digit classifier
+│   └── dataset.py              # AugmentedMNISTDataset for conditional model training
 ├── train/
-│   ├── train_conditional.py   # Train the conditional iCT model
-│   ├── train_conditional.sh   # SLURM script for conditional training
-│   ├── train_uncond.py        # Train the unconditional DDPM
-│   └── train_unconditional.sh # SLURM script for unconditional training
-├── checkpoints/            # Saved classifier weights (auto-created)
-├── results/                # Output .pkl files per run (auto-created)
-└── logs/                   # SLURM logs (auto-created)
+│   ├── train_conditional.py    # Train the conditional iCT model
+│   ├── train_conditional.sh    # SLURM script for conditional training
+│   ├── train_uncond.py         # Train the unconditional DDPM
+│   └── train_unconditional.sh  # SLURM script for unconditional training
+├── checkpoints/                # Saved classifier weights (auto-created)
+├── results/                    # Output .pkl files per run (auto-created)
+└── logs/                       # SLURM logs (auto-created)
 ```
 
 ## Pretrained Models
@@ -72,7 +74,6 @@ python MNIST_MLGDF.py \
     --step_size_mode double \
     --num_x_t 3 \
     --nsamples 1500 \
-    --clamp \
     --wandb_mode disabled
 ```
 
@@ -85,7 +86,6 @@ python MNIST_MLGDF.py \
     --step_size_mode original \
     --num_x_t 10 \
     --nsamples 1500 \
-    --clamp \
     --wandb_mode disabled
 ```
 
@@ -97,22 +97,26 @@ python MNIST_MLGDF.py \
     --step_size_mode original \
     --num_x_t 3 \
     --nsamples 600 \
-    --clamp \
     --wandb_mode disabled
 ```
 
+> **Note:** `--clamp` is off by default. The paper results were obtained without clamping.
+
 ### Via SLURM
 
-Edit `MNIST_MLGDF.sh` to set your partition and experiment, then:
+Edit `MNIST_MLGDF.sh` to set your partition name, then:
 
 ```bash
+export REPO_ROOT=/path/to/repo
+export ENV_PATH=/path/to/your/env
+export HF_TOKEN=hf_...
 sbatch MNIST_MLGDF.sh
 ```
 
 Monitor:
 ```bash
 squeue -u $USER
-tail -f logs/lgd_<JOBID>.log
+tail -f logs/MLGDF_<JOBID>.log
 ```
 
 ### Train classifier only
@@ -122,6 +126,38 @@ You can also trigger this explicitly:
 
 ```bash
 python MNIST_MLGDF.py --train_classifier_only
+```
+
+## Visualization
+
+After running an experiment, visualize results with:
+
+```bash
+python MLGDF_visualization.py \
+    --results_dir results/unimodal_run/unimodal_var515_st130_ssdouble_xt3_ns1500_cl0/
+```
+
+The script automatically finds all `.pkl` files in `--results_dir` (recursively),
+skips any that are missing, and saves plots alongside the results.
+
+**Arguments:**
+
+| Argument | Default | Description |
+|---|---|---|
+| `--results_dir` | *(required)* | Directory containing `.pkl` result files |
+| `--ckpt_dir` | `checkpoints_and_results/` | Directory with model checkpoints |
+| `--plots_dir` | `<results_dir>/plots/` | Where to save plots |
+| `--top_k` | `5` | Number of top images/distributions to plot |
+| `--dpi` | `150` | Plot resolution |
+| `--no_titles` | off | Also save copies of plots without titles |
+
+### Via SLURM
+
+Edit `MLGDF_visualization.sh` to set `RESULTS_DIR` and your partition, then:
+
+```bash
+export HF_TOKEN=hf_...
+sbatch MLGDF_visualization.sh
 ```
 
 ## W&B Logging
@@ -158,4 +194,5 @@ The exact hyperparameters used in the paper are:
 | Bimodal    | 125 | `original` | 10 | 1500 | 252 |
 | Uniform    | 290 | `original` | 3  | 600  | —   |
 
-All runs on 15 seeds. Top-5 results by SWD loss are reported.
+All runs use 15 seeds. Top-5 results by SWD loss are reported.
+`--clamp` is **off** by default.

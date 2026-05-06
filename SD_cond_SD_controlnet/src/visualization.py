@@ -155,11 +155,27 @@ def visualize_step(
         axes[1, j + 2].set_title(f"Cond {j + 1}")
 
     ax = axes[1, n_cols - 1]
+    n_groups_plot = len(group_pca_slices)
     for g_idx, (g_pca, g_name) in enumerate(zip(group_pca_slices, group_names)):
-        ax.scatter(g_pca[:, 0], g_pca[:, 1],
-                   c=_COLORS[g_idx % len(_COLORS)],
-                   marker=_MARKERS[g_idx % len(_MARKERS)],
-                   alpha=0.6, s=40, label=g_name)
+        if n_groups_plot <= 4:
+            # few groups: show each with its own color and label
+            ax.scatter(g_pca[:, 0], g_pca[:, 1],
+                       c=_COLORS[g_idx % len(_COLORS)],
+                       marker=_MARKERS[g_idx % len(_MARKERS)],
+                       alpha=0.6, s=40, label=g_name)
+        else:
+            # many groups (e.g. age sweep): show extremes as anchors, rest as gray
+            if g_idx == 0:
+                ax.scatter(g_pca[:, 0], g_pca[:, 1],
+                           c="royalblue", alpha=0.8, s=50,
+                           label=f"{g_name} (start)")
+            elif g_idx == n_groups_plot - 1:
+                ax.scatter(g_pca[:, 0], g_pca[:, 1],
+                           c="crimson", alpha=0.8, s=50,
+                           label=f"{g_name} (end)")
+            else:
+                ax.scatter(g_pca[:, 0], g_pca[:, 1],
+                           c="lightgray", alpha=0.4, s=20)
     ax.scatter(gen_pca[:, 0],  gen_pca[:, 1],
                c="limegreen", alpha=0.8, s=50, marker="x", label="Generated")
     ax.set_title(f"CLIP PCA  Var={pca_var:.1%}")

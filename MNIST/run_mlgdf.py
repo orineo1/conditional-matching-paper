@@ -38,8 +38,8 @@ import wandb
 # ─────────────────────────────────────────────────────────────────────────────
 # Paths
 # ─────────────────────────────────────────────────────────────────────────────
-REPO_ROOT = os.environ.get("REPO_ROOT", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-MNIST_SRC = os.path.join(REPO_ROOT, "MNIST", "src")
+REPO_ROOT = os.environ.get("REPO_ROOT", os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+MNIST_SRC = os.path.join(REPO_ROOT, "experiments", "MNIST", "src")
 for p in [REPO_ROOT, MNIST_SRC]:
     if p not in sys.path:
         sys.path.insert(0, p)
@@ -60,7 +60,7 @@ GLOBAL_SEED = 42
 HF_TOKEN   = os.environ.get("HF_TOKEN", "")
 HF_REPO_ID = "anon-submission-cdm/cdm-inverse-design"
 
-CLF_PATH  = os.path.join(REPO_ROOT, "MNIST", "checkpoints", "robust_classifier.pth")
+CLF_PATH  = os.path.join(REPO_ROOT, "experiments", "MNIST", "checkpoints", "robust_classifier.pth")
 NORM_MEAN = 0.1307
 NORM_STD  = 0.3081
 

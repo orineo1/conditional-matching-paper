@@ -68,7 +68,7 @@ export CUBLAS_WORKSPACE_CONFIG=":4096:8"
 # REPO_ROOT should point to the root of this repository.
 # If not set externally, default to two levels above this script.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-export REPO_ROOT="${REPO_ROOT:-$(dirname "$SCRIPT_DIR")}"
+export REPO_ROOT="${REPO_ROOT:-$(dirname $(dirname "$SCRIPT_DIR"))}"
 
 mkdir -p "$REPO_ROOT/MNIST/logs"
 mkdir -p "$REPO_ROOT/MNIST/checkpoints"

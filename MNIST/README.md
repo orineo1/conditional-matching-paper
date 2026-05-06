@@ -42,7 +42,7 @@ The inference script downloads them automatically via `huggingface_hub`.
 pip install -r requirements.txt
 ```
 
-Set your credentials as environment variables (never hardcode them):
+Set your credentials as environment variables :
 
 ```bash
 export HF_TOKEN=hf_...          # HuggingFace token (required to download checkpoints)

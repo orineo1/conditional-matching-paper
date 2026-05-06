@@ -42,6 +42,7 @@ def plot_row(images, title, count=5, save_path=None):
 def visualize_step(
     sd, architect, sprinter, target_clip_np,
     num_cond=4, save_path=None, pca_fixed=None,
+    group_names=None, group_sizes=None,
 ):
     """
     Generate the per-step 2×(2+num_cond+1) visualization grid.
@@ -61,6 +62,11 @@ def visualize_step(
         pca_fixed:      optional fitted PCA for consistent projection across steps.
     """
     i = sd["step"]
+    # fallback: treat all targets as one group if metadata not provided
+    if group_names is None:
+        group_names = ["Target"]
+    if group_sizes is None:
+        group_sizes = [target_clip_np.shape[0]]
     with torch.no_grad():
         img_xt_reg = latent_to_pil(
             sd["latents_step_regular_cpu"].to(architect.device),
@@ -111,9 +117,17 @@ def visualize_step(
 
         target_pca = pca_coords[: target_clip_np.shape[0]]
         gen_pca    = pca_coords[target_clip_np.shape[0]:]
-        n_per_mode = target_clip_np.shape[0] // 2
-        masc_pca   = target_pca[:n_per_mode]
-        fem_pca    = target_pca[n_per_mode:]
+
+        # split target_pca back into per-group slices using group_sizes
+        group_pca_slices = []
+        offset = 0
+        for sz in group_sizes:
+            group_pca_slices.append(target_pca[offset: offset + sz])
+            offset += sz
+
+    _COLORS  = ["royalblue", "crimson", "limegreen", "orange",
+                "mediumpurple", "gold", "deepskyblue", "hotpink"]
+    _MARKERS = ["o", "x", "^", "s", "D", "P", "v", "<"]
 
     n_cols = 2 + num_cond + 1
     fig, axes = plt.subplots(2, n_cols, figsize=(4 * n_cols, 8))
@@ -141,10 +155,11 @@ def visualize_step(
         axes[1, j + 2].set_title(f"Cond {j + 1}")
 
     ax = axes[1, n_cols - 1]
-    ax.scatter(masc_pca[:, 0], masc_pca[:, 1],
-               c="royalblue", alpha=0.6, s=40, label="Target masc")
-    ax.scatter(fem_pca[:, 0],  fem_pca[:, 1],
-               c="crimson",   alpha=0.6, s=40, label="Target fem")
+    for g_idx, (g_pca, g_name) in enumerate(zip(group_pca_slices, group_names)):
+        ax.scatter(g_pca[:, 0], g_pca[:, 1],
+                   c=_COLORS[g_idx % len(_COLORS)],
+                   marker=_MARKERS[g_idx % len(_MARKERS)],
+                   alpha=0.6, s=40, label=g_name)
     ax.scatter(gen_pca[:, 0],  gen_pca[:, 1],
                c="limegreen", alpha=0.8, s=50, marker="x", label="Generated")
     ax.set_title(f"CLIP PCA  Var={pca_var:.1%}")

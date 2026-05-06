@@ -302,10 +302,6 @@ def main():
             plot_row(imgs, f"Target: {name}",
                      save_path=os.path.join(args.output_dir, f"target_samples_{name}.png"))
 
-    # legacy aliases for npy saving
-    man_images   = target_images_per_group.get("Man",   list(target_images_per_group.values())[-1])
-    woman_images = target_images_per_group.get("Woman", list(target_images_per_group.values())[0])
-
     # ── 6. Encode targets to CLIP ───────────────────────────────────────────
     print("Encoding targets to CLIP...", flush=True)
     clip_model.to(device)
@@ -316,7 +312,8 @@ def main():
                 pil_images_to_tensor(imgs, device), clip_model, clip_processor)
     clip_model.to("cpu")
     all_clip_embeddings = torch.cat(list(clip_embs_per_group.values()), dim=0)
-    print(f"Target CLIP embeddings: {all_clip_embeddings.shape}", flush=True)
+    group_sizes = [len(imgs) for imgs in target_images_per_group.values()]
+    print(f"Target CLIP embeddings: {all_clip_embeddings.shape}  groups: {list(zip(group_names, group_sizes))}", flush=True)
 
     # Target PCA — fit on all groups, one scatter per group
     pca_fixed = PCA(n_components=2)
@@ -369,11 +366,11 @@ def main():
     print(f"✅ wandb run: {run.name}", flush=True)
 
     wandb.log({
-        "scribble":             wandb.Image(scribble_pil),
-        "source_portrait":      wandb.Image(source_image),
-        "target_samples_man":   [wandb.Image(p) for p in man_images],
-        "target_samples_woman": [wandb.Image(p) for p in woman_images],
-        "target_clip_pca":      wandb.Image(pca_path),
+        "scribble":        wandb.Image(scribble_pil),
+        "source_portrait": wandb.Image(source_image),
+        "target_clip_pca": wandb.Image(pca_path),
+        **{f"target_samples/{name}": [wandb.Image(p) for p in imgs]
+           for name, imgs in target_images_per_group.items()},
     })
     print("✅ Input images logged to wandb.", flush=True)
 
@@ -492,7 +489,7 @@ def main():
 
     visualize_step(sd_baseline, architect, sprinter, target_clip_np,
                    num_cond=4, save_path=os.path.join(steps_dir, "step_baseline.png"),
-                   pca_fixed=pca_fixed)
+                   pca_fixed=pca_fixed, group_names=group_names, group_sizes=group_sizes)
     print("✅ Baseline visualisation saved.", flush=True)
 
     # ── 9. MLGD-F guidance loop ─────────────────────────────────────────────
@@ -609,7 +606,7 @@ def main():
 
         visualize_step(sd, architect, sprinter, target_clip_np,
                        num_cond=5, save_path=os.path.join(steps_dir, f"step_{i:03d}.png"),
-                       pca_fixed=pca_fixed)
+                       pca_fixed=pca_fixed, group_names=group_names, group_sizes=group_sizes)
 
         latents = denoise_step(
             architect.scheduler, noise_pred, t, latents_step, correction=correction
@@ -696,18 +693,20 @@ def main():
 
     save_image_list_npy(mlgd_f_eval_photos,  os.path.join(npy_dir, "photos_mlgd_f.npy"))
     save_image_list_npy(regular_eval_photos, os.path.join(npy_dir, "photos_regular.npy"))
-    save_image_list_npy(man_images,          os.path.join(npy_dir, "targets_man.npy"))
-    save_image_list_npy(woman_images,        os.path.join(npy_dir, "targets_woman.npy"))
+    for name, imgs in target_images_per_group.items():
+        safe_name = name.lower().replace(" ", "_")
+        save_image_list_npy(imgs, os.path.join(npy_dir, f"targets_{safe_name}.npy"))
     save_image_list_npy([source_image],      os.path.join(npy_dir, "source_portrait.npy"))
     save_image_list_npy([scribble_pil],      os.path.join(npy_dir, "scribble.npy"))
     save_image_list_npy([final_mlgd_f_pil],  os.path.join(npy_dir, "final_scribble_mlgd_f.npy"))
     save_image_list_npy([final_regular_pil], os.path.join(npy_dir, "final_scribble_regular.npy"))
     print("✅ Image arrays saved to npy/", flush=True)
 
-    for folder, photos in [("targets_man", man_images), ("targets_woman", woman_images)]:
-        photo_dir = os.path.join(args.output_dir, folder)
+    for name, imgs in target_images_per_group.items():
+        safe_name = name.lower().replace(" ", "_")
+        photo_dir = os.path.join(args.output_dir, f"targets_{safe_name}")
         os.makedirs(photo_dir, exist_ok=True)
-        for idx, photo in enumerate(photos):
+        for idx, photo in enumerate(imgs):
             photo.save(os.path.join(photo_dir, f"photo_{idx:03d}.png"))
     print("✅ Individual target portraits saved.", flush=True)
 
@@ -736,8 +735,8 @@ def main():
             "npy": {
                 "photos_mlgd_f":          "npy/photos_mlgd_f.npy",
                 "photos_regular":         "npy/photos_regular.npy",
-                "targets_man":            "npy/targets_man.npy",
-                "targets_woman":          "npy/targets_woman.npy",
+                **{f"targets_{n.lower().replace(' ','_')}": f"npy/targets_{n.lower().replace(' ','_')}.npy"
+                   for n in target_images_per_group},
                 "source_portrait":        "npy/source_portrait.npy",
                 "scribble":               "npy/scribble.npy",
                 "final_scribble_mlgd_f":  "npy/final_scribble_mlgd_f.npy",

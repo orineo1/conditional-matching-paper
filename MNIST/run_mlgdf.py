@@ -671,11 +671,11 @@ def main():
     print("Downloading conditional model...")
     cond_path = hf_hub_download(
         repo_id=HF_REPO_ID, filename="MnistConditional500Epoch.pt",
-        token=HF_TOKEN or None)
+        subfolder="MNIST", token=HF_TOKEN or None)
     print("Downloading unconditional model...")
     uncond_path = hf_hub_download(
         repo_id=HF_REPO_ID, filename="MnistUncond100Epoch.pth",
-        token=HF_TOKEN or None)
+        subfolder="MNIST", token=HF_TOKEN or None)
 
     cond_model = CircularAngleConsistencyModel(
         nfeatures=2, img_features=784, eps=0.002,

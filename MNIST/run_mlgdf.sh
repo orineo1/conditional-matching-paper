@@ -6,7 +6,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=48G
-#SBATCH --partition=YOUR_PARTITION   # <-- change to your cluster partition
+#SBATCH --partition=gpu
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CONFIGURE YOUR RUN HERE
@@ -38,26 +38,25 @@ SMOKE_TEST=false          # true = 2 seeds only, for quick debug
 # ══════════════════════════════════════════════════════════════════════════════
 # 1. Environment
 # ══════════════════════════════════════════════════════════════════════════════
-# Activate your conda/venv environment:
-source "${ENV_PATH}/bin/activate"   # set ENV_PATH before submitting, e.g.:
-                                    #   export ENV_PATH=/path/to/your/env
+# Set ENV_PATH to your Python environment before submitting:
+#   export ENV_PATH=/path/to/your/env
+#   sbatch run_mlgdf.sh
+source "$ENV_PATH/bin/activate"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 2. Caches  (optional — avoids re-downloading HF models every run)
 # ══════════════════════════════════════════════════════════════════════════════
-export HF_HOME="${HF_HOME:-$HOME/.cache/huggingface}"
-export MPLCONFIGDIR="${MPLCONFIGDIR:-$HOME/.config/matplotlib}"
-mkdir -p "$HF_HOME" "$MPLCONFIGDIR"
+# Uncomment and set LAB_ROOT to a writable directory on your cluster:
+# export LAB_ROOT="/path/to/your/lab/storage"
+# export HF_HOME="$LAB_ROOT/hf_cache"
+# export MPLCONFIGDIR="$LAB_ROOT/.matplotlib_cache"
+# mkdir -p "$HF_HOME" "$MPLCONFIGDIR"
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 3. Secrets  — READ FROM ENVIRONMENT, never hardcode here
-#    Set these in your ~/.bashrc or pass via `sbatch --export`:
-#        export HF_TOKEN=hf_...
-#        export WANDB_API_KEY=...
+# 3. Secrets
 # ══════════════════════════════════════════════════════════════════════════════
-: "${HF_TOKEN:?HF_TOKEN is not set. Export it before submitting.}"
-export HF_TOKEN
-export WANDB_API_KEY="${WANDB_API_KEY:-}"   # optional; wandb also reads ~/.netrc
+export HF_TOKEN="YOUR_HF_TOKEN_HERE"
+export WANDB_API_KEY="YOUR_WANDB_API_KEY_HERE"
 
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export CUBLAS_WORKSPACE_CONFIG=":4096:8"
@@ -65,8 +64,6 @@ export CUBLAS_WORKSPACE_CONFIG=":4096:8"
 # ══════════════════════════════════════════════════════════════════════════════
 # 4. Repo root & directories
 # ══════════════════════════════════════════════════════════════════════════════
-# REPO_ROOT should point to the root of this repository.
-# If not set externally, default to two levels above this script.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export REPO_ROOT="${REPO_ROOT:-$(dirname $(dirname "$SCRIPT_DIR"))}"
 

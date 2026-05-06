@@ -27,8 +27,8 @@ conditional-matching-paper/
 ├── simulations/                # Synthetic MoG experiments (Section 4.1)
 │   ├── src/                    # Diffusion, consistency model, loss, utils
 │   ├── notebooks/              # Experiment notebooks (2D, 5D, 10D, β-sweep)
-│   ├── params/                 # Pretrained GMM parameters (.pt)
-│   ├── results/                # Output files
+│   ├── params/                 # Pretrained GMM parameters (.pt) — included in repo
+│   ├── results/                # Output files (gitignored)
 │   └── requirements.txt
 │
 ├── MNIST/                      # MNIST rotation task (Section 4.2)
@@ -43,6 +43,7 @@ conditional-matching-paper/
 │   ├── src/                    # Models, generation, metrics, CLIP utils, viz
 │   ├── scripts/                # run_mlgd_f.py, eval_baselines.py
 │   ├── notebooks/              # Evaluation notebooks & ε_g experiment
+│   │   └── results/            # ε_g benchmark CSVs and cached N=2000 MMD JSONs
 │   ├── experiments/            # Per-scenario result JSONs
 │   └── requirements.txt
 │
@@ -58,7 +59,38 @@ MLGD-F has two components:
 1. **Outer loop** — standard LGD-style reverse diffusion guided by a distributional loss L(x).
 2. **Inner estimator** — draws n_cond samples from the fast conditional sampler f_φ(x, ·), computes a distributional distance (MMD or SWD) against a fixed set of target samples from G, and backpropagates through f_φ.
 
-Because f_φ is a **single-step** sampler, the gradient computation is shallow (no K-step unrolled chain), keeping peak VRAM feasible (43 GB vs. ~375 GB projected for a 30-step SDXL-Base inner sampler on an A100 80 GB).
+Because f_φ is a **single-step** sampler, the gradient computation is shallow (no K-step unrolled chain). On an NVIDIA L40S (48 GB), the full SD pipeline with n_cond = 100 uses **43 GB** peak VRAM; a 30-step SDXL-Base inner sampler would project to **~375 GB**, rendering it infeasible.
+
+---
+
+## Models & Checkpoints
+
+### Per-experiment model table
+
+| Experiment | Component | Role | Source |
+|---|---|---|---|
+| **Simulations** | Score network (MLP DDIM) | Prior P(X) — outer loop | Trained & included in `simulations/params/` |
+| **Simulations** | Conditional iCT (MLP) | Fast sampler f_φ — inner estimator | Trained & included in `simulations/params/` |
+| **MNIST** | Unconditional DDPM UNet | Prior P(X) — outer loop | HuggingFace: `anon-submission-cdm/cdm-inverse-design` |
+| **MNIST** | Conditional iCT | Fast sampler f_φ — inner estimator | HuggingFace: `anon-submission-cdm/cdm-inverse-design` |
+| **MNIST** | Digit classifier (CNN) | Evaluation only | HuggingFace: `anon-submission-cdm/cdm-inverse-design` |
+| **SD** | SDXL Base 1.0 | Prior P(X) — outer loop | `stabilityai/stable-diffusion-xl-base-1.0` |
+| **SD** | SDXL Turbo | Fast sampler f_φ — inner estimator | `stabilityai/sdxl-turbo` |
+| **SD** | ControlNet-Scribble | Scribble → image conditioning | `xinsir/controlnet-scribble-sdxl-1.0` |
+| **SD** | CLIP ViT-L/14 | Distribution loss in embedding space | `openai/clip-vit-large-patch14` |
+
+SD models are downloaded automatically from HuggingFace Hub on first run. The ε_g benchmark results (`notebooks/results/vjp_results_lightning.csv`) and the N=2000 MMD cache (`experiments/eval_all_results.json`) are committed directly in this repository.
+
+### Hardware requirements
+
+| Experiment | Task | GPU | VRAM |
+|---|---|---|---|
+| Simulations | Training + optimization | Any CUDA GPU | ≥ 8 GB |
+| MNIST | Training + optimization | Any CUDA GPU | ≥ 8 GB |
+| SD | Optimization (125 steps, N=100) | NVIDIA L40S | 48 GB |
+| SD | N=2000 distribution evaluation | High-memory GPU | > 48 GB |
+
+> **Cluster note.** SD experiments were run on salmon nodes (8 × NVIDIA L40S per node, 48 GB per GPU). The N=2000 evaluation step is more memory-intensive than the optimization and requires a GPU with more than 48 GB VRAM (or multi-GPU with model sharding).
 
 ---
 
@@ -66,7 +98,7 @@ Because f_φ is a **single-step** sampler, the gradient computation is shallow (
 
 ### 1 · Synthetic Simulations (MoG)
 
-Mixture-of-Gaussians experiments in 2D, 5D, and 10D input space with 1D output. Compares MLGD-F against a slow (multi-step) inner sampler across 25 optimization runs.
+Mixture-of-Gaussians experiments in 2D, 5D, and 10D input space with 1D output. Compares MLGD-F against a slow (multi-step) inner sampler across 25 optimization runs. Pretrained GMM parameters are included in the repository under `simulations/params/` — no downloads required.
 
 ```bash
 cd simulations
@@ -81,10 +113,6 @@ See [`simulations/README.md`](simulations/README.md) for full details.
 
 Find a digit image x\* ∈ R^784 such that P(rotation angle | X = x\*) matches a user-specified target G (unimodal, bimodal, or uniform over rotation angles).
 
-**Models used:**
-- Unconditional DDPM over MNIST images (prior over X)
-- Conditional improved Consistency Training (iCT) model for P(angle | digit image)
-
 #### Quick start (pretrained checkpoints from HuggingFace)
 
 ```bash
@@ -95,18 +123,15 @@ pip install -r requirements.txt
 python -c "
 from huggingface_hub import hf_hub_download
 import os; os.makedirs('checkpoints', exist_ok=True)
-hf_hub_download('anon-submission-cdm/cdm-inverse-design',
-                filename='mnist/uncond_unet.pt',
-                local_dir='checkpoints')
-hf_hub_download('anon-submission-cdm/cdm-inverse-design',
-                filename='mnist/cond_ict.pt',
-                local_dir='checkpoints')
+for f in ['mnist/uncond_unet.pt', 'mnist/cond_ict.pt', 'mnist/classifier.pt']:
+    hf_hub_download('anon-submission-cdm/cdm-inverse-design',
+                    filename=f, local_dir='checkpoints')
 "
 
 # Run MLGD-F (bimodal target, 15 seeds)
 python run_mlgdf.py --target bimodal --num_runs 15
 
-# Visualize results
+# Visualize & evaluate
 python visualize.py --results_dir results/
 ```
 
@@ -124,22 +149,15 @@ See [`MNIST/README.md`](MNIST/README.md) for hyperparameter details and SLURM sc
 
 ### 3 · Stable Diffusion Image Editing
 
-Optimize a portrait scribble x\* so that images generated from it via ControlNet-Scribble satisfy a distributional target G in CLIP embedding space. Targets include discrete gender mixtures and continuous age/gender interpolations.
-
-**Models used (all auto-downloaded from HuggingFace):**
-| Role | Model |
-|---|---|
-| Prior over X (Architect) | `stabilityai/stable-diffusion-xl-base-1.0` |
-| Fast conditional sampler f_φ (Sprinter) | `stabilityai/sdxl-turbo` |
-| Conditioning | `xinsir/controlnet-scribble-sdxl-1.0` |
-| Embedding | `openai/clip-vit-large-patch14` |
+Optimize a portrait scribble x\* so that images generated from it via ControlNet-Scribble satisfy a distributional target G in CLIP embedding space. Four targets: balanced gender mixture, skewed gender mixture, gender interpolation continuum, and age interpolation continuum.
 
 #### Requirements
 
 ```bash
 cd SD_cond_SD_controlnet
 pip install -r requirements.txt
-# Requires CUDA ≥ 12.8 and ~80 GB VRAM (A100 recommended)
+# Requires CUDA ≥ 12.8; optimization runs on L40S 48 GB
+# N=2000 evaluation requires > 48 GB VRAM
 ```
 
 #### Run MLGD-F (balanced gender target)
@@ -158,39 +176,31 @@ python scripts/run_mlgd_f.py \
 bash run_eval_baselines.sh
 ```
 
-#### Evaluate results
+#### Evaluate (N=2000 MMD results cached)
+
+Pre-computed N=2000 results are in `experiments/eval_all_results.json`. To rerun or inspect:
 
 ```bash
 # Open notebooks/eval_all_experiments.ipynb
-# or
+# or load the cache directly
 python -c "import json; print(json.load(open('experiments/eval_all_results.json')))"
 ```
 
-See [`SD_cond_SD_controlnet/README.md`](SD_cond_SD_controlnet/README.md) for full argument reference.
+#### ε_g benchmark
+
+The Jacobian-fidelity (ε_g) experiment comparing SDXL-Base and SDXL-Lightning is in `notebooks/eps_g_experiment.ipynb`. Results are stored locally in `notebooks/results/vjp_results_lightning.csv` — no external download required.
+
+See [`SD_cond_SD_controlnet/README.md`](SD_cond_SD_controlnet/README.md) for the full argument reference.
 
 ---
 
 ## Installation
 
-Each sub-module has its own `requirements.txt`. A consolidated top-level file covers all three:
+Each sub-module has its own `requirements.txt` with pinned versions. A consolidated top-level file covers all three:
 
 ```bash
 pip install -r requirements.txt
 ```
-
-GPU requirements vary by experiment:
-- **Simulations / MNIST:** any modern GPU (≥ 8 GB VRAM)
-- **Stable Diffusion:** A100 80 GB (or equivalent) recommended
-
----
-
-## Pretrained Checkpoints
-
-MNIST checkpoints and the ε_g benchmark results are hosted on HuggingFace:
-
-> [huggingface.co/anon-submission-cdm/cdm-inverse-design](https://huggingface.co/anon-submission-cdm/cdm-inverse-design)
-
-Stable Diffusion models are downloaded automatically from the HuggingFace Hub on first run.
 
 ---
 

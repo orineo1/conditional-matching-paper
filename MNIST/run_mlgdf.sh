@@ -66,9 +66,7 @@ export CUBLAS_WORKSPACE_CONFIG=":4096:8"
 # 4. Repo root & directories
 # ══════════════════════════════════════════════════════════════════════════════
 # REPO_ROOT should point to the root of this repository.
-# If not set externally, default to two levels above this script.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-export REPO_ROOT="${REPO_ROOT:-$(dirname "$SCRIPT_DIR")}"
+export REPO_ROOT="${REPO_ROOT:?REPO_ROOT is not set. Export it before submitting.}"
 
 mkdir -p "$REPO_ROOT/MNIST/logs"
 mkdir -p "$REPO_ROOT/MNIST/checkpoints"
@@ -94,6 +92,7 @@ echo "============================================"
 # 6. Train classifier if missing
 # ══════════════════════════════════════════════════════════════════════════════
 cd "$REPO_ROOT/MNIST"
+export PYTHONPATH="$REPO_ROOT/MNIST/src:$PYTHONPATH"
 
 CLF="$REPO_ROOT/MNIST/checkpoints/robust_classifier.pth"
 if [ ! -f "$CLF" ]; then

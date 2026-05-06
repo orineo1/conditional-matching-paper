@@ -32,35 +32,32 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 REPO=YOUR_REPO
 cd "$REPO"
 
-OUTPUT_DIR="output/mlgd_f_${SLURM_JOB_ID}"
+OUTPUT_DIR="$REPO/output/mlgd_f_${SLURM_JOB_ID}"
 mkdir -p "$OUTPUT_DIR"
 
 # ── 5. Run ────────────────────────────────────────────────────────────────────
 python scripts/run_mlgd_f.py \
     --output_dir "$OUTPUT_DIR" \
+    --wandb_project "MLGDF-EXP" \
     --n_steps 30 \
     --start_step 15 \
     --num_variations 6 \
-    --n_targets 20 \
     --base_zeta 5.0 \
     --guidance_scale 0.0 \
     --controlnet_scale 0.5 \
-    --n_eval 6 \
     --loss_fn mmd \
     --loss_scale 1.0 \
     --bandwidth_scale 1.0 \
     --kernel_alpha 1.0 \
+    --target_prompts \
+        "Man:a superrealistic portrait photograph of a man, studio lighting:10" \
+        "Woman:a superrealistic portrait photograph of a woman, studio lighting:10" \
     --seed 1
 
 # ── 6. Offline analysis ───────────────────────────────────────────────────────
-echo "Running offline analysis..."
 python src/analysis.py \
     --run_dir "$OUTPUT_DIR" \
     --plots_dir "$OUTPUT_DIR/plots"
 echo "✅ Analysis complete."
 
-# ── 7. (Optional) Sync outputs ────────────────────────────────────────────────
-# Uncomment and adjust if you want to sync results to remote storage:
-# rclone copy "$OUTPUT_DIR" "remote:your-bucket/mlgd_f_${SLURM_JOB_ID}" \
-#     --tpslimit 10 --transfers 4
 echo "✅ Done."

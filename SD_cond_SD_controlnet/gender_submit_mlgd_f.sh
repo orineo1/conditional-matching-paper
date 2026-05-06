@@ -38,7 +38,7 @@ mkdir -p "$OUTPUT_DIR"
 # ── 5. Run ────────────────────────────────────────────────────────────────────
 python scripts/run_mlgd_f.py \
     --output_dir "$OUTPUT_DIR" \
-    --wandb_project "MLGDF-EXP" \
+    --wandb_project "mlgdf-gender" \
     --mode gender \
     --n_steps 30 \
     --start_step 15 \

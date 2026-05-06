@@ -6,7 +6,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=48G
-#SBATCH --partition=salmon
+#SBATCH --partition=gpu
 
 # Usage:
 #   export ENV_PATH=/path/to/your/env

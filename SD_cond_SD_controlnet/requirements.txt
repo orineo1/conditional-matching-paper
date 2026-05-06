@@ -1,7 +1,30 @@
+# Core diffusion stack
 diffusers==0.36.0
-matplotlib==3.10.8
-numpy==2.4.2
-Pillow==12.1.1
-scikit_learn==1.8.0
-torch==2.10.0+cu128
-torchvision==0.25.0+cu128
+transformers==4.51.3
+accelerate==1.6.0
+peft==0.15.1
+
+# PyTorch (CUDA 12.8 — adjust cu version to match your cluster)
+torch==2.6.0+cu128
+torchvision==0.21.0+cu128
+
+# ControlNet auxiliary processors (HED scribble extractor)
+controlnet_aux==0.0.9
+
+# Vision & image I/O
+Pillow==11.2.1
+
+# Numerics & ML utils
+numpy==2.2.4
+scikit-learn==1.6.1
+scipy==1.15.2
+
+# Visualisation
+matplotlib==3.10.1
+pandas==2.2.3
+
+# Experiment tracking
+wandb==0.19.10
+
+# HuggingFace Hub
+huggingface_hub==0.29.3

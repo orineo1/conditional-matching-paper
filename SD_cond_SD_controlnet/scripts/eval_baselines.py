@@ -2,8 +2,12 @@
 eval_baselines.py — Build candidate scribbles for all methods, save to disk.
 Runs on SLURM cluster (no N=2000 eval — that happens in Colab).
 
+Each experiment folder under experiments/<ExperimentName>/ must contain:
+    scribble.png   — source oval/HED scribble used during the MLGD-F run
+    mlgdd.png      — final MLGD-F output scribble (from best_jid run)
+
 Usage:
-    python eval_baselines.py \
+    python scripts/eval_baselines.py \
         --experiment SkewedTarget \
         --lgd_cm_minutes 241
 """
@@ -18,13 +22,18 @@ from PIL import Image
 from pathlib import Path
 from tqdm import tqdm
 
+# Make src/ importable when called from repo root
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_SRC_DIR    = os.path.join(os.path.dirname(_SCRIPT_DIR), "src")
+if _SRC_DIR not in sys.path:
+    sys.path.insert(0, _SRC_DIR)
+
 # ── EXPERIMENT CONFIGS ────────────────────────────────────────────────────────
 
 EXPERIMENT_CONFIGS = {
 
     'SkewedTarget': dict(
         best_jid         = 44430631,
-        runs_root        = '/sci/labs/orzuk/ori_m/gdrive/conditional-matching/runs',
         seed             = 5,
         n_eval_search    = 250,
         sdedit_start     = 125,
@@ -42,7 +51,6 @@ EXPERIMENT_CONFIGS = {
 
     'BalancedTarget': dict(
         best_jid         = 44424933,
-        runs_root        = '/sci/labs/orzuk/ori_m/gdrive/conditional-matching/runs',
         seed             = 5,
         n_eval_search    = 250,
         sdedit_start     = 125,
@@ -60,7 +68,6 @@ EXPERIMENT_CONFIGS = {
 
     'GenderInterpolation': dict(
         best_jid         = 44432053,
-        runs_root        = '/sci/labs/orzuk/ori_m/gdrive/conditional-matching/runs',
         seed             = 5,
         n_eval_search    = 250,
         sdedit_start     = 125,
@@ -80,7 +87,6 @@ EXPERIMENT_CONFIGS = {
 
     'AgeInterpolation': dict(
         best_jid         = 44492374,
-        runs_root        = '/sci/labs/orzuk/ori_m/gdrive/conditional-matching/runs/InterpolationMenWomen',
         seed             = 42,
         n_eval_search    = 240,
         sdedit_start     = 125,
@@ -235,7 +241,7 @@ def build_avg_scribble(cfg, source_scribble, sprinter, hed, device):
     mode     = cfg['mode']
 
     if mode == 'age':
-        ages = list(range(cfg['age_min'], cfg['age_max'] , cfg['age_step']))
+        ages = list(range(cfg['age_min'], cfg['age_max'], cfg['age_step']))
         prompts = [
             f'a superrealistic portrait photograph of a {age}-year-old man, studio lighting, sharp focus, photographic'
             for age in ages]
@@ -319,19 +325,25 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--experiment',     required=True, choices=list(EXPERIMENT_CONFIGS.keys()))
     parser.add_argument('--lgd_cm_minutes', type=float, required=True,
-                        help='LGD-CM runtime in minutes — sets N_SDEDIT_CANDIDATES')
-    parser.add_argument('--repo_path',      default='/sci/labs/orzuk/ori_m/conditional-matching-paper/SD_cond_SD_controlnet')
-    parser.add_argument('--gdrive_root',    default='gdrive:conditional-matching/runs')
+                        help='MLGD-F runtime in minutes — sets N_SDEDIT_CANDIDATES')
+    parser.add_argument('--repo_path',      type=str, default='.',
+                        help='Path to repo root (default: current directory)')
+    parser.add_argument('--gdrive_root',    type=str, default='',
+                        help='rclone remote path for syncing outputs (leave empty to skip)')
+    parser.add_argument('--wandb_project',  type=str, default='eval-baselines')
+    parser.add_argument('--wandb_entity',   type=str, default='',
+                        help='wandb entity/team (leave empty to use logged-in user)')
     args = parser.parse_args()
 
-    if args.repo_path not in sys.path:
-        sys.path.insert(0, args.repo_path)
+    repo_path = Path(args.repo_path).resolve()
 
     cfg     = EXPERIMENT_CONFIGS[args.experiment]
     device  = 'cuda' if torch.cuda.is_available() else 'cpu'
     SEED    = cfg['seed']
     jid     = cfg['best_jid']
-    run_dir = Path(args.repo_path) / 'experiments' / args.experiment
+
+    # experiments/<ExperimentName>/ must already contain scribble.png and mlgdd.png
+    run_dir = repo_path / 'experiments' / args.experiment
     out_dir = run_dir / 'baselines'
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -340,8 +352,8 @@ def main():
     # ── W&B init ──
     import wandb
     wandb.init(
-        project='eval-baselines',
-        entity='conditional-matching',
+        project=args.wandb_project,
+        entity=args.wandb_entity or None,   # None = use whoever is logged in
         name=f'{args.experiment}',
         config=dict(
             experiment=args.experiment,
@@ -361,8 +373,10 @@ def main():
     print('Models loaded.')
 
     # ── Load scribbles ──
+    # scribble.png  — source oval/HED scribble used during the MLGD-F run
+    # mlgdd.png     — final MLGD-F output scribble for this experiment
     source_scribble = Image.open(run_dir / 'scribble.png')
-    lgd_scribble = Image.open(run_dir / 'mlgdd.png')
+    lgd_scribble    = Image.open(run_dir / 'mlgdd.png')
     print('Scribbles loaded.')
 
     # ── Build target (small, for search only) ──
@@ -414,26 +428,23 @@ def main():
     print(f'  First candidate: {sec_per_candidate:.1f}s → budget={args.lgd_cm_minutes}min → {n_candidates} candidates')
 
     wandb.log({'sec_per_candidate': sec_per_candidate, 'n_candidates': n_candidates})
-    ###########################################################################3
+
     # ── Sanity check: scribbles + neutral + conditional images ──
     print('\nLogging sanity check to W&B...')
     sanity_scribbles = {
-        'source': source_scribble,
-        'lgd_cm': lgd_scribble,
-        'avg': avg_scribble,
-        'sdedit': sdedit_scribble,
+        'source':      source_scribble,
+        'lgd_cm':      lgd_scribble,
+        'avg':         avg_scribble,
+        'sdedit':      sdedit_scribble,
         'sdedit_cand0': first_cand,
     }
     sanity_log = {}
     for name, scribble in sanity_scribbles.items():
-        # scribble image
         sanity_log[f'sanity/scribble_{name}'] = wandb.Image(scribble)
-        # neutral prompt images
         neutral_imgs = gen_images(sprinter, scribble, cfg['neutral_prompt'],
                                   4, cfg['controlnet_scale'], seed=SEED)
         for j, img in enumerate(neutral_imgs):
             sanity_log[f'sanity/neutral_{name}_{j}'] = wandb.Image(img)
-        # conditional images per group (binary/multiclass only)
         if cfg['mode'] != 'age':
             for g in cfg['groups']:
                 safe_g = g['label'].replace(' ', '_')
@@ -451,7 +462,7 @@ def main():
                     sanity_log[f'sanity/cond_{name}_age{age}_{j}'] = wandb.Image(img)
     wandb.log(sanity_log)
     print('  Sanity check logged.')
-    ###########################################################################3
+
     # ── SDEdit best search ──
     print('\nSearching SDEdit best...')
     candidate_mmds      = [first_mmd]
@@ -524,11 +535,11 @@ def main():
         json.dump(meta, f, indent=2)
     print('  Saved baselines_meta.json')
 
-    # ── Sync to GDrive ──
-    gdrive_dest = f"{args.gdrive_root}/{args.experiment}/baselines"
-
-    print(f'\nSyncing to {gdrive_dest}...')
-    os.system(f'rclone copy "{out_dir}" "{gdrive_dest}" --tpslimit 10 --transfers 4')
+    # ── Sync to remote (optional) ──
+    if args.gdrive_root:
+        gdrive_dest = f"{args.gdrive_root}/{args.experiment}/baselines"
+        print(f'\nSyncing to {gdrive_dest}...')
+        os.system(f'rclone copy "{out_dir}" "{gdrive_dest}" --tpslimit 10 --transfers 4')
 
     wandb.finish()
     print('\n✅ Done.')

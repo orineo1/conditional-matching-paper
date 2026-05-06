@@ -451,7 +451,7 @@ def main():
             print('Downloading conditional model from HuggingFace...')
             cond_pt = hf_hub_download(
                 repo_id=HF_REPO_ID, filename='MnistConditional500Epoch.pt',
-                token=hf_token or None)
+                subfolder="MNIST", token=hf_token or None)
     cond_model = CircularAngleConsistencyModel(
         nfeatures=2, img_features=784, eps=0.002, nunits=128, depth=5, device=device)
     ckpt = torch.load(cond_pt, map_location=device)

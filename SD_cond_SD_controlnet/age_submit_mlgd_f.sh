@@ -40,7 +40,7 @@ mkdir -p "$OUTPUT_DIR"
 # ── 5. Run ────────────────────────────────────────────────────────────────────
 python scripts/run_mlgd_f.py \
     --output_dir "$OUTPUT_DIR" \
-    --wandb_project "MLGDF-EXP" \
+    --wandb_project "mlgdf-age" \
     --mode age \
     --age_min 10 \
     --age_max 80 \

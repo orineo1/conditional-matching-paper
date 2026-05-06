@@ -85,11 +85,11 @@ python scripts/run_mlgd_f.py \
 #     --seed 1
 
 # ── 6. Offline analysis ───────────────────────────────────────────────────────
-echo "Running offline analysis..."
-python src/analysis.py \
-    --run_dir "$OUTPUT_DIR" \
-    --plots_dir "$OUTPUT_DIR/plots"
-echo "✅ Analysis complete."
+#echo "Running offline analysis..."
+#python src/analysis.py \
+#    --run_dir "$OUTPUT_DIR" \
+#    --plots_dir "$OUTPUT_DIR/plots"
+#echo "✅ Analysis complete."
 
 # ── 7. (Optional) Sync outputs ────────────────────────────────────────────────
 # Uncomment and adjust if you want to sync results to remote storage:

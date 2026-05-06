@@ -1,26 +1,17 @@
 #!/bin/bash
-#SBATCH --job-name=eval-baselines
-#SBATCH --output=eval_baselines_%j.log
-#SBATCH --error=eval_baselines_%j.err
-#SBATCH --time=08:00:00
+#SBATCH --job-name=mlgd-f-age
+#SBATCH --output=mlgd_f_age_%j.log
+#SBATCH --error=mlgd_f_age_%j.err
+#SBATCH --time=06:00:00
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=48G
-#SBATCH --partition=gpu
-
-# Usage:
-#   export ENV_PATH=/path/to/your/env
-#   sbatch slurm/run_eval_baselines.sh SkewedTarget 241
-#   sbatch slurm/run_eval_baselines.sh BalancedTarget 241
-#   sbatch slurm/run_eval_baselines.sh GenderInterpolation 241
-#   sbatch slurm/run_eval_baselines.sh AgeInterpolation 177
-
-EXPERIMENT=${1:-SkewedTarget}
-MLGD_F_MINUTES=${2:-241}
+#SBATCH --partition=salmon
 
 # ── 1. Environment ────────────────────────────────────────────────────────────
-# Set ENV_PATH before submitting:
+# Set ENV_PATH to your Python environment before submitting:
 #   export ENV_PATH=/path/to/your/env
+#   sbatch submit_mlgd_f_age.sh
 source "$ENV_PATH/bin/activate"
 
 # ── 2. Caches — redirect to lab storage to avoid home quota issues ────────────
@@ -33,8 +24,6 @@ source "$ENV_PATH/bin/activate"
 
 # ── 3. Verification ───────────────────────────────────────────────────────────
 echo "=== JOB STARTING ON $(hostname) ==="
-echo "Experiment    : $EXPERIMENT"
-echo "MLGD-F budget : ${MLGD_F_MINUTES} min"
 python -c "import torch; print(f'GPU: {torch.cuda.is_available()}')"
 echo "============================================"
 
@@ -45,14 +34,32 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 REPO="YOUR_REPO_PATH_HERE"
 cd "$REPO"
 
+OUTPUT_DIR="output/mlgd_f_age_${SLURM_JOB_ID}"
+mkdir -p "$OUTPUT_DIR"
+
 # ── 5. Run ────────────────────────────────────────────────────────────────────
-python scripts/eval_baselines.py \
-    --experiment      "$EXPERIMENT" \
-    --lgd_cm_minutes  "$MLGD_F_MINUTES" \
-    --repo_path       "$REPO" \
-    --wandb_project   "eval-baselines"
+python scripts/run_mlgd_f.py \
+    --output_dir "$OUTPUT_DIR" \
+    --wandb_project "mlgdf-age" \
+    --mode age \
+    --age_min 10 \
+    --age_max 80 \
+    --age_step 1 \
+    --n_per_age 0 \
+    --age_gender man \
+    --n_steps 30 \
+    --start_step 15 \
+    --num_variations 6 \
+    --base_zeta 5.0 \
+    --guidance_scale 0.0 \
+    --controlnet_scale 0.5 \
+    --loss_fn mmd \
+    --seed 1
 
-# To sync outputs to a remote (e.g. GDrive via rclone), add:
-#   --gdrive_root "remote:your-bucket/baselines"
+# ── 6. Offline analysis (run manually when needed) ────────────────────────────
+# python src/analysis.py --run_dir "$OUTPUT_DIR" --plots_dir "$OUTPUT_DIR/plots"
 
-echo "✅ eval_baselines done."
+# ── 7. (Optional) Sync outputs ────────────────────────────────────────────────
+# rclone copy "$OUTPUT_DIR" "remote:your-bucket/mlgd_f_age_${SLURM_JOB_ID}" \
+#     --tpslimit 10 --transfers 4
+echo "✅ Done."

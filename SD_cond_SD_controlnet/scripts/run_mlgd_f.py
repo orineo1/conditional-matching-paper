@@ -90,24 +90,25 @@ def parse_args():
 
     # Variations / eval
     p.add_argument("--num_variations", type=int, default=6)
-    p.add_argument("--n_targets",      type=int, default=20,
-                   help="Total target images (split evenly man/woman)")
-    p.add_argument("--n_eval",         type=int, default=10,
-                   help="Sprinter photos per MMD evaluation")
     p.add_argument("--eval_interval",  type=int, default=0,
                    help="Evaluate intermediate MMD every N steps (0 = auto ~5 checkpoints)")
 
     # Prompts
     p.add_argument("--prompt",          type=str, default="")
     p.add_argument("--negative_prompt", type=str, default="")
-    p.add_argument("--sprinter_variation_prompt",    type=str,
+    p.add_argument("--sprinter_variation_prompt", type=str,
                    default="a superrealistic professional photograph of")
-    p.add_argument("--sprinter_target_man_prompt",   type=str,
-                   default="a superrealistic portrait photograph of a man, studio lighting")
-    p.add_argument("--sprinter_target_woman_prompt", type=str,
-                   default="a superrealistic portrait photograph of a woman, studio lighting")
     p.add_argument("--sprinter_eval_prompt", type=str,
                    default="a superrealistic professional photograph of")
+    p.add_argument(
+        "--target_prompts", type=str, nargs="+", default=None,
+        metavar="NAME:PROMPT:N",
+        help=(
+            "Target prompt specs as 'name:prompt:n' triples. "
+            "Example: --target_prompts 'Man:a portrait of a man:10' 'Woman:a portrait of a woman:10'. "
+            "Defaults to a balanced man/woman split (10+10) when not provided."
+        ),
+    )
 
     # Models
     p.add_argument("--controlnet_model_id", type=str,
@@ -207,6 +208,8 @@ def main():
     steps_dir = os.path.join(args.output_dir, "steps")
     os.makedirs(steps_dir, exist_ok=True)
 
+    n_eval = 10  # number of Sprinter photos per MMD evaluation
+
     if args.seed is not None:
         torch.manual_seed(args.seed)
         np.random.seed(args.seed)
@@ -232,77 +235,100 @@ def main():
         sobel_cond_tensor = sobel_proxy(base_tensor, device)
         sobel_cond_pil    = T.ToPILImage()(sobel_cond_tensor.squeeze(0).cpu())
 
-    # ── 3. Initial target generation ───────────────────────────────────────
-    N      = args.n_targets
-    n_half = N // 2
-    print(f"Generating {N} initial targets ({n_half} man + {n_half} woman)...", flush=True)
+    # ── 3. Parse target prompts ────────────────────────────────────────────────
+    _DEFAULT_COLORS  = ["royalblue", "crimson", "limegreen", "orange",
+                        "mediumpurple", "gold", "deepskyblue", "hotpink"]
+    _DEFAULT_MARKERS = ["o", "x", "^", "s", "D", "P", "v", "<"]
 
+    if args.target_prompts:
+        target_groups = []
+        for idx, spec in enumerate(args.target_prompts):
+            parts = spec.split(":", 2)
+            if len(parts) != 3:
+                raise ValueError(
+                    f"--target_prompts entry '{spec}' must be 'name:prompt:n'"
+                )
+            name, prompt_text, n_str = parts
+            target_groups.append((
+                name.strip(), prompt_text.strip(), int(n_str),
+                _DEFAULT_COLORS[idx % len(_DEFAULT_COLORS)],
+                _DEFAULT_MARKERS[idx % len(_DEFAULT_MARKERS)],
+            ))
+    else:
+        # default: balanced man / woman split (10 + 10)
+        target_groups = [
+            ("Man",   "a superrealistic portrait photograph of a man, studio lighting",   10,
+             "royalblue", "o"),
+            ("Woman", "a superrealistic portrait photograph of a woman, studio lighting", 10,
+             "crimson",   "x"),
+        ]
+
+    group_names   = [g[0] for g in target_groups]
+    group_colors  = [g[3] for g in target_groups]
+    group_markers = [g[4] for g in target_groups]
+    N_total       = sum(g[2] for g in target_groups)
+    print(f"Target groups: {[(g[0], g[2]) for g in target_groups]}", flush=True)
+
+    # ── 4. Generate initial targets (on oval scribble) for HED extraction ──
+    print("Generating initial targets for HED scribble extraction...", flush=True)
+    target_images_per_group_init = {}
     with torch.no_grad():
-        man_images_init, _ = generate_and_store_cs(
-            sprinter, args.sprinter_target_man_prompt,
-            sobel_cond_pil, n_half, batch_size=2, cn_scale=args.controlnet_scale,
-        )
-        woman_images_init, _ = generate_and_store_cs(
-            sprinter, args.sprinter_target_woman_prompt,
-            sobel_cond_pil, n_half, batch_size=2, cn_scale=args.controlnet_scale,
-        )
+        for name, prompt_text, n, _, _ in target_groups:
+            imgs, _ = generate_and_store_cs(
+                sprinter, prompt_text,
+                sobel_cond_pil, n, batch_size=2, cn_scale=args.controlnet_scale,
+            )
+            target_images_per_group_init[name] = imgs
 
-    # ── 4. Extract HED scribble ─────────────────────────────────────────────
+    # Extract HED scribble from first image of first group
     print("Extracting HED scribble...", flush=True)
-    source_image = man_images_init[2]
+    source_image = target_images_per_group_init[group_names[0]][min(2, target_groups[0][2] - 1)]
     scribble_pil = extract_scribble_hed(source_image)
     source_image.save(os.path.join(args.output_dir, "source_portrait.png"))
     scribble_pil.save(os.path.join(args.output_dir, "scribble.png"))
-    sobel_cond_pil = scribble_pil  # use HED scribble as conditioning from here on
+    sobel_cond_pil = scribble_pil
     print("✅ HED scribble ready.", flush=True)
 
     # ── 5. Regenerate targets conditioned on the HED scribble ──────────────
-    print(f"Regenerating {N} targets conditioned on HED scribble...", flush=True)
+    print(f"Regenerating {N_total} targets conditioned on HED scribble...", flush=True)
+    target_images_per_group = {}
     with torch.no_grad():
-        man_images, _ = generate_and_store_cs(
-            sprinter, args.sprinter_target_man_prompt,
-            sobel_cond_pil, n_half, batch_size=2, cn_scale=args.controlnet_scale,
-        )
-        woman_images, _ = generate_and_store_cs(
-            sprinter, args.sprinter_target_woman_prompt,
-            sobel_cond_pil, n_half, batch_size=2, cn_scale=args.controlnet_scale,
-        )
+        for name, prompt_text, n, _, _ in target_groups:
+            imgs, _ = generate_and_store_cs(
+                sprinter, prompt_text,
+                sobel_cond_pil, n, batch_size=2, cn_scale=args.controlnet_scale,
+            )
+            target_images_per_group[name] = imgs
+            plot_row(imgs, f"Target: {name}",
+                     save_path=os.path.join(args.output_dir, f"target_samples_{name}.png"))
 
-    plot_row(man_images,   "Man Portrait Samples",
-             save_path=os.path.join(args.output_dir, "target_samples_man.png"))
-    plot_row(woman_images, "Woman Portrait Samples",
-             save_path=os.path.join(args.output_dir, "target_samples_woman.png"))
+    # legacy aliases for npy saving
+    man_images   = target_images_per_group.get("Man",   list(target_images_per_group.values())[-1])
+    woman_images = target_images_per_group.get("Woman", list(target_images_per_group.values())[0])
 
     # ── 6. Encode targets to CLIP ───────────────────────────────────────────
     print("Encoding targets to CLIP...", flush=True)
+    clip_model.to(device)
+    clip_embs_per_group = {}
     with torch.no_grad():
-        man_clip_embs   = encode_images_clip(
-            pil_images_to_tensor(man_images,   device), clip_model, clip_processor)
-        woman_clip_embs = encode_images_clip(
-            pil_images_to_tensor(woman_images, device), clip_model, clip_processor)
-    all_clip_embeddings = torch.cat([man_clip_embs, woman_clip_embs], dim=0)
+        for name, imgs in target_images_per_group.items():
+            clip_embs_per_group[name] = encode_images_clip(
+                pil_images_to_tensor(imgs, device), clip_model, clip_processor)
+    clip_model.to("cpu")
+    all_clip_embeddings = torch.cat(list(clip_embs_per_group.values()), dim=0)
     print(f"Target CLIP embeddings: {all_clip_embeddings.shape}", flush=True)
 
-    # Sanity checks
-    norms     = all_clip_embeddings.norm(dim=-1)
-    intra_sim = (man_clip_embs @ man_clip_embs.T).mean().item()
-    inter_sim = (man_clip_embs @ woman_clip_embs.T).mean().item()
-    print(f"  Norms min/max: {norms.min():.4f} / {norms.max():.4f}")
-    print(f"  Intra-class sim (man↔man):   {intra_sim:.4f}")
-    print(f"  Inter-class sim (man↔woman): {inter_sim:.4f}")
-    assert intra_sim > inter_sim, "Classes not separated in CLIP space!"
-    print("✅ Classes separable in CLIP space.", flush=True)
-
-    # Target PCA for fixed projection across steps
+    # Target PCA — fit on all groups, one scatter per group
     pca_fixed = PCA(n_components=2)
-    _coords   = pca_fixed.fit_transform(all_clip_embeddings.cpu().numpy())
-    fig, ax   = plt.subplots(figsize=(8, 6))
-    ax.scatter(_coords[:n_half, 0], _coords[:n_half, 1], c="dodgerblue", label="Man",   alpha=0.7)
-    ax.scatter(_coords[n_half:, 0], _coords[n_half:, 1], c="crimson",    label="Woman", alpha=0.7)
+    pca_fixed.fit(all_clip_embeddings.cpu().numpy())
+    fig, ax = plt.subplots(figsize=(8, 6))
+    for (name, _, _, color, marker), embs in zip(target_groups, clip_embs_per_group.values()):
+        coords = pca_fixed.transform(embs.cpu().numpy())
+        ax.scatter(coords[:, 0], coords[:, 1], c=color, label=name,
+                   marker=marker, alpha=0.7, s=50)
     ax.set_title("PCA of Target CLIP Embeddings"); ax.legend(); ax.grid(True, alpha=0.3)
     pca_path = os.path.join(args.output_dir, "target_clip_pca.png")
     fig.savefig(pca_path, dpi=100, bbox_inches="tight"); plt.close(fig)
-    del _coords
 
     # ── 7. wandb init ───────────────────────────────────────────────────────
     eval_interval = (args.eval_interval if args.eval_interval > 0
@@ -314,7 +340,8 @@ def main():
         config={
             "prompt":                       args.prompt,
             "negative_prompt":              args.negative_prompt,
-            "n_targets":                    N,
+            "n_targets":                    N_total,
+            "target_groups":                {name: {"prompt": pt, "n": n} for name, pt, n, _, _ in target_groups},
             "n_steps":                      args.n_steps,
             "start_step":                   args.start_step,
             "strength":                     1 - args.start_step / args.n_steps,
@@ -325,15 +352,13 @@ def main():
             "guidance_scale":               args.guidance_scale,
             "controlnet_scale":             args.controlnet_scale,
             "edge_method":                  "hed_scribble",
-            "n_eval":                       args.n_eval,
+            "n_eval":                       n_eval,
             "eval_interval":                eval_interval,
             "lora_path":                    args.lora_path,
             "architect_unet_path":          args.architect_unet_path,
             "architect_model":              args.architect_model_id,
             "sprinter_model":               args.sprinter_model_id,
             "sprinter_variation_prompt":    args.sprinter_variation_prompt,
-            "sprinter_target_man_prompt":   args.sprinter_target_man_prompt,
-            "sprinter_target_woman_prompt": args.sprinter_target_woman_prompt,
             "sprinter_eval_prompt":         args.sprinter_eval_prompt,
             "loss_fn":                      args.loss_fn,
             "loss_scale":                   args.loss_scale,
@@ -408,6 +433,10 @@ def main():
     step_vis_data  = []
     target_clip_np = all_clip_embeddings.cpu().numpy()
 
+    target_clip_np      = all_clip_embeddings.cpu().numpy()
+    softmax_man_prompt   = target_groups[-1][1]   # last group (most masculine)
+    softmax_woman_prompt = target_groups[0][1]    # first group (most feminine)
+
     if args.loss_fn == "mmd":
         loss_fn = partial(compute_mmd, bandwidth_scale=args.bandwidth_scale,
                           kernel_alpha=args.kernel_alpha)
@@ -438,7 +467,7 @@ def main():
                 controlnet_conditioning_scale=args.controlnet_scale,
                 output_type="pil",
             ).images[0]
-            for _ in range(args.n_eval)
+            for _ in range(n_eval)
         ]
         sprinter.vae.to(dtype=torch.float32)
 
@@ -554,7 +583,7 @@ def main():
                 pred_x0_regular.detach(), architect.vae, architect.image_processor,
                 sprinter, clip_model, clip_processor,
                 all_clip_embeddings, args.sprinter_eval_prompt,
-                n_eval=args.n_eval, device=device,
+                n_eval=n_eval, device=device,
             )
             wandb_log["intermediate/unguided_cond_mmd"] = unguided_mmd
             wandb_log["intermediate/mlgd_f_cond_mmd"]   = mmd_loss.item()
@@ -605,7 +634,7 @@ def main():
         latents_regular, architect.vae, architect.image_processor,
         sprinter, clip_model, clip_processor,
         all_clip_embeddings, eval_prompt=args.sprinter_eval_prompt,
-        n_eval=args.n_eval, device=device,
+        n_eval=n_eval, device=device,
     )
 
     print("Computing final MMD (MLGD-F)...", flush=True)
@@ -613,7 +642,7 @@ def main():
         latents, architect.vae, architect.image_processor,
         sprinter, clip_model, clip_processor,
         all_clip_embeddings, eval_prompt=args.sprinter_eval_prompt,
-        n_eval=args.n_eval, device=device,
+        n_eval=n_eval, device=device,
     )
 
     print(f"Regular MMD : {regular_mmd:.6f}", flush=True)
@@ -682,54 +711,11 @@ def main():
             photo.save(os.path.join(photo_dir, f"photo_{idx:03d}.png"))
     print("✅ Individual target portraits saved.", flush=True)
 
-    # ── CLIP softmax probabilities ──────────────────────────────────────────
-    print("Computing CLIP softmax probabilities...", flush=True)
-    clip_model.to(device)
-    mlgd_f_softmax,  mlgd_f_clip_embs  = compute_clip_softmax(
-        mlgd_f_eval_photos, clip_model, clip_processor,
-        args.sprinter_target_man_prompt, args.sprinter_target_woman_prompt, device)
-    regular_softmax, regular_clip_embs = compute_clip_softmax(
-        regular_eval_photos, clip_model, clip_processor,
-        args.sprinter_target_man_prompt, args.sprinter_target_woman_prompt, device)
-    target_softmax,  target_clip_embs  = compute_clip_softmax(
-        man_images + woman_images, clip_model, clip_processor,
-        args.sprinter_target_man_prompt, args.sprinter_target_woman_prompt, device)
-    clip_model.to("cpu")
-    print("✅ CLIP softmax done.", flush=True)
-
-    np.save(os.path.join(npy_dir, "clip_mlgd_f.npy"),        mlgd_f_clip_embs)
-    np.save(os.path.join(npy_dir, "clip_regular.npy"),       regular_clip_embs)
-    np.save(os.path.join(npy_dir, "clip_targets.npy"),       target_clip_embs)
-    np.save(os.path.join(npy_dir, "clip_targets_man.npy"),   target_clip_embs[:len(man_images)])
-    np.save(os.path.join(npy_dir, "clip_targets_woman.npy"), target_clip_embs[len(man_images):])
-    print("✅ CLIP embeddings saved to npy/", flush=True)
-
-    # ── Gender stats ────────────────────────────────────────────────────────
-    def gender_stats(softmax_list):
-        males   = [x for x in softmax_list if x["label"] == "male"]
-        females = [x for x in softmax_list if x["label"] == "female"]
-        return {
-            "n_male":   len(males),
-            "n_female": len(females),
-            "mean_conf_male":   float(np.mean([x["p_male"]   for x in males]))   if males   else None,
-            "mean_conf_female": float(np.mean([x["p_female"] for x in females])) if females else None,
-            "per_image": softmax_list,
-        }
-
-    mlgd_f_stats  = gender_stats(mlgd_f_softmax)
-    regular_stats = gender_stats(regular_softmax)
-    print(f"  MLGD-F  : {mlgd_f_stats['n_male']}M / {mlgd_f_stats['n_female']}F",  flush=True)
-    print(f"  Regular : {regular_stats['n_male']}M / {regular_stats['n_female']}F", flush=True)
-
-    # ── SWD to target ───────────────────────────────────────────────────────
-    print("Computing SWD to target...", flush=True)
-    with torch.no_grad():
-        swd_mlgd_f  = compute_swd(torch.from_numpy(mlgd_f_clip_embs).float(),
-                                   torch.from_numpy(target_clip_embs).float()).item()
-        swd_regular = compute_swd(torch.from_numpy(regular_clip_embs).float(),
-                                   torch.from_numpy(target_clip_embs).float()).item()
-    print(f"  SWD MLGD-F : {swd_mlgd_f:.6f}",  flush=True)
-    print(f"  SWD Regular: {swd_regular:.6f}", flush=True)
+    # ── CLIP softmax / SWD (disabled — run offline via analysis.py) ─────────
+    mlgd_f_stats  = {}
+    regular_stats = {}
+    swd_mlgd_f    = None
+    swd_regular   = None
 
     optimization_time_sec = time.time() - dps_start_time
 
@@ -741,9 +727,9 @@ def main():
             "final_mlgd_f_mmd":       mlgd_f_mmd,
             "final_regular_mmd":      regular_mmd,
             "mmd_delta":              regular_mmd - mlgd_f_mmd,
-            "final_mlgd_f_swd":       swd_mlgd_f,
-            "final_regular_swd":      swd_regular,
-            "swd_delta":              swd_regular - swd_mlgd_f,
+            "final_mlgd_f_swd":       swd_mlgd_f,   # None — run analysis.py to compute
+            "final_regular_swd":      swd_regular,  # None — run analysis.py to compute
+            "swd_delta":              None,         # computed in analysis.py
             "optimization_time_sec":  optimization_time_sec,
             "mlgd_f_gender":          mlgd_f_stats,
             "regular_gender":         regular_stats,
@@ -756,11 +742,7 @@ def main():
                 "scribble":               "npy/scribble.npy",
                 "final_scribble_mlgd_f":  "npy/final_scribble_mlgd_f.npy",
                 "final_scribble_regular": "npy/final_scribble_regular.npy",
-                "clip_mlgd_f":            "npy/clip_mlgd_f.npy",
-                "clip_regular":           "npy/clip_regular.npy",
-                "clip_targets":           "npy/clip_targets.npy",
-                "clip_targets_man":       "npy/clip_targets_man.npy",
-                "clip_targets_woman":     "npy/clip_targets_woman.npy",
+                # clip embeddings computed by analysis.py (run offline)
             },
         }, f, indent=2)
     print(f"✅ metrics.json saved.  Optimization time: {optimization_time_sec/60:.1f} min",

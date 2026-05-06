@@ -375,8 +375,8 @@ def main():
     # ── Load scribbles ──
     # scribble.png  — source oval/HED scribble used during the MLGD-F run
     # mlgdd.png     — final MLGD-F output scribble for this experiment
-    source_scribble = Image.open(run_dir / 'scribble.png')
-    lgd_scribble    = Image.open(run_dir / 'mlgdd.png')
+    source_scribble = Image.open(run_dir / 'scribble_source.png')
+    lgd_scribble    = Image.open(run_dir / 'scribble_mlgdd.png')
     print('Scribbles loaded.')
 
     # ── Build target (small, for search only) ──

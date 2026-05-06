@@ -42,8 +42,8 @@ conditional-matching-paper/
 ├── SD_cond_SD_controlnet/      # Stable Diffusion image editing (Section 4.3)
 │   ├── src/                    # Models, generation, metrics, CLIP utils, viz
 │   ├── scripts/                # run_mlgd_f.py, eval_baselines.py
-│   ├── notebooks/              # Evaluation notebooks & ε_g experiment
-│   ├── experiments/            # Per-scenario result JSONs
+│   ├── notebooks/              # Evaluation notebooks & ablation
+│   ├── experiments/            # Per-scenario scribbles and result JSONs
 │   └── requirements.txt
 │
 └── requirements.txt            # Top-level consolidated dependencies
@@ -68,6 +68,16 @@ Because f_φ is a **single-step** sampler, the gradient computation is shallow (
 
 Mixture-of-Gaussians experiments in 2D, 5D, and 10D input space with 1D output. Compares MLGD-F against a slow (multi-step) inner sampler across 25 optimization runs.
 
+**Models used:**
+
+| Role | Model |
+|---|---|
+| Prior over X (Architect) | Pretrained DDPM over Gaussian mixtures (provided in `params/`) |
+| Fast conditional sampler f_φ (Sprinter) | Consistency model trained on the same MoG (provided in `params/`) |
+
+Pretrained checkpoints for 2D, 5D, and 10D are hosted on HuggingFace:
+> [huggingface.co/anon-submission-cdm/cdm-inverse-design](https://huggingface.co/anon-submission-cdm/cdm-inverse-design)
+
 ```bash
 cd simulations
 pip install -r requirements.txt
@@ -77,31 +87,27 @@ pip install -r requirements.txt
 
 See [`simulations/README.md`](simulations/README.md) for full details.
 
+---
+
 ### 2 · MNIST Rotation Task
 
 Find a digit image x\* ∈ R^784 such that P(rotation angle | X = x\*) matches a user-specified target G (unimodal, bimodal, or uniform over rotation angles).
 
 **Models used:**
-- Unconditional DDPM over MNIST images (prior over X)
-- Conditional improved Consistency Training (iCT) model for P(angle | digit image)
 
-#### Quick start (pretrained checkpoints from HuggingFace)
+| Role | Model |
+|---|---|
+| Prior over X (Architect) | Unconditional DDPM over MNIST images |
+| Fast conditional sampler f_φ (Sprinter) | Conditional improved Consistency Training (iCT) model for P(angle \| digit image) |
+
+Pretrained checkpoints are hosted on HuggingFace:
+> [huggingface.co/anon-submission-cdm/cdm-inverse-design](https://huggingface.co/anon-submission-cdm/cdm-inverse-design)
+
+#### Quick start (pretrained checkpoints)
 
 ```bash
 cd MNIST
 pip install -r requirements.txt
-
-# Download checkpoints
-python -c "
-from huggingface_hub import hf_hub_download
-import os; os.makedirs('checkpoints', exist_ok=True)
-hf_hub_download('anon-submission-cdm/cdm-inverse-design',
-                filename='mnist/uncond_unet.pt',
-                local_dir='checkpoints')
-hf_hub_download('anon-submission-cdm/cdm-inverse-design',
-                filename='mnist/cond_ict.pt',
-                local_dir='checkpoints')
-"
 
 # Run MLGD-F (bimodal target, 15 seeds)
 python run_mlgdf.py --target bimodal --num_runs 15
@@ -122,11 +128,14 @@ python train/train_conditional.py
 
 See [`MNIST/README.md`](MNIST/README.md) for hyperparameter details and SLURM scripts.
 
+---
+
 ### 3 · Stable Diffusion Image Editing
 
 Optimize a portrait scribble x\* so that images generated from it via ControlNet-Scribble satisfy a distributional target G in CLIP embedding space. Targets include discrete gender mixtures and continuous age/gender interpolations.
 
-**Models used (all auto-downloaded from HuggingFace):**
+**Models used (all auto-downloaded from HuggingFace on first run):**
+
 | Role | Model |
 |---|---|
 | Prior over X (Architect) | `stabilityai/stable-diffusion-xl-base-1.0` |
@@ -139,32 +148,49 @@ Optimize a portrait scribble x\* so that images generated from it via ControlNet
 ```bash
 cd SD_cond_SD_controlnet
 pip install -r requirements.txt
-# Requires CUDA ≥ 12.8 and ~80 GB VRAM (A100 recommended)
 ```
 
-#### Run MLGD-F (balanced gender target)
+**Compute:** MLGD-F optimization runs on a single NVIDIA L40S 48 GB GPU (salmon partition). The full N=2000 baseline evaluation (notebooks) runs on the same hardware and takes several hours per experiment due to image generation at scale.
+
+#### Run MLGD-F
 
 ```bash
-python scripts/run_mlgd_f.py \
-    --target balanced \
-    --num_steps 125 \
-    --num_variations 100 \
-    --output_dir output/balanced/
+export ENV_PATH=/path/to/your/env
+sbatch SD_cond_SD_controlnet/gender_submit_mlgd_f.sh   # gender / interpolation target
+sbatch SD_cond_SD_controlnet/age_submit_mlgd_f.sh      # age sweep target
 ```
 
-#### Run baselines (SDEdit Best, Average Scribble)
+#### Run baselines
 
 ```bash
-bash run_eval_baselines.sh
+sbatch SD_cond_SD_controlnet/slurm/run_eval_baselines.sh SkewedTarget 241
+sbatch SD_cond_SD_controlnet/slurm/run_eval_baselines.sh BalancedTarget 241
+sbatch SD_cond_SD_controlnet/slurm/run_eval_baselines.sh GenderInterpolation 241
+sbatch SD_cond_SD_controlnet/slurm/run_eval_baselines.sh AgeInterpolation 177
 ```
 
-#### Evaluate results
+The time argument (e.g. `241`) is the MLGD-F runtime in minutes, used to give SDEdit the same wall-clock budget.
+
+#### Evaluate results (N=2000)
 
 ```bash
-# Open notebooks/eval_all_experiments.ipynb
-# or
-python -c "import json; print(json.load(open('experiments/eval_all_results.json')))"
+# Full evaluation across all experiments and methods — opens as Jupyter notebook
+# SD_cond_SD_controlnet/notebooks/eval_all_experiments.ipynb
+
+# Cached results already available at:
+# SD_cond_SD_controlnet/experiments/eval_all_results.json
 ```
+
+#### Notebooks
+
+| Notebook | Paper section                                                                                                                                                                                                                                    |
+|----------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `eval_all_experiments.ipynb` | N=2000 MMD + gender classification across all experiments                                                                                                                                                                                        |
+| `eval_scribbl_interpolation.ipynb` | Figures — gender interpolation evaluation + PCA                                                                                                                                                                                                    |
+| `eval_scribbl_interpolation_age.ipynb` | Figure — age interpolation evaluation                                                                                                                                                                                                            |
+| `gender_saliency_eval.ipynb` | Section: *What Does MLGD-F Actually Change in the Scribble?* — pixel diff heatmaps, CLIP gender saliency maps, Spearman correlation between saliency and edit magnitude                                                                          |
+| `measure_dps_step_memory.ipynb` | Ablation (Section: *Necessity of Distilled Models*) — peak VRAM measurement for SDXL-Turbo vs. projected SDXL-Base cost                                                                                                                          |
+| `eps_g_experiment.ipynb` | Theory (Section: *Theoretical Analysis*) — empirical diagnostic of ε_g, the Jacobian fidelity gap between the distilled sampler f_φ and the teacher, measured as relative VJP-norm discrepancy between SDXL-Lightning and SDXL-Base across 100 prompts |
 
 See [`SD_cond_SD_controlnet/README.md`](SD_cond_SD_controlnet/README.md) for full argument reference.
 
@@ -179,18 +205,24 @@ pip install -r requirements.txt
 ```
 
 GPU requirements vary by experiment:
-- **Simulations / MNIST:** any modern GPU (≥ 8 GB VRAM)
-- **Stable Diffusion:** A100 80 GB (or equivalent) recommended
+- **Simulations (2D):** any modern GPU
+- **Simulations (5D, 10D) and MNIST:** NVIDIA L40S 48 GB
+- **Stable Diffusion optimization:** NVIDIA L40S 48 GB (salmon partition)
+- **Stable Diffusion evaluation (N=2000, `eval_all_experiments`):** NVIDIA A100 80 GB or equivalent
+- **`eval_scribbl_interpolation` / `eval_scribbl_interpolation_age`:** NVIDIA L40S 48 GB
+- **`gender_saliency_eval`:** NVIDIA A100 80 GB (backpropagation through full pipeline)
+- **`measure_dps_step_memory`:** NVIDIA A100 80 GB (memory profiling requires full VRAM headroom)
+- **`eps_g_experiment`:** NVIDIA RTX PRO 6000 Blackwell Server Edition (96 GB)
 
 ---
 
 ## Pretrained Checkpoints
 
-MNIST checkpoints and the ε_g benchmark results are hosted on HuggingFace:
+MNIST checkpoints and synthetic simulation checkpoints (2D, 5D, 10D GMM) are hosted on HuggingFace:
 
 > [huggingface.co/anon-submission-cdm/cdm-inverse-design](https://huggingface.co/anon-submission-cdm/cdm-inverse-design)
 
-Stable Diffusion models are downloaded automatically from the HuggingFace Hub on first run.
+Stable Diffusion models are downloaded automatically from the HuggingFace Hub on first run. No SD checkpoints are hosted separately.
 
 ---
 

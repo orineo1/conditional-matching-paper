@@ -307,15 +307,21 @@ def build_targets_gender(args, sprinter, clip_model, clip_processor, device,
     group_sizes = [len(imgs) for imgs in target_images_per_group.values()]
     print(f"Target CLIP embeddings: {all_clip_embeddings.shape}", flush=True)
 
-    # PCA — fit on all groups
+    # PCA — fit on first and last group only (the two extremes)
+    # so the principal axis aligns with the target distribution's main direction
+    anchor_embs = np.vstack([
+        clip_embs_per_group[group_names[0]].cpu().numpy(),
+        clip_embs_per_group[group_names[-1]].cpu().numpy(),
+    ])
     pca_fixed = PCA(n_components=2)
-    pca_fixed.fit(all_clip_embeddings.cpu().numpy())
+    pca_fixed.fit(anchor_embs)
     fig, ax = plt.subplots(figsize=(8, 6))
     for (name, _, _, color, marker), embs in zip(target_groups, clip_embs_per_group.values()):
         coords = pca_fixed.transform(embs.cpu().numpy())
         ax.scatter(coords[:, 0], coords[:, 1], c=color, label=name,
                    marker=marker, alpha=0.7, s=50)
-    ax.set_title("PCA of Target CLIP Embeddings"); ax.legend(); ax.grid(True, alpha=0.3)
+    ax.set_title(f"PCA of Target CLIP Embeddings\n(fitted on '{group_names[0]}' vs '{group_names[-1]}')")
+    ax.legend(); ax.grid(True, alpha=0.3)
     pca_path = os.path.join(args.output_dir, "target_clip_pca.png")
     fig.savefig(pca_path, dpi=100, bbox_inches="tight"); plt.close(fig)
 

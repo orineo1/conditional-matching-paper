@@ -119,6 +119,23 @@ def parse_args():
                    default="stabilityai/stable-diffusion-xl-base-1.0")
 
     p.add_argument("--seed", type=int, default=None)
+
+    # Mode
+    p.add_argument("--mode", type=str, default="gender", choices=["gender", "age"],
+                   help="Target distribution mode: 'gender' (prompt-based) or 'age' (age sweep)")
+
+    # Age mode args (only used when --mode age)
+    p.add_argument("--age_min",    type=int,   default=10,
+                   help="Minimum age (inclusive) for age mode")
+    p.add_argument("--age_max",    type=int,   default=80,
+                   help="Maximum age (exclusive) for age mode")
+    p.add_argument("--age_step",   type=int,   default=1,
+                   help="Step between ages (1=every year, 5=every 5 years)")
+    p.add_argument("--n_per_age",  type=int,   default=0,
+                   help="Images per age value. 0 = auto (~100 total)")
+    p.add_argument("--age_gender", type=str,   default="man",
+                   help="Gender word used in age prompt (man/woman)")
+
     return p.parse_args()
 
 
@@ -196,6 +213,217 @@ def compute_clip_softmax(pil_list, clip_model, clip_processor,
 
 
 # ---------------------------------------------------------------------------
+# Target builders — return the same interface regardless of mode
+# ---------------------------------------------------------------------------
+
+def build_targets_gender(args, sprinter, clip_model, clip_processor, device,
+                         sobel_cond_pil):
+    """
+    Build target distribution from prompt groups (gender / custom).
+
+    Returns
+    -------
+    target_images_per_group : dict[name -> list[PIL]]
+    clip_embs_per_group     : dict[name -> Tensor [n, 768]]
+    all_clip_embeddings     : Tensor [N, 768]
+    group_names             : list[str]
+    group_sizes             : list[int]
+    group_colors            : list[str]
+    group_markers           : list[str]
+    pca_fixed               : fitted PCA(n_components=2)
+    source_image            : PIL  (used for HED extraction)
+    scribble_pil            : PIL  (HED scribble)
+    N_total                 : int
+    target_groups           : list of (name, prompt, n, color, marker) tuples
+    """
+    _DEFAULT_COLORS  = ["royalblue", "crimson", "limegreen", "orange",
+                        "mediumpurple", "gold", "deepskyblue", "hotpink"]
+    _DEFAULT_MARKERS = ["o", "x", "^", "s", "D", "P", "v", "<"]
+
+    if args.target_prompts:
+        target_groups = []
+        for idx, spec in enumerate(args.target_prompts):
+            parts = spec.split(":", 2)
+            if len(parts) != 3:
+                raise ValueError(f"--target_prompts entry '{spec}' must be 'name:prompt:n'")
+            name, prompt_text, n_str = parts
+            target_groups.append((
+                name.strip(), prompt_text.strip(), int(n_str),
+                _DEFAULT_COLORS[idx % len(_DEFAULT_COLORS)],
+                _DEFAULT_MARKERS[idx % len(_DEFAULT_MARKERS)],
+            ))
+    else:
+        target_groups = [
+            ("Man",   "a superrealistic portrait photograph of a man, studio lighting",   10,
+             "royalblue", "o"),
+            ("Woman", "a superrealistic portrait photograph of a woman, studio lighting", 10,
+             "crimson",   "x"),
+        ]
+
+    group_names   = [g[0] for g in target_groups]
+    group_colors  = [g[3] for g in target_groups]
+    group_markers = [g[4] for g in target_groups]
+    N_total       = sum(g[2] for g in target_groups)
+    print(f"Target groups: {[(g[0], g[2]) for g in target_groups]}", flush=True)
+
+    # Generate initial targets on oval scribble for HED extraction
+    print("Generating initial targets for HED scribble extraction...", flush=True)
+    target_images_init = {}
+    with torch.no_grad():
+        for name, prompt_text, n, _, _ in target_groups:
+            imgs, _ = generate_and_store_cs(
+                sprinter, prompt_text,
+                sobel_cond_pil, n, batch_size=2, cn_scale=args.controlnet_scale,
+            )
+            target_images_init[name] = imgs
+
+    # Extract HED scribble from first image of first group
+    print("Extracting HED scribble...", flush=True)
+    source_image = target_images_init[group_names[0]][min(2, target_groups[0][2] - 1)]
+    scribble_pil = extract_scribble_hed(source_image)
+
+    # Regenerate targets conditioned on HED scribble
+    print(f"Regenerating {N_total} targets conditioned on HED scribble...", flush=True)
+    target_images_per_group = {}
+    with torch.no_grad():
+        for name, prompt_text, n, _, _ in target_groups:
+            imgs, _ = generate_and_store_cs(
+                sprinter, prompt_text,
+                scribble_pil, n, batch_size=2, cn_scale=args.controlnet_scale,
+            )
+            target_images_per_group[name] = imgs
+            plot_row(imgs, f"Target: {name}",
+                     save_path=os.path.join(args.output_dir, f"target_samples_{name}.png"))
+
+    # Encode to CLIP
+    print("Encoding targets to CLIP...", flush=True)
+    clip_model.to(device)
+    clip_embs_per_group = {}
+    with torch.no_grad():
+        for name, imgs in target_images_per_group.items():
+            clip_embs_per_group[name] = encode_images_clip(
+                pil_images_to_tensor(imgs, device), clip_model, clip_processor)
+    clip_model.to("cpu")
+    all_clip_embeddings = torch.cat(list(clip_embs_per_group.values()), dim=0)
+    group_sizes = [len(imgs) for imgs in target_images_per_group.values()]
+    print(f"Target CLIP embeddings: {all_clip_embeddings.shape}", flush=True)
+
+    # PCA — fit on all groups
+    pca_fixed = PCA(n_components=2)
+    pca_fixed.fit(all_clip_embeddings.cpu().numpy())
+    fig, ax = plt.subplots(figsize=(8, 6))
+    for (name, _, _, color, marker), embs in zip(target_groups, clip_embs_per_group.values()):
+        coords = pca_fixed.transform(embs.cpu().numpy())
+        ax.scatter(coords[:, 0], coords[:, 1], c=color, label=name,
+                   marker=marker, alpha=0.7, s=50)
+    ax.set_title("PCA of Target CLIP Embeddings"); ax.legend(); ax.grid(True, alpha=0.3)
+    pca_path = os.path.join(args.output_dir, "target_clip_pca.png")
+    fig.savefig(pca_path, dpi=100, bbox_inches="tight"); plt.close(fig)
+
+    return (target_images_per_group, clip_embs_per_group, all_clip_embeddings,
+            group_names, group_sizes, group_colors, group_markers,
+            pca_fixed, source_image, scribble_pil, N_total, target_groups, pca_path)
+
+
+def build_targets_age(args, sprinter, clip_model, clip_processor, device,
+                      sobel_cond_pil):
+    """
+    Build target distribution as an age sweep.
+
+    Each age value becomes its own "group". The scribble is taken directly
+    from sobel_cond_pil (oval) — no HED extraction needed since there is
+    no single portrait to extract from.
+
+    Returns the same interface as build_targets_gender.
+    """
+    ages      = list(range(args.age_min, args.age_max, args.age_step))
+    n_per_age = args.n_per_age if args.n_per_age > 0 else max(1, round(100 / len(ages)))
+    N_total   = len(ages) * n_per_age
+
+    # Color = plasma colormap along the age axis
+    age_colors  = [plt.cm.plasma((a - ages[0]) / max(ages[-1] - ages[0], 1))
+                   for a in ages]
+    age_markers = ["o"] * len(ages)
+
+    target_groups = [
+        (str(age),
+         f"a superrealistic portrait photograph of a {age}-year-old {args.age_gender}, "
+         "studio lighting, sharp focus, photographic",
+         n_per_age,
+         age_colors[i],
+         age_markers[i])
+        for i, age in enumerate(ages)
+    ]
+
+    group_names   = [g[0] for g in target_groups]
+    group_colors  = [g[3] for g in target_groups]
+    group_markers = [g[4] for g in target_groups]
+
+    print(f"Age mode: {len(ages)} ages × {n_per_age} = {N_total} target images", flush=True)
+
+    # Generate targets on oval scribble (no HED step for age mode)
+    print("Generating age targets...", flush=True)
+    target_images_per_group = {}
+    with torch.no_grad():
+        for name, prompt_text, n, _, _ in target_groups:
+            imgs, _ = generate_and_store_cs(
+                sprinter, prompt_text,
+                sobel_cond_pil, n, batch_size=2, cn_scale=args.controlnet_scale,
+            )
+            target_images_per_group[name] = imgs
+
+    # Log a few sample ages
+    for age in ages[::max(1, len(ages)//5)]:
+        plot_row(target_images_per_group[str(age)], f"Age {age}",
+                 save_path=os.path.join(args.output_dir, f"target_samples_age{age}.png"))
+
+    # Use oval as scribble — no HED portrait available
+    source_image = target_images_per_group[group_names[len(ages)//2]][0]
+    scribble_pil = sobel_cond_pil   # oval scribble
+
+    # Encode to CLIP
+    print("Encoding age targets to CLIP...", flush=True)
+    clip_model.to(device)
+    clip_embs_per_group = {}
+    with torch.no_grad():
+        for name, imgs in target_images_per_group.items():
+            clip_embs_per_group[name] = encode_images_clip(
+                pil_images_to_tensor(imgs, device), clip_model, clip_processor)
+    clip_model.to("cpu")
+    all_clip_embeddings = torch.cat(list(clip_embs_per_group.values()), dim=0)
+    group_sizes = [len(imgs) for imgs in target_images_per_group.values()]
+    print(f"Age target CLIP embeddings: {all_clip_embeddings.shape}", flush=True)
+
+    # PCA — fit on youngest vs oldest bracket, colour by age
+    n_anchor = min(n_per_age * max(1, len(ages)//10), len(ages) * n_per_age // 2)
+    pca_fixed = PCA(n_components=2)
+    pca_fixed.fit(all_clip_embeddings.cpu().numpy())
+
+    age_vals = np.array([int(n) for n in group_names for _ in range(n_per_age)])
+    all_coords = pca_fixed.transform(all_clip_embeddings.cpu().numpy())
+    fig, ax = plt.subplots(figsize=(9, 7))
+    sc = ax.scatter(all_coords[:, 0], all_coords[:, 1],
+                    c=age_vals, cmap="plasma", s=40, alpha=0.7,
+                    edgecolors="white", linewidths=0.3)
+    plt.colorbar(sc, ax=ax, label="Age")
+    # Annotate every 10th age
+    offset = 0
+    for age in ages:
+        c = all_coords[offset:offset + n_per_age].mean(axis=0)
+        if age % 10 == 0:
+            ax.annotate(str(age), c, fontsize=8, ha="center",
+                        xytext=(0, 4), textcoords="offset points")
+        offset += n_per_age
+    ax.set_title("PCA of Age Target CLIP Embeddings"); ax.grid(True, alpha=0.3)
+    pca_path = os.path.join(args.output_dir, "target_clip_pca.png")
+    fig.savefig(pca_path, dpi=100, bbox_inches="tight"); plt.close(fig)
+
+    return (target_images_per_group, clip_embs_per_group, all_clip_embeddings,
+            group_names, group_sizes, group_colors, group_markers,
+            pca_fixed, source_image, scribble_pil, N_total, target_groups, pca_path)
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -235,97 +463,21 @@ def main():
         sobel_cond_tensor = sobel_proxy(base_tensor, device)
         sobel_cond_pil    = T.ToPILImage()(sobel_cond_tensor.squeeze(0).cpu())
 
-    # ── 3. Parse target prompts ────────────────────────────────────────────────
-    _DEFAULT_COLORS  = ["royalblue", "crimson", "limegreen", "orange",
-                        "mediumpurple", "gold", "deepskyblue", "hotpink"]
-    _DEFAULT_MARKERS = ["o", "x", "^", "s", "D", "P", "v", "<"]
+    # ── 3–6. Build target distribution (mode-dependent) ───────────────────────
+    print(f"Mode: {args.mode}", flush=True)
+    if args.mode == "gender":
+        (target_images_per_group, clip_embs_per_group, all_clip_embeddings,
+         group_names, group_sizes, group_colors, group_markers,
+         pca_fixed, source_image, scribble_pil, N_total, target_groups, pca_path) =             build_targets_gender(args, sprinter, clip_model, clip_processor,
+                                 device, sobel_cond_pil)
+    else:  # age
+        (target_images_per_group, clip_embs_per_group, all_clip_embeddings,
+         group_names, group_sizes, group_colors, group_markers,
+         pca_fixed, source_image, scribble_pil, N_total, target_groups, pca_path) =             build_targets_age(args, sprinter, clip_model, clip_processor,
+                              device, sobel_cond_pil)
 
-    if args.target_prompts:
-        target_groups = []
-        for idx, spec in enumerate(args.target_prompts):
-            parts = spec.split(":", 2)
-            if len(parts) != 3:
-                raise ValueError(
-                    f"--target_prompts entry '{spec}' must be 'name:prompt:n'"
-                )
-            name, prompt_text, n_str = parts
-            target_groups.append((
-                name.strip(), prompt_text.strip(), int(n_str),
-                _DEFAULT_COLORS[idx % len(_DEFAULT_COLORS)],
-                _DEFAULT_MARKERS[idx % len(_DEFAULT_MARKERS)],
-            ))
-    else:
-        # default: balanced man / woman split (10 + 10)
-        target_groups = [
-            ("Man",   "a superrealistic portrait photograph of a man, studio lighting",   10,
-             "royalblue", "o"),
-            ("Woman", "a superrealistic portrait photograph of a woman, studio lighting", 10,
-             "crimson",   "x"),
-        ]
-
-    group_names   = [g[0] for g in target_groups]
-    group_colors  = [g[3] for g in target_groups]
-    group_markers = [g[4] for g in target_groups]
-    N_total       = sum(g[2] for g in target_groups)
-    print(f"Target groups: {[(g[0], g[2]) for g in target_groups]}", flush=True)
-
-    # ── 4. Generate initial targets (on oval scribble) for HED extraction ──
-    print("Generating initial targets for HED scribble extraction...", flush=True)
-    target_images_per_group_init = {}
-    with torch.no_grad():
-        for name, prompt_text, n, _, _ in target_groups:
-            imgs, _ = generate_and_store_cs(
-                sprinter, prompt_text,
-                sobel_cond_pil, n, batch_size=2, cn_scale=args.controlnet_scale,
-            )
-            target_images_per_group_init[name] = imgs
-
-    # Extract HED scribble from first image of first group
-    print("Extracting HED scribble...", flush=True)
-    source_image = target_images_per_group_init[group_names[0]][min(2, target_groups[0][2] - 1)]
-    scribble_pil = extract_scribble_hed(source_image)
     source_image.save(os.path.join(args.output_dir, "source_portrait.png"))
     scribble_pil.save(os.path.join(args.output_dir, "scribble.png"))
-    sobel_cond_pil = scribble_pil
-    print("✅ HED scribble ready.", flush=True)
-
-    # ── 5. Regenerate targets conditioned on the HED scribble ──────────────
-    print(f"Regenerating {N_total} targets conditioned on HED scribble...", flush=True)
-    target_images_per_group = {}
-    with torch.no_grad():
-        for name, prompt_text, n, _, _ in target_groups:
-            imgs, _ = generate_and_store_cs(
-                sprinter, prompt_text,
-                sobel_cond_pil, n, batch_size=2, cn_scale=args.controlnet_scale,
-            )
-            target_images_per_group[name] = imgs
-            plot_row(imgs, f"Target: {name}",
-                     save_path=os.path.join(args.output_dir, f"target_samples_{name}.png"))
-
-    # ── 6. Encode targets to CLIP ───────────────────────────────────────────
-    print("Encoding targets to CLIP...", flush=True)
-    clip_model.to(device)
-    clip_embs_per_group = {}
-    with torch.no_grad():
-        for name, imgs in target_images_per_group.items():
-            clip_embs_per_group[name] = encode_images_clip(
-                pil_images_to_tensor(imgs, device), clip_model, clip_processor)
-    clip_model.to("cpu")
-    all_clip_embeddings = torch.cat(list(clip_embs_per_group.values()), dim=0)
-    group_sizes = [len(imgs) for imgs in target_images_per_group.values()]
-    print(f"Target CLIP embeddings: {all_clip_embeddings.shape}  groups: {list(zip(group_names, group_sizes))}", flush=True)
-
-    # Target PCA — fit on all groups, one scatter per group
-    pca_fixed = PCA(n_components=2)
-    pca_fixed.fit(all_clip_embeddings.cpu().numpy())
-    fig, ax = plt.subplots(figsize=(8, 6))
-    for (name, _, _, color, marker), embs in zip(target_groups, clip_embs_per_group.values()):
-        coords = pca_fixed.transform(embs.cpu().numpy())
-        ax.scatter(coords[:, 0], coords[:, 1], c=color, label=name,
-                   marker=marker, alpha=0.7, s=50)
-    ax.set_title("PCA of Target CLIP Embeddings"); ax.legend(); ax.grid(True, alpha=0.3)
-    pca_path = os.path.join(args.output_dir, "target_clip_pca.png")
-    fig.savefig(pca_path, dpi=100, bbox_inches="tight"); plt.close(fig)
 
     # ── 7. wandb init ───────────────────────────────────────────────────────
     eval_interval = (args.eval_interval if args.eval_interval > 0
@@ -361,6 +513,7 @@ def main():
             "loss_scale":                   args.loss_scale,
             "bandwidth_scale":              args.bandwidth_scale,
             "kernel_alpha":                 args.kernel_alpha,
+            "mode":                         args.mode,
         },
     )
     print(f"✅ wandb run: {run.name}", flush=True)
@@ -429,8 +582,6 @@ def main():
     step_gradients = []
     step_vis_data  = []
     target_clip_np = all_clip_embeddings.cpu().numpy()
-
-    target_clip_np      = all_clip_embeddings.cpu().numpy()
     softmax_man_prompt   = target_groups[-1][1]   # last group (most masculine)
     softmax_woman_prompt = target_groups[0][1]    # first group (most feminine)
 

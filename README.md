@@ -1,79 +1,199 @@
-# Conditional Matching via Diffusion Posterior Sampling
+# Inverse Design for Conditional Distribution Matching
 
-Steer diffusion model generation so the output distribution matches a target distribution, using MMD-based guidance in CLIP embedding space.
+Official code for the paper **"Inverse Design for Conditional Distribution Matching"** (NeurIPS 2026 submission).
+
+> **Anonymous submission.** Author information has been omitted for double-blind review.
+> Anonymous repository mirror: [anonymous.4open.science/r/conditional-matching-paper-AE20](https://anonymous.4open.science/r/conditional-matching-paper-AE20)
+
+---
 
 ## Overview
 
-We use **Diffusion Posterior Sampling (DPS)** to guide an SDXL-based image generation pipeline. A two-model architecture generates diverse images from a single source:
+We introduce **Conditional Distribution Matching (CDM)**, a new inverse-design problem class: given a frozen generative pipeline P(Y | X) and a target distribution G(Y), find an input x\* whose induced conditional P(Y | X = x\*) matches G. This goes beyond standard inverse design, which targets a single point output y\*.
 
-1. **Architect** (SDXL Base 1.0) — 30-step denoising loop that produces edge-map scribbles
-2. **Sprinter** (SDXL Turbo + ControlNet-Scribble) — fast 2-step generator that converts scribbles to photorealistic images
+To solve CDM, we propose **MLGD-F** (*Matching-Loss Guided Diffusion with a Fast inner sampler*) — a plug-and-play, inference-time algorithm that combines:
 
-DPS guidance minimizes the **MMD (Maximum Mean Discrepancy)** between generated and target distributions in CLIP ViT-L/14 embedding space, steering the architect's latents so the sprinter's output distribution matches a target set.
+- A **pretrained score-based diffusion model** as a prior over X
+- A **pretrained fast conditional sampler** (consistency model / distilled diffusion) for P(Y | X)
+
+No additional training or fine-tuning is required. Single-step conditional sampling keeps gradient computation memory-efficient and tractable even at the scale of Stable Diffusion.
+
+---
 
 ## Repository Structure
 
 ```
-SD_cond_SD_controlnet/       # Main DPS pipeline
-  run_dps.py                 # Full DPS pipeline script
-  models.py                  # Model loading (SDXL + ControlNet)
-  generation.py              # Noise prediction, DPS gradient steps
-  metrics.py                 # MMD with RBF kernel
-  clip_utils.py              # CLIP encoding (ViT-L/14, 768-dim)
-  image_utils.py             # Sobel edges, VAE decode
-  visualization.py           # PCA & CLIP visualizations
-
-scripts/                     # Evaluation scripts
-  clip_gender_eval.py        # CLIP zero-shot gender classification
+conditional-matching-paper/
+├── simulations/                # Synthetic MoG experiments (Section 4.1)
+│   ├── src/                    # Diffusion, consistency model, loss, utils
+│   ├── notebooks/              # Experiment notebooks (2D, 5D, 10D, β-sweep)
+│   ├── params/                 # Pretrained GMM parameters (.pt)
+│   ├── results/                # Output files
+│   └── requirements.txt
+│
+├── MNIST/                      # MNIST rotation task (Section 4.2)
+│   ├── src/                    # Conditional iCT model, DDPM, classifier, dataset
+│   ├── train/                  # Training scripts (unconditional + conditional)
+│   ├── run_mlgdf.py            # Main MLGD-F inference script
+│   ├── run_mlgdf.sh            # SLURM job script
+│   ├── visualize.py            # Evaluation & polar-histogram visualization
+│   └── requirements.txt
+│
+├── SD_cond_SD_controlnet/      # Stable Diffusion image editing (Section 4.3)
+│   ├── src/                    # Models, generation, metrics, CLIP utils, viz
+│   ├── scripts/                # run_mlgd_f.py, eval_baselines.py
+│   ├── notebooks/              # Evaluation notebooks & ε_g experiment
+│   ├── experiments/            # Per-scenario result JSONs
+│   └── requirements.txt
+│
+└── requirements.txt            # Top-level consolidated dependencies
 ```
 
-## Setup
+---
 
-### Requirements
+## Method
+
+MLGD-F has two components:
+
+1. **Outer loop** — standard LGD-style reverse diffusion guided by a distributional loss L(x).
+2. **Inner estimator** — draws n_cond samples from the fast conditional sampler f_φ(x, ·), computes a distributional distance (MMD or SWD) against a fixed set of target samples from G, and backpropagates through f_φ.
+
+Because f_φ is a **single-step** sampler, the gradient computation is shallow (no K-step unrolled chain), keeping peak VRAM feasible (43 GB vs. ~375 GB projected for a 30-step SDXL-Base inner sampler on an A100 80 GB).
+
+---
+
+## Experiments
+
+### 1 · Synthetic Simulations (MoG)
+
+Mixture-of-Gaussians experiments in 2D, 5D, and 10D input space with 1D output. Compares MLGD-F against a slow (multi-step) inner sampler across 25 optimization runs.
+
+```bash
+cd simulations
+pip install -r requirements.txt
+# Open notebooks/Exp_2D_cond_1D.ipynb (or 5D / 10D variants)
+# β-sweep demo: notebooks/toy_example_with_beta_sweep.ipynb
+```
+
+See [`simulations/README.md`](simulations/README.md) for full details.
+
+### 2 · MNIST Rotation Task
+
+Find a digit image x\* ∈ R^784 such that P(rotation angle | X = x\*) matches a user-specified target G (unimodal, bimodal, or uniform over rotation angles).
+
+**Models used:**
+- Unconditional DDPM over MNIST images (prior over X)
+- Conditional improved Consistency Training (iCT) model for P(angle | digit image)
+
+#### Quick start (pretrained checkpoints from HuggingFace)
+
+```bash
+cd MNIST
+pip install -r requirements.txt
+
+# Download checkpoints
+python -c "
+from huggingface_hub import hf_hub_download
+import os; os.makedirs('checkpoints', exist_ok=True)
+hf_hub_download('anon-submission-cdm/cdm-inverse-design',
+                filename='mnist/uncond_unet.pt',
+                local_dir='checkpoints')
+hf_hub_download('anon-submission-cdm/cdm-inverse-design',
+                filename='mnist/cond_ict.pt',
+                local_dir='checkpoints')
+"
+
+# Run MLGD-F (bimodal target, 15 seeds)
+python run_mlgdf.py --target bimodal --num_runs 15
+
+# Visualize results
+python visualize.py --results_dir results/
+```
+
+#### Train from scratch
+
+```bash
+# Unconditional DDPM
+python train/train_uncond.py
+
+# Conditional iCT
+python train/train_conditional.py
+```
+
+See [`MNIST/README.md`](MNIST/README.md) for hyperparameter details and SLURM scripts.
+
+### 3 · Stable Diffusion Image Editing
+
+Optimize a portrait scribble x\* so that images generated from it via ControlNet-Scribble satisfy a distributional target G in CLIP embedding space. Targets include discrete gender mixtures and continuous age/gender interpolations.
+
+**Models used (all auto-downloaded from HuggingFace):**
+| Role | Model |
+|---|---|
+| Prior over X (Architect) | `stabilityai/stable-diffusion-xl-base-1.0` |
+| Fast conditional sampler f_φ (Sprinter) | `stabilityai/sdxl-turbo` |
+| Conditioning | `xinsir/controlnet-scribble-sdxl-1.0` |
+| Embedding | `openai/clip-vit-large-patch14` |
+
+#### Requirements
+
+```bash
+cd SD_cond_SD_controlnet
+pip install -r requirements.txt
+# Requires CUDA ≥ 12.8 and ~80 GB VRAM (A100 recommended)
+```
+
+#### Run MLGD-F (balanced gender target)
+
+```bash
+python scripts/run_mlgd_f.py \
+    --target balanced \
+    --num_steps 125 \
+    --num_variations 100 \
+    --output_dir output/balanced/
+```
+
+#### Run baselines (SDEdit Best, Average Scribble)
+
+```bash
+bash run_eval_baselines.sh
+```
+
+#### Evaluate results
+
+```bash
+# Open notebooks/eval_all_experiments.ipynb
+# or
+python -c "import json; print(json.load(open('experiments/eval_all_results.json')))"
+```
+
+See [`SD_cond_SD_controlnet/README.md`](SD_cond_SD_controlnet/README.md) for full argument reference.
+
+---
+
+## Installation
+
+Each sub-module has its own `requirements.txt`. A consolidated top-level file covers all three:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### Models
+GPU requirements vary by experiment:
+- **Simulations / MNIST:** any modern GPU (≥ 8 GB VRAM)
+- **Stable Diffusion:** A100 80 GB (or equivalent) recommended
 
-- **SDXL Base 1.0**: `stabilityai/stable-diffusion-xl-base-1.0` (auto-downloaded from HuggingFace)
-- **SDXL Turbo**: `stabilityai/sdxl-turbo` (auto-downloaded)
-- **ControlNet Scribble**: `xinsir/controlnet-scribble-sdxl-1.0` (auto-downloaded)
-- **CLIP**: `openai/clip-vit-large-patch14` (auto-downloaded, also used for gender eval)
+---
 
-## Usage
+## Pretrained Checkpoints
 
-### Run DPS Pipeline
+MNIST checkpoints and the ε_g benchmark results are hosted on HuggingFace:
 
-```bash
-python SD_cond_SD_controlnet/run_dps.py \
-    --num_steps 250 \
-    --start_step 125 \
-    --num_variations 100 \
-    --output_dir output/my_run/
-```
+> [huggingface.co/anon-submission-cdm/cdm-inverse-design](https://huggingface.co/anon-submission-cdm/cdm-inverse-design)
 
-### Gender Balance Evaluation
+Stable Diffusion models are downloaded automatically from the HuggingFace Hub on first run.
 
-Classify gender of generated portraits using CLIP ViT-L/14 zero-shot classification (no fine-tuning needed). Computes softmax over cosine similarities to "a photo of a man" / "a photo of a woman".
+---
 
-```bash
-python scripts/clip_gender_eval.py \
-    --image_dir output/my_run/
-```
+## Citation
 
-This evaluates `eval_photos_guided/` and `eval_photos_unguided/` subdirectories, producing per-image JSON results, sorted folders, boxplots, and a PDF grid.
-
-## Key Results
-
-| Configuration | Regular MMD | DPS MMD | MRI (%) |
-|---|---|---|---|
-| Base SDXL (250 steps, 100 var) | 0.295 | 0.110 | 62.8 |
-
-**MRI** = MMD Relative Improvement = (MMD_regular - MMD_dps) / MMD_regular
-
-## Tracking
-
-- **wandb team**: `conditional-matching`
-- **Projects**: `conditional-flow`
+Anonymous submission — citation will be added after the review period.

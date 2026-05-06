@@ -1,27 +1,105 @@
 
-# OS junk
+# ── OS / editor junk ──────────────────────────────────────────────────────────
 .DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
 
-# Agent infrastructure (local only)
-.agents/
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.pytype/
 
-# Caches and model weights
-.quickdrawcache/
-models/fairface/
+# ── Jupyter ───────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+# keep committed notebooks clean; strip outputs before committing
+# (use nbstripout or similar)
 
-# Autoresearch (local experiment runner)
-autoresearch/
+# ── Virtual environments ──────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+.conda/
 
-# Claude Code local files
-.claude/
+# ── Model weights & large binaries ───────────────────────────────────────────
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.bin
+*.onnx
+*.pkl
+# Exception: committed GMM params in simulations/params/ are tracked explicitly
+!simulations/params/*.pt
 
-# Experiment outputs (keep on disk, not in git)
-SD_cond_SD_controlnet/output/
-finetune_hed/output/
+# ── Experiment outputs ────────────────────────────────────────────────────────
 output/
+outputs/
+results/
+runs/
+# Sub-module output dirs
+SD_cond_SD_controlnet/output/
+MNIST/results/
+MNIST/logs/
+MNIST/checkpoints/
+simulations/results/
 
-# LoRA training data and outputs
+# Exception: keep committed result JSONs and CSVs used in the paper
+!SD_cond_SD_controlnet/experiments/eval_all_results.json
+!SD_cond_SD_controlnet/notebooks/results/
+
+# ── Image dumps ───────────────────────────────────────────────────────────────
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tiff
+*.webp
+# Exception: figures committed for the paper
+!Figures/**
+
+# ── Logs & tracking ───────────────────────────────────────────────────────────
+*.log
+wandb/
+lightning_logs/
+mlruns/
+
+# ── Secrets & credentials ─────────────────────────────────────────────────────
+.env
+.env.*
+secrets.json
+*.key
+*_credentials.*
+
+# ── HuggingFace / diffusers cache ────────────────────────────────────────────
+.cache/
+hub/
+models--*/
+snapshots/
+
+# ── LoRA / fine-tune data & checkpoints ──────────────────────────────────────
 scribble_tune/data/
 scribble_tune/output/
-*.safetensors
+finetune_hed/output/
 
+# ── Fairface & other auxiliary model caches ──────────────────────────────────
+models/fairface/
+.quickdrawcache/
+
+# ── Local tooling (not part of the submission) ────────────────────────────────
+.agents/
+autoresearch/
+.claude/

@@ -47,12 +47,6 @@ python scripts/run_mlgd_f.py \
     --guidance_scale 0.0 \
     --controlnet_scale 0.5 \
     --loss_fn mmd \
-    --loss_scale 1.0 \
-    --bandwidth_scale 1.0 \
-    --kernel_alpha 1.0 \
-    --architect_model_id "stabilityai/sdxl-turbo" \
-    --sprinter_model_id "stabilityai/sdxl-turbo" \
-    --controlnet_model_id "xinsir/controlnet-scribble-sdxl-1.0" \
     --target_prompts \
         "Man:a superrealistic portrait photograph of a man, studio lighting:10" \
         "Woman:a superrealistic portrait photograph of a woman, studio lighting:10" \

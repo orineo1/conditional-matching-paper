@@ -1,12 +1,5 @@
 # Inverse Design for Conditional Distribution Matching
 
-Official code for the paper **"Inverse Design for Conditional Distribution Matching"** (NeurIPS 2026 submission).
-
-> **Anonymous submission.** Author information has been omitted for double-blind review.
-> Anonymous repository mirror: [anonymous.4open.science/r/conditional-matching-paper-AE20](https://anonymous.4open.science/r/conditional-matching-paper-AE20)
-
----
-
 ## Overview
 
 We introduce **Conditional Distribution Matching (CDM)**, a new inverse-design problem class: given a frozen generative pipeline P(Y | X) and a target distribution G(Y), find an input x\* whose induced conditional P(Y | X = x\*) matches G. This goes beyond standard inverse design, which targets a single point output y\*.

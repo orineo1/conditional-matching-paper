@@ -69,7 +69,7 @@ Mixture-of-Gaussians experiments in 2D, 5D, and 10D input space with 1D output. 
 | Fast conditional sampler f_φ (Sprinter) | Consistency model trained on the same MoG (provided in `params/`) |
 
 Pretrained checkpoints for 2D, 5D, and 10D are hosted on HuggingFace:
-> [huggingface.co/anon-submission-cdm/cdm-inverse-design](https://huggingface.co/anon-submission-cdm/cdm-inverse-design)
+> [huggingface.co/Orineo/Inverse-Design-Conditional-Distribution-Matching](https://huggingface.co/Orineo/Inverse-Design-Conditional-Distribution-Matching)
 
 ```bash
 cd simulations
@@ -94,7 +94,7 @@ Find a digit image x\* ∈ R^784 such that P(rotation angle | X = x\*) matches a
 | Fast conditional sampler f_φ (Sprinter) | Conditional improved Consistency Training (iCT) model for P(angle \| digit image) |
 
 Pretrained checkpoints are hosted on HuggingFace:
-> [huggingface.co/anon-submission-cdm/cdm-inverse-design](https://huggingface.co/anon-submission-cdm/cdm-inverse-design)
+> [huggingface.co/Orineo/Inverse-Design-Conditional-Distribution-Matching](https://huggingface.co/Orineo/Inverse-Design-Conditional-Distribution-Matching)
 
 #### Quick start (pretrained checkpoints)
 
@@ -213,7 +213,7 @@ GPU requirements vary by experiment:
 
 MNIST checkpoints and synthetic simulation checkpoints (2D, 5D, 10D GMM) are hosted on HuggingFace:
 
-> [huggingface.co/anon-submission-cdm/cdm-inverse-design](https://huggingface.co/anon-submission-cdm/cdm-inverse-design)
+> [huggingface.co/Orineo/Inverse-Design-Conditional-Distribution-Matching](https://huggingface.co/Orineo/Inverse-Design-Conditional-Distribution-Matching)
 
 Stable Diffusion models are downloaded automatically from the HuggingFace Hub on first run. No SD checkpoints are hosted separately.
 
@@ -221,4 +221,4 @@ Stable Diffusion models are downloaded automatically from the HuggingFace Hub on
 
 ## Citation
 
-Anonymous submission — citation will be added after the review period.
+Meidler, O., Tolkovsky, S., & Zuk, O. (2026). *Inverse Design for Conditional Distribution Matching*. arXiv preprint.

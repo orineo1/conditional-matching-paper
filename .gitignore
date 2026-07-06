@@ -25,3 +25,10 @@ scribble_tune/data/
 scribble_tune/output/
 *.safetensors
 
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# LaTeX build products
+discrete_x/writeup/*.pdf

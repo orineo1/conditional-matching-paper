@@ -402,10 +402,12 @@ for name in ["feasible", "infeasible", "adversarial"]:
         note = "recovers x*~=-5, near-zero MMD; success reference"
     elif name == "infeasible":
         note = (f"Var(Y) compresses toward floor {Sigma_cond:.4f} (achieved {d['top10_achieved_var_mean']:.3f} "
-                 f"vs target var {INFEASIBLE_VAR}); loss saturates ({d['top10_loss_mean']:.2f}), does not diverge")
+                 f"vs target var {INFEASIBLE_VAR}, vs unconstrained blow-up seen in bad restarts); "
+                 f"loss saturates ({d['top10_loss_mean']:.2f}), does not diverge")
     else:
-        note = (f"w_a={d['top10_w_a_mean']:.3f}, w_b={d['top10_w_b_mean']:.3f} (top10 mean): "
-                 f"never reaches 0.5/0.5, no clean collapse either; loss plateaus well above feasible baseline")
+        note = (f"w_a={d['top10_w_a_mean']:.3f}, w_b={d['top10_w_b_mean']:.3f} (top10 mean, never 0.5/0.5); "
+                 f"restarts scatter across x in [-8,+7] (x std={d['top10_x_std']:.2f}) landing on different "
+                 f"nearby-component substitutes -> spurious extra modes, not a single stable compromise")
     rows.append({
         "Condition": name,
         "Top-10 MMD loss (mean +- std)": f"{d['top10_loss_mean']:.4f} +- {d['top10_loss_std']:.4f}",

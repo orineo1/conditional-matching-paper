@@ -1,0 +1,4 @@
+Condition,Top-10 MMD loss (mean +- std),Best MMD loss,x_hat*,Note
+feasible,0.0031 +- 0.0015,0.0007,-5.2680,"recovers x*~=-5, near-zero MMD; success reference"
+infeasible,0.7516 +- 0.1774,0.4549,6.9648,"Var(Y) compresses toward floor 0.1240 (achieved 0.695 vs target var 0.01, vs unconstrained blow-up seen in bad restarts); loss saturates (0.75), does not diverge"
+adversarial,0.9814 +- 0.1771,0.5314,-6.3438,"w_a=0.123, w_b=0.096 (top10 mean, never 0.5/0.5); restarts scatter across x in [-8,+7] (x std=5.26) landing on different nearby-component substitutes -> spurious extra modes, not a single stable compromise"

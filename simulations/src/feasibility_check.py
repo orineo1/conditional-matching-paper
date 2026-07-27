@@ -36,6 +36,72 @@ import Optimization
 
 
 # ============================================================
+# GMM parameters for the 2D_cond_1D joint (shared with Exp_2D_cond_1D.ipynb)
+# ============================================================
+
+def ensure_gmm_params(params_dir, results_dir, experiment_name, global_seed):
+    """
+    Load the 2D_cond_1D joint-GMM parameters from params_dir/results_dir, or
+    regenerate them if neither has a saved copy yet.
+
+    Generation is fully deterministic (seeded, no randomness beforehand), and
+    reproduces exactly the "GMM PARAMETERS" cell of Exp_2D_cond_1D.ipynb --
+    the same mu_list/Sigma_list/alpha/x_star that experiment's checkpoints
+    were trained against -- so this notebook does not require having run
+    Exp_2D_cond_1D.ipynb first. The freshly generated parameters are saved to
+    params_dir so later runs (and Exp_2D_cond_1D.ipynb itself) reuse them.
+    """
+    loaded = experiment_utils.load_gmm_params(params_dir, experiment_name)
+    if loaded is None:
+        loaded = experiment_utils.load_gmm_params(results_dir, experiment_name)
+    if loaded is not None:
+        mu_list, Sigma_list, alpha, mog_means, mog_variances, weights, x_star = loaded
+        mu_list    = [mu.float() for mu in mu_list]
+        Sigma_list = [cov.float() for cov in Sigma_list]
+        alpha      = alpha.float()
+        return mu_list, Sigma_list, alpha, x_star
+
+    print("[GMM] No saved parameters found -- regenerating (deterministic, seed={})".format(global_seed))
+    experiment_utils.set_global_seed(global_seed)
+    mu_list = [
+        torch.tensor([-5,  5], dtype=torch.float64),
+        torch.tensor([-5, -5], dtype=torch.float64),
+        torch.tensor([ 5,  3], dtype=torch.float64),
+        torch.tensor([ 5, -1], dtype=torch.float64),
+        torch.tensor([ 0, -3], dtype=torch.float64),
+        torch.tensor([-2,  4], dtype=torch.float64),
+        torch.tensor([-2, -3], dtype=torch.float64),
+        torch.tensor([ 1,  2], dtype=torch.float64),
+        torch.tensor([-8,  1], dtype=torch.float64),
+        torch.tensor([ 7,  5], dtype=torch.float64),
+        torch.tensor([ 0, -5], dtype=torch.float64),
+    ]
+    Sigma_list = [
+        torch.tensor([[0.5000, 0.1950],
+                      [0.1950, 0.2000]], dtype=torch.float64)
+    ] * len(mu_list)
+    alpha = torch.tensor([1 / len(mu_list)] * len(mu_list), dtype=torch.float64)
+
+    mu_list    = [mu.float() for mu in mu_list]
+    Sigma_list = [cov.float() for cov in Sigma_list]
+    alpha      = alpha.float()
+
+    x_star = torch.tensor([-5])
+    mu_temp, Sigma_temp = dist_utils.compute_conditionals(mu_list, Sigma_list, x_star)
+    temp_alpha          = dist_utils.compute_alpha(mu_list, Sigma_list, alpha, x_star)
+    mog_means, mog_variances, weights = dist_utils.filter_and_normalize(
+        mu_temp, Sigma_temp, temp_alpha, threshold=0.01
+    )
+
+    experiment_utils.save_gmm_params(
+        mu_list, Sigma_list, alpha,
+        mog_means, mog_variances, weights, x_star,
+        params_dir, experiment_name
+    )
+    return mu_list, Sigma_list, alpha, x_star
+
+
+# ============================================================
 # Achievable conditional P(Y|X=x) for the ground-truth joint GMM
 # ============================================================
 

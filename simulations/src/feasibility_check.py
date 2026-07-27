@@ -21,10 +21,18 @@ computed exactly via dist_utils.gmm_l2_distance, swept over a grid of x.
     achievable approximation.
 """
 
+import os
+
+import numpy as np
 import torch
+import pandas as pd
+import matplotlib.pyplot as plt
 from scipy.optimize import minimize_scalar
+from tqdm import trange
 
 import dist_utils
+import experiment_utils
+import Optimization
 
 
 # ============================================================
@@ -195,3 +203,113 @@ def density_on_grid(means, variances, weights, y_grid):
     means_list = [means[i] for i in range(means.shape[0])]
     vars_list = [variances[i] for i in range(variances.shape[0])]
     return dist_utils.mog_multivariate_pdf(y, means_list, vars_list, weights).detach().numpy()
+
+
+def mean_variance(means, variances, weights):
+    """Weight-averaged mean/variance of a (means, variances, weights) GMM target."""
+    w = weights.view(-1, 1, 1)
+    mean = (w * means).sum(dim=0)
+    var = (w * variances).sum(dim=0) + (w * (means - mean) ** 2).sum(dim=0)
+    return float(mean.view(-1)[0]), float(var.view(-1)[0])
+
+
+def safe_shrink_scale(mu_list, Sigma_list, alpha, x_ref, vmin, margin=0.5, threshold=0.01):
+    """
+    Scale factor for target_shrink_variance(x_ref, scale) that guarantees the
+    resulting target variance sits below `vmin` (the achievable minimum from
+    achievable_variance_range), with a safety margin.
+    """
+    _, base_var = mean_variance(*conditional_gmm_at_x(mu_list, Sigma_list, alpha, x_ref, threshold))
+    return margin * vmin / base_var
+
+
+# ============================================================
+# One-call diagnostic: curve + optional density overlay + plot + summary
+# ============================================================
+
+def diagnose_target(mu_list, Sigma_list, alpha, target, bounds, label,
+                     feasibility_floor=None, y_grid=None, save_dir=None, threshold=0.01):
+    """
+    Run the full analytic diagnostic for one target: find x*/D_min, plot the
+    achievability curve (and, if y_grid is given, a target-vs-best-achievable
+    density overlay), print a one-line verdict, and optionally save the figure.
+
+    Returns a dict with x_star, d_min, x_grid, d_grid, feasible (bool or None
+    if no floor was given) -- everything needed for a results table.
+    """
+    x_star, d_min, x_grid, d_grid = find_best_x(mu_list, Sigma_list, alpha, *target,
+                                                 bounds=bounds, threshold=threshold)
+    feasible = None if feasibility_floor is None else d_min <= feasibility_floor
+    verdict = "" if feasible is None else ("FEASIBLE" if feasible else "INFEASIBLE")
+    print(f"[{label}] x* = {x_star:.4f}   D_min = {d_min:.4g}" + (f"   -> {verdict}" if verdict else ""))
+
+    ncols = 2 if y_grid is not None else 1
+    fig, axes = plt.subplots(1, ncols, figsize=(5.5 * ncols, 4))
+    ax0 = axes[0] if ncols > 1 else axes
+    ax0.plot(x_grid, d_grid)
+    ax0.axvline(x_star, color="r", ls="--", label=f"best x*={x_star:.2f}")
+    ax0.set_xlabel("x"); ax0.set_ylabel("D(x)"); ax0.set_title(f"{label}: achievability curve")
+    ax0.legend(); ax0.grid(True)
+
+    if y_grid is not None:
+        target_density = density_on_grid(*target, y_grid)
+        achieved = target_from_x(mu_list, Sigma_list, alpha, torch.tensor([x_star]), threshold=threshold)
+        achieved_density = density_on_grid(*achieved, y_grid)
+        axes[1].plot(y_grid, target_density, label="target")
+        axes[1].plot(y_grid, achieved_density, label=f"best achievable P(Y|X={x_star:.2f})")
+        axes[1].set_xlabel("y"); axes[1].set_ylabel("density"); axes[1].set_title(f"{label}: target vs. closest achievable")
+        axes[1].legend(); axes[1].grid(True)
+
+    plt.tight_layout()
+    if save_dir is not None:
+        fname = label.lower().replace(" ", "_").replace(":", "").replace("(", "").replace(")", "")
+        plt.savefig(os.path.join(save_dir, f"{fname}.png"), dpi=150)
+    plt.show()
+
+    return {"label": label, "x_star": x_star, "d_min": d_min, "feasible": feasible,
+            "x_grid": x_grid, "d_grid": d_grid}
+
+
+# ============================================================
+# Cross-check with the paper's actual optimizer (MLGD / MLGD-F)
+# ============================================================
+
+def run_cross_check(model_uncond, model_cond, model_cm, target, mu_list, Sigma_list, alpha,
+                     label, global_seed, device, n_attempts=10, nsamples=250, num_x_t=3):
+    """
+    Rerun Optimization.optimize_LGD (unmodified) on `target`, once with the
+    diffusion conditional model (MLGD) and once with the consistency model
+    (MLGD-F, CM=True). Returns (per-run DataFrame, per-method summary
+    DataFrame) with the recovered x and final MMD loss.
+    """
+    rows = []
+    for method, cond_model, cm_flag in [("MLGD", model_cond, False), ("MLGD-F", model_cm, True)]:
+        for i in trange(n_attempts, desc=f"{label} | {method}"):
+            experiment_utils.set_run_seed(global_seed, i)
+            best_x_t, _, final_loss = Optimization.optimize_LGD(
+                model_uncond, cond_model, *target, mu_list, Sigma_list, alpha,
+                nsamples=nsamples, loss="MMD", device=device, CM=cm_flag, num_x_t=num_x_t
+            )
+            rows.append((method, i, float(best_x_t.view(-1)[0].item()), float(final_loss.item())))
+
+    df = pd.DataFrame(rows, columns=["method", "run", "x_recovered", "final_mmd_loss"])
+    summary = df.groupby("method").agg(
+        x_mean=("x_recovered", "mean"), x_std=("x_recovered", "std"),
+        loss_mean=("final_mmd_loss", "mean"), loss_std=("final_mmd_loss", "std"),
+    )
+    print(f"\n--- {label} ---")
+    print(summary)
+    return df, summary
+
+
+def comparison_row(label, diagnosis, summary):
+    """One row for the final results table: analytic vs. MLGD vs. MLGD-F."""
+    return {
+        "case": label,
+        "analytic_x_star": diagnosis["x_star"],
+        "analytic_D_min": diagnosis["d_min"],
+        "MLGD_loss_mean": summary.loc["MLGD", "loss_mean"],
+        "MLGD_x_mean": summary.loc["MLGD", "x_mean"],
+        "MLGD-F_loss_mean": summary.loc["MLGD-F", "loss_mean"],
+        "MLGD-F_x_mean": summary.loc["MLGD-F", "x_mean"],
+    }

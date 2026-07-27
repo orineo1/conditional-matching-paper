@@ -28,6 +28,7 @@ import torch
 import pandas as pd
 import matplotlib.pyplot as plt
 from scipy.optimize import minimize_scalar
+from scipy.signal import argrelextrema
 from tqdm import trange
 
 import dist_utils
@@ -169,6 +170,44 @@ def find_best_x(mu_list, Sigma_list, alpha, target_means, target_vars, target_we
     if d_min > d_grid[best_idx]:
         x_star, d_min = x0, d_grid[best_idx]
     return x_star, d_min, x_grid, d_grid
+
+
+# ============================================================
+# Feasible-but-hard-landscape search: a genuine x* (D(x*)=0 by
+# construction, via target_from_x) whose D(x) curve nonetheless has a
+# decoy local minimum elsewhere -- distinct from the infeasibility cases
+# above. Here a good match exists; the question is whether gradient-guided
+# search (MLGD/MLGD-F) reliably finds it or gets trapped in the decoy.
+# ============================================================
+
+def find_decoy_candidate(mu_list, Sigma_list, alpha, bounds, n_candidates=25, grid_n=250,
+                          min_x_gap=1.5, threshold=0.01):
+    """
+    For each of n_candidates real x* values swept over `bounds`, build
+    target_from_x(x*) (feasible by construction) and scan its D(x) curve for
+    a secondary local minimum at least min_x_gap away from x* -- a "decoy"
+    that could mislead a local/gradient-guided search away from the true x*.
+
+    Returns a list of (x_star_candidate, decoy_x, decoy_D) tuples, sorted by
+    decoy_D ascending (most deceptive -- decoy nearly as good as the true
+    zero at x_star -- first).
+    """
+    lo, hi = bounds
+    results = []
+    for x_star_c in np.linspace(lo, hi, n_candidates):
+        target = target_from_x(mu_list, Sigma_list, alpha, torch.tensor([x_star_c]), threshold=threshold)
+        x_grid = np.linspace(lo, hi, grid_n)
+        d_grid = np.array(achievability_curve(mu_list, Sigma_list, alpha, *target, x_grid, threshold))
+        local_min_idx = argrelextrema(d_grid, np.less_equal, order=8)[0]
+        best_decoy = None
+        for idx in local_min_idx:
+            x_val, d_val = float(x_grid[idx]), float(d_grid[idx])
+            if abs(x_val - x_star_c) > min_x_gap and (best_decoy is None or d_val < best_decoy[1]):
+                best_decoy = (x_val, d_val)
+        if best_decoy is not None:
+            results.append((float(x_star_c), best_decoy[0], best_decoy[1]))
+    results.sort(key=lambda r: r[2])
+    return results
 
 
 # ============================================================

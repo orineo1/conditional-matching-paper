@@ -347,6 +347,19 @@ for name in conditions:
     m_best, v_best, w_best = induced_conditional(x_best)
     achieved_var = mixture_var(m_best, v_best, w_best)
 
+    # Diagnostics aggregated over the top-10 runs (not just the single best
+    # restart) -- more robust evidence for "converges near the boundary /
+    # does not diverge" than a single seed.
+    top10_vars = []
+    top10_wa, top10_wb = [], []
+    for i in top10_idx:
+        m_i, v_i, w_i = induced_conditional(xs[i])
+        top10_vars.append(mixture_var(m_i, v_i, w_i))
+        if name == "adversarial":
+            wf = w_i.view(-1).tolist()
+            top10_wa.append(wf[idx_a])
+            top10_wb.append(wf[idx_b])
+
     entry = {
         "top10_loss_mean": float(np.mean(top10_loss)),
         "top10_loss_std":  float(np.std(top10_loss)),
@@ -355,22 +368,29 @@ for name in conditions:
         "top10_x_mean": float(np.mean(top10_x)),
         "top10_x_std":  float(np.std(top10_x)),
         "achieved_var_Y_at_best_x": achieved_var,
+        "top10_achieved_var_mean": float(np.mean(top10_vars)),
+        "top10_achieved_var_std":  float(np.std(top10_vars)),
         "mean_time_s": float(np.mean(all_results[name]["times"])),
     }
     if name == "infeasible":
-        entry["distance_to_floor"] = achieved_var - Sigma_cond
+        entry["distance_to_floor_best"] = achieved_var - Sigma_cond
+        entry["distance_to_floor_top10_mean"] = entry["top10_achieved_var_mean"] - Sigma_cond
     if name == "adversarial":
         w_full = w_best.view(-1).tolist()
         entry["w_a_at_best_x"] = w_full[idx_a]
         entry["w_b_at_best_x"] = w_full[idx_b]
         entry["other_weight_at_best_x"] = 1.0 - w_full[idx_a] - w_full[idx_b]
+        entry["top10_w_a_mean"] = float(np.mean(top10_wa))
+        entry["top10_w_b_mean"] = float(np.mean(top10_wb))
     diagnostics[name] = entry
     print(f"\n[{name}] best loss={loss_best:.6f}  x_hat*={x_best:.4f}  "
           f"top10 loss mean={entry['top10_loss_mean']:.6f}+-{entry['top10_loss_std']:.6f}  "
-          f"achieved Var(Y)={achieved_var:.6f}")
+          f"achieved Var(Y) (best)={achieved_var:.6f}  "
+          f"achieved Var(Y) (top10 mean)={entry['top10_achieved_var_mean']:.6f}+-{entry['top10_achieved_var_std']:.6f}")
     if name == "adversarial":
         print(f"    w_a={entry['w_a_at_best_x']:.4f}  w_b={entry['w_b_at_best_x']:.4f}  "
-              f"other={entry['other_weight_at_best_x']:.4f}")
+              f"other={entry['other_weight_at_best_x']:.4f}  "
+              f"(top10 mean: w_a={entry['top10_w_a_mean']:.4f} w_b={entry['top10_w_b_mean']:.4f})")
 
 # ============================================================
 # Comparison table
@@ -381,9 +401,11 @@ for name in ["feasible", "infeasible", "adversarial"]:
     if name == "feasible":
         note = "recovers x*~=-5, near-zero MMD; success reference"
     elif name == "infeasible":
-        note = f"Var(Y) -> floor {Sigma_cond:.4f} (target var {INFEASIBLE_VAR}); loss saturates, does not diverge"
+        note = (f"Var(Y) compresses toward floor {Sigma_cond:.4f} (achieved {d['top10_achieved_var_mean']:.3f} "
+                 f"vs target var {INFEASIBLE_VAR}); loss saturates ({d['top10_loss_mean']:.2f}), does not diverge")
     else:
-        note = f"w_a={d['w_a_at_best_x']:.3f}, w_b={d['w_b_at_best_x']:.3f}: collapses toward one mode, does not split 50/50"
+        note = (f"w_a={d['top10_w_a_mean']:.3f}, w_b={d['top10_w_b_mean']:.3f} (top10 mean): "
+                 f"never reaches 0.5/0.5, no clean collapse either; loss plateaus well above feasible baseline")
     rows.append({
         "Condition": name,
         "Top-10 MMD loss (mean +- std)": f"{d['top10_loss_mean']:.4f} +- {d['top10_loss_std']:.4f}",

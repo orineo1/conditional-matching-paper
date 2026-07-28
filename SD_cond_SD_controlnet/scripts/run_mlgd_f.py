@@ -73,6 +73,8 @@ def parse_args():
     p.add_argument("--n_steps",    type=int, default=30)
     p.add_argument("--start_step", type=int, default=15,
                    help="SDEdit start step — MLGD-F runs from here to n_steps")
+    p.add_argument("--random_init", action="store_true",
+                   help="Replace the scribble latent with random noise (ablation: unrelated init)")
 
     # Guidance
     p.add_argument("--base_zeta",        type=float, default=1.0)
@@ -574,6 +576,8 @@ def main():
         scribble_tensor = (scribble_tensor * 2.0) - 1.0
         scribble_latent = architect.vae.encode(scribble_tensor).latent_dist.mean
         scribble_latent = scribble_latent * architect.vae.config.scaling_factor
+        if args.random_init:
+            scribble_latent = torch.randn_like(scribble_latent)
 
     t_start        = timesteps[start_step]
     alphas_cumprod = architect.scheduler.alphas_cumprod.to(device)

@@ -77,6 +77,11 @@ def parse_args():
     p.add_argument("--unrelated_init_path", type=str, default=None,
                    help="Path to a semantically-unrelated image to use for the SDEdit "
                         "init scribble instead of a generated portrait (ablation)")
+    p.add_argument("--unrelated_init_prompt", type=str, default=None,
+                   help="Text prompt (e.g. 'image of an eagle diving') used to generate "
+                        "a semantically-unrelated image via the Sprinter model; its HED "
+                        "scribble becomes the SDEdit init (ablation). Takes precedence "
+                        "over --unrelated_init_path if both are set.")
 
     # Guidance
     p.add_argument("--base_zeta",        type=float, default=1.0)
@@ -163,6 +168,26 @@ def extract_scribble_hed(pil_image):
     from controlnet_aux import HEDdetector
     hed = HEDdetector.from_pretrained("lllyasviel/Annotators")
     return hed(pil_image, scribble=True)
+
+
+def make_unrelated_source(args, sprinter, sobel_cond_pil):
+    """
+    Build a semantically-unrelated source image + HED scribble for the SDEdit
+    init ablation, either from a text prompt (generated via Sprinter with
+    ControlNet disabled) or from an image file on disk.
+    """
+    if args.unrelated_init_prompt:
+        print(f"Generating unrelated init image from prompt: {args.unrelated_init_prompt!r}", flush=True)
+        with torch.no_grad():
+            imgs, _ = generate_and_store_cs(
+                sprinter, args.unrelated_init_prompt,
+                sobel_cond_pil, 1, batch_size=1, cn_scale=0.0,
+            )
+        source_image = imgs[0]
+    else:
+        print(f"Using unrelated init image: {args.unrelated_init_path}", flush=True)
+        source_image = Image.open(args.unrelated_init_path).convert("RGB").resize(sobel_cond_pil.size)
+    return source_image, extract_scribble_hed(source_image)
 
 
 def compute_clip_softmax(pil_list, clip_model, clip_processor,
@@ -270,10 +295,8 @@ def build_targets_gender(args, sprinter, clip_model, clip_processor, device,
     N_total       = sum(g[2] for g in target_groups)
     print(f"Target groups: {[(g[0], g[2]) for g in target_groups]}", flush=True)
 
-    if args.unrelated_init_path:
-        print(f"Using unrelated init image: {args.unrelated_init_path}", flush=True)
-        source_image = Image.open(args.unrelated_init_path).convert("RGB").resize(sobel_cond_pil.size)
-        scribble_pil = extract_scribble_hed(source_image)
+    if args.unrelated_init_prompt or args.unrelated_init_path:
+        source_image, scribble_pil = make_unrelated_source(args, sprinter, sobel_cond_pil)
     else:
         # Generate a few male portraits on the oval scribble for HED extraction
         # Always use a male prompt for the scribble regardless of target groups
@@ -391,10 +414,8 @@ def build_targets_age(args, sprinter, clip_model, clip_processor, device,
         plot_row(target_images_per_group[str(age)], f"Age {age}",
                  save_path=os.path.join(args.output_dir, f"target_samples_age{age}.png"))
 
-    if args.unrelated_init_path:
-        print(f"Using unrelated init image: {args.unrelated_init_path}", flush=True)
-        source_image = Image.open(args.unrelated_init_path).convert("RGB").resize(sobel_cond_pil.size)
-        scribble_pil = extract_scribble_hed(source_image)
+    if args.unrelated_init_prompt or args.unrelated_init_path:
+        source_image, scribble_pil = make_unrelated_source(args, sprinter, sobel_cond_pil)
     else:
         # Extract HED scribble from a male portrait at middle age
         mid_age = ages[len(ages) // 2]
@@ -535,6 +556,8 @@ def main():
             "bandwidth_scale":              args.bandwidth_scale,
             "kernel_alpha":                 args.kernel_alpha,
             "mode":                         args.mode,
+            "unrelated_init_path":          args.unrelated_init_path,
+            "unrelated_init_prompt":        args.unrelated_init_prompt,
         },
     )
     print(f"✅ wandb run: {run.name}", flush=True)

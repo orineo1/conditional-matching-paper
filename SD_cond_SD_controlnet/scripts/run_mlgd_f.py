@@ -29,6 +29,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from PIL import Image
 import torchvision.transforms as T
 import torchvision.transforms.functional as TF
 from sklearn.decomposition import PCA
@@ -73,8 +74,9 @@ def parse_args():
     p.add_argument("--n_steps",    type=int, default=30)
     p.add_argument("--start_step", type=int, default=15,
                    help="SDEdit start step — MLGD-F runs from here to n_steps")
-    p.add_argument("--random_init", action="store_true",
-                   help="Replace the scribble latent with random noise (ablation: unrelated init)")
+    p.add_argument("--unrelated_init_path", type=str, default=None,
+                   help="Path to a semantically-unrelated image to use for the SDEdit "
+                        "init scribble instead of a generated portrait (ablation)")
 
     # Guidance
     p.add_argument("--base_zeta",        type=float, default=1.0)
@@ -268,20 +270,25 @@ def build_targets_gender(args, sprinter, clip_model, clip_processor, device,
     N_total       = sum(g[2] for g in target_groups)
     print(f"Target groups: {[(g[0], g[2]) for g in target_groups]}", flush=True)
 
-    # Generate a few male portraits on the oval scribble for HED extraction
-    # Always use a male prompt for the scribble regardless of target groups
-    _male_prompt = "a superrealistic portrait photograph of a man, studio lighting"
-    print("Generating male portraits for HED scribble extraction...", flush=True)
-    with torch.no_grad():
-        _scribble_init_imgs, _ = generate_and_store_cs(
-            sprinter, _male_prompt,
-            sobel_cond_pil, 3, batch_size=2, cn_scale=args.controlnet_scale,
-        )
+    if args.unrelated_init_path:
+        print(f"Using unrelated init image: {args.unrelated_init_path}", flush=True)
+        source_image = Image.open(args.unrelated_init_path).convert("RGB").resize(sobel_cond_pil.size)
+        scribble_pil = extract_scribble_hed(source_image)
+    else:
+        # Generate a few male portraits on the oval scribble for HED extraction
+        # Always use a male prompt for the scribble regardless of target groups
+        _male_prompt = "a superrealistic portrait photograph of a man, studio lighting"
+        print("Generating male portraits for HED scribble extraction...", flush=True)
+        with torch.no_grad():
+            _scribble_init_imgs, _ = generate_and_store_cs(
+                sprinter, _male_prompt,
+                sobel_cond_pil, 3, batch_size=2, cn_scale=args.controlnet_scale,
+            )
 
-    # Extract HED scribble from a male portrait
-    print("Extracting HED scribble...", flush=True)
-    source_image = _scribble_init_imgs[2]
-    scribble_pil = extract_scribble_hed(source_image)
+        # Extract HED scribble from a male portrait
+        print("Extracting HED scribble...", flush=True)
+        source_image = _scribble_init_imgs[2]
+        scribble_pil = extract_scribble_hed(source_image)
 
     # Regenerate targets conditioned on HED scribble
     print(f"Regenerating {N_total} targets conditioned on HED scribble...", flush=True)
@@ -384,11 +391,16 @@ def build_targets_age(args, sprinter, clip_model, clip_processor, device,
         plot_row(target_images_per_group[str(age)], f"Age {age}",
                  save_path=os.path.join(args.output_dir, f"target_samples_age{age}.png"))
 
-    # Extract HED scribble from a male portrait at middle age
-    mid_age = ages[len(ages) // 2]
-    print(f"Extracting HED scribble from age-{mid_age} portrait...", flush=True)
-    source_image = target_images_per_group[str(mid_age)][0]
-    scribble_pil = extract_scribble_hed(source_image)
+    if args.unrelated_init_path:
+        print(f"Using unrelated init image: {args.unrelated_init_path}", flush=True)
+        source_image = Image.open(args.unrelated_init_path).convert("RGB").resize(sobel_cond_pil.size)
+        scribble_pil = extract_scribble_hed(source_image)
+    else:
+        # Extract HED scribble from a male portrait at middle age
+        mid_age = ages[len(ages) // 2]
+        print(f"Extracting HED scribble from age-{mid_age} portrait...", flush=True)
+        source_image = target_images_per_group[str(mid_age)][0]
+        scribble_pil = extract_scribble_hed(source_image)
 
     # Encode to CLIP
     print("Encoding age targets to CLIP...", flush=True)
@@ -576,8 +588,6 @@ def main():
         scribble_tensor = (scribble_tensor * 2.0) - 1.0
         scribble_latent = architect.vae.encode(scribble_tensor).latent_dist.mean
         scribble_latent = scribble_latent * architect.vae.config.scaling_factor
-        if args.random_init:
-            scribble_latent = torch.randn_like(scribble_latent)
 
     t_start        = timesteps[start_step]
     alphas_cumprod = architect.scheduler.alphas_cumprod.to(device)

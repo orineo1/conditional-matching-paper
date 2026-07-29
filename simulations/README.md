@@ -31,6 +31,7 @@ simulations/
     Exp_5D_cond_1D.ipynb
     Exp_10D_cond_1D.ipynb
     toy_example_with_beta_sweep.ipynb
+    Exp_2D_infeasible_targets.ipynb
   params/                  # Saved GMM parameters (.pt files)
   results/                 # JSON result files per experiment
   requirements.txt

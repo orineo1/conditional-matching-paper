@@ -63,3 +63,34 @@ To force retraining from scratch for any notebook, set `FORCE_RETRAIN = True` in
 
 - **L2-GMM distance**: closed-form L2 distance between two GMMs
 - **MMD**: kernel-based Maximum Mean Discrepancy between generated and true samples
+
+## Gradient variance vs. unroll depth
+
+`gradient_variance_vs_unroll_depth.py` directly tests the claim that unrolling
+deeper diffusion chains injects more noise into the guidance gradient. It
+isolates the inner conditional sampler only (`model_cond`, i.e. the pretrained
+`Diffusion_cond` checkpoint used by the LGD baseline) at a single fixed
+conditioning point `x` (defaults to the experiment's `x_star`) against a
+single fixed set of target samples, and for each unroll depth `K` in
+`{10, 25, 40, 60, 80, 100}` runs the inner MMD-guidance gradient estimator 100
+times, redrawing only the sampler's internal noise each time. It reports
+`Var(grad)` (trace of the empirical covariance across the 100 draws)
+normalized by `||mean(grad)||^2` for each `K` — if that quantity rises with
+`K`, deeper unrolling injects more gradient noise, independent of whether a
+given `K` is a more or less accurate sampler (accuracy is never measured
+here; only the estimator's spread around its own mean).
+
+```bash
+python gradient_variance_vs_unroll_depth.py --experiment_name 2D_cond_1D
+python plot_gradient_variance.py --experiment_name 2D_cond_1D
+
+# or on a SLURM cluster:
+export ENV_PATH=/path/to/your/env
+export REPO_ROOT=/path/to/conditional-matching-paper
+sbatch simulations/submit_gradient_variance.sh
+```
+
+Requires the `Diffusion_cond` checkpoint for the chosen experiment (not
+needed by the hyperparameter sweep above, which only uses `CM` and
+`Diffusion_uncond`) — either let it download once via the HuggingFace
+fallback, or train it locally via `notebooks/Exp_<experiment_name>.ipynb`.

@@ -153,13 +153,15 @@ def load_model_checkpoint(model, model_name: str, save_dir: str,
     return True
 
 
-from huggingface_hub import hf_hub_download
-
 HF_REPO_ID = "anon-submission-cdm/cdm-inverse-design"
 
 
 def load_checkpoint_with_hf_fallback(model, model_name, checkpoint_dir, experiment_name, seed, device):
-    """Load checkpoint locally, or download from HuggingFace if not found."""
+    """Load checkpoint locally, or download from HuggingFace if not found.
+
+    huggingface_hub is only imported here, not at module scope, so a locally
+    cached checkpoint never requires the package to be installed.
+    """
     local_path = os.path.join(checkpoint_dir, f"{experiment_name}_{model_name}_seed{seed}.pt")
 
     if not os.path.exists(local_path):
@@ -167,6 +169,7 @@ def load_checkpoint_with_hf_fallback(model, model_name, checkpoint_dir, experime
         os.makedirs(checkpoint_dir, exist_ok=True)
         hf_path = f"simulations/checkpoints/{experiment_name}/{experiment_name}_{model_name}_seed{seed}.pt"
         try:
+            from huggingface_hub import hf_hub_download
             downloaded = hf_hub_download(
                 repo_id=HF_REPO_ID,
                 filename=hf_path,

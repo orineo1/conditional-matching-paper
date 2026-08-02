@@ -55,8 +55,7 @@ export HF_HOME="${HF_HOME:-$HOME/.cache/huggingface}"
 export MPLCONFIGDIR="${MPLCONFIGDIR:-$HOME/.config/matplotlib}"
 mkdir -p "$HF_HOME" "$MPLCONFIGDIR"
 
-: "${HF_TOKEN:?HF_TOKEN is not set. Export it before submitting (needed to download pretrained checkpoints).}"
-export HF_TOKEN
+export HF_TOKEN="${HF_TOKEN:-}"   # optional: only needed if the HF checkpoint repo requires auth
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 export REPO_ROOT="${REPO_ROOT:?REPO_ROOT is not set. Export it before submitting.}"

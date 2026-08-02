@@ -70,37 +70,18 @@ To force retraining from scratch for any notebook, set `FORCE_RETRAIN = True` in
 with `CM=True`) and sweeps `nsamples` (Monte Carlo samples used to estimate the
 MMD guidance loss) and `num_x_t` (number of resampled `x0` candidates averaged
 per guidance step) around their paper defaults for a given experiment. It reuses
-the canonical GMM parameters in `params/` and the checkpoints cached under
-`checkpoints/<experiment_name>/` — no retraining happens inside the sweep itself.
-
-**Getting the checkpoints locally, with no HuggingFace / network dependency:**
-run `train_checkpoints.py` once per experiment first. It trains the CM and
-unconditional-diffusion models from scratch (same architecture/training config
-as the notebook, `FORCE_RETRAIN=True` equivalent) and saves them to the same
-path the sweep script looks for:
-
-```bash
-python train_checkpoints.py --experiment_name 2D_cond_1D
-
-# or on a SLURM cluster:
-export ENV_PATH=/path/to/your/env
-export REPO_ROOT=/path/to/conditional-matching-paper
-sbatch simulations/submit_train_checkpoints.sh
-```
-
-(Loading a checkpoint that's already cached locally — whether trained this way
-or downloaded once via the notebooks' HF fallback — never imports
-`huggingface_hub` or touches the network; that import only happens on an
-actual cache miss.)
-
-Once the checkpoints exist locally:
+the canonical GMM parameters in `params/` and the pretrained checkpoints
+(auto-downloaded from HuggingFace) — no retraining.
 
 ```bash
 # single grid point
 python run_hparam_sweep.py --experiment_name 2D_cond_1D --nsamples 500 --num_x_t 3
 
 # full sweep on a SLURM cluster (array job, one grid point per task)
-sbatch simulations/submit_hparam_sweep.sh
+export ENV_PATH=/path/to/your/env
+export REPO_ROOT=/path/to/conditional-matching-paper
+export HF_TOKEN=hf_...
+sbatch --partition=your_partition simulations/submit_hparam_sweep.sh
 
 # aggregate results into a CSV + figure once all array tasks finish
 python aggregate_hparam_sweep.py --experiment_name 2D_cond_1D

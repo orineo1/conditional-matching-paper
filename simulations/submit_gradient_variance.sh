@@ -17,10 +17,11 @@
 # Submit with:
 #   export ENV_PATH=/path/to/your/conda/or/venv/env   # dir containing bin/python
 #   export REPO_ROOT=/path/to/conditional-matching-paper
+#   export EXPERIMENT_NAME=10D_cond_1D                # optional, defaults to 2D_cond_1D
 #   sbatch simulations/submit_gradient_variance.sh
 # ══════════════════════════════════════════════════════════════════════════════
 
-EXPERIMENT_NAME="2D_cond_1D"
+EXPERIMENT_NAME="${EXPERIMENT_NAME:-2D_cond_1D}"   # 2D_cond_1D | 5D_cond_1D | 10D_cond_1D
 K_VALUES="10,25,40,60,80,100"
 N_TRIALS=100
 NSAMPLES=250

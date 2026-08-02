@@ -63,3 +63,26 @@ To force retraining from scratch for any notebook, set `FORCE_RETRAIN = True` in
 
 - **L2-GMM distance**: closed-form L2 distance between two GMMs
 - **MMD**: kernel-based Maximum Mean Discrepancy between generated and true samples
+
+## Hyperparameter sensitivity sweep (MLGD-F)
+
+`run_hparam_sweep.py` isolates the MLGD-F guidance loop (`Optimization.optimize_LGD`
+with `CM=True`) and sweeps `nsamples` (Monte Carlo samples used to estimate the
+MMD guidance loss) and `num_x_t` (number of resampled `x0` candidates averaged
+per guidance step) around their paper defaults for a given experiment. It reuses
+the canonical GMM parameters in `params/` and the pretrained checkpoints
+(auto-downloaded from HuggingFace) — no retraining.
+
+```bash
+# single grid point
+python run_hparam_sweep.py --experiment_name 2D_cond_1D --nsamples 500 --num_x_t 3
+
+# full sweep on a SLURM cluster (array job, one grid point per task)
+export ENV_PATH=/path/to/your/env
+export REPO_ROOT=/path/to/conditional-matching-paper
+export HF_TOKEN=hf_...
+sbatch --partition=your_partition simulations/submit_hparam_sweep.sh
+
+# aggregate results into a CSV + figure once all array tasks finish
+python aggregate_hparam_sweep.py --experiment_name 2D_cond_1D
+```

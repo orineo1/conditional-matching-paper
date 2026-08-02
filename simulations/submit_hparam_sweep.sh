@@ -6,7 +6,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=24G
-#SBATCH --partition=YOUR_PARTITION   # <-- change to your cluster partition
+#SBATCH --partition=salmon           # L40S; matches SD_cond_SD_controlnet's convention. Override with sbatch --partition=
 #SBATCH --array=0-12                 # <-- 7 nsamples points + 6 num_x_t points, see grid below
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -24,10 +24,9 @@
 # the paper's own tables are built.
 #
 # Submit with:
-#   export ENV_PATH=/path/to/your/env
+#   export ENV_PATH=/path/to/your/conda/or/venv/env   # dir containing bin/python
 #   export REPO_ROOT=/path/to/conditional-matching-paper
-#   export HF_TOKEN=hf_...
-#   sbatch --partition=your_partition simulations/submit_hparam_sweep.sh
+#   sbatch simulations/submit_hparam_sweep.sh
 # ══════════════════════════════════════════════════════════════════════════════
 
 # ── Which experiment (2D_cond_1D | 5D_cond_1D | 10D_cond_1D) ──────────────────
@@ -49,7 +48,10 @@ SEED=42
 # ══════════════════════════════════════════════════════════════════════════════
 # 1. Environment
 # ══════════════════════════════════════════════════════════════════════════════
-source "${ENV_PATH}/bin/activate"   # set ENV_PATH before submitting
+# Call the environment's python directly (works for both conda and venv envs,
+# no need to source an activate script).
+export ENV_PATH="${ENV_PATH:?ENV_PATH is not set. Export it before submitting (dir containing bin/python).}"
+PYTHON="$ENV_PATH/bin/python"
 
 export HF_HOME="${HF_HOME:-$HOME/.cache/huggingface}"
 export MPLCONFIGDIR="${MPLCONFIGDIR:-$HOME/.config/matplotlib}"
@@ -86,13 +88,13 @@ echo "    sweep_axis   : $SWEEP_AXIS"
 echo "    nsamples     : $NSAMPLES"
 echo "    num_x_t      : $NUM_X_T"
 echo "    n_attempts   : $N_ATTEMPTS"
-python -c "import torch; print(f'GPU available: {torch.cuda.is_available()}')"
+"$PYTHON" -c "import torch; print(f'GPU available: {torch.cuda.is_available()}')"
 echo "============================================"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 3. Run
 # ══════════════════════════════════════════════════════════════════════════════
-python run_hparam_sweep.py \
+"$PYTHON" run_hparam_sweep.py \
     --experiment_name "$EXPERIMENT_NAME" \
     --nsamples        "$NSAMPLES" \
     --num_x_t         "$NUM_X_T" \

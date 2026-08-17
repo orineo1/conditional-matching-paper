@@ -304,10 +304,14 @@ def compute_step_size(r_t, t, mode):
 def optimize_LGD(model_uncond, model_cond_cm, noise_scheduler,
                  nsamples, num_x_t, num_inference_steps,
                  step_size_mode, device, seed=None, clamp=False,
-                 mog_means=None, mog_variances=None, weights=None):
+                 mog_means=None, mog_variances=None, weights=None,
+                 tfg_n_iter=0, tfg_mu=0.0):
     """
     Unified optimization loop for uniform, unimodal, and bimodal targets.
     If mog_means is None, uses uniform target.
+
+    tfg_n_iter, tfg_mu: TFG (Algorithm 1) Mean Guidance hyper-parameters
+    (N_iter, mu). Defaults (0, 0.0) reproduce plain LGD exactly.
     """
     if seed is not None:
         set_seed(seed)
@@ -353,10 +357,36 @@ def optimize_LGD(model_uncond, model_cond_cm, noise_scheduler,
         log_me = -torch.logsumexp(torch.stack(losses), dim=0) + math.log(num_x_t)
         grad   = torch.autograd.grad(log_me, x_t, retain_graph=True)[0]
 
+        # TFG Mean Guidance (Algorithm 1, Line 8): Delta_0 = Delta_0 + mu_t * grad_{x0|t} log f(x0|t + Delta_0)
+        # Re-samples y ~ p(y | x0|t + Delta_0) at every inner iteration, since the
+        # conditioning point moves as Delta_0 is updated.
+        delta0 = torch.zeros_like(pred_x0)
+        for _ in range(tfg_n_iter):
+            delta0 = delta0.detach().requires_grad_(True)
+            x0_plus_delta = pred_x0.detach() + delta0
+
+            target_angles = circular_to_angles(
+                model_cond_cm.sample(nsamples=nsamples, condition_x=x0_plus_delta,
+                                     ts=[150., 50., 20., 10., 5., 1.])[0]
+            )
+            if mog_means is None:
+                ref_ang = torch.rand(nsamples, device=device) * 360.0
+            else:
+                ref_ang = generate_mog_samples(
+                    nsamples, mog_means, mog_variances, weights).squeeze()
+
+            loss_iter = -sliced_wasserstein_distance(
+                angles_to_circular(target_angles),
+                angles_to_circular(ref_ang),
+                n_projections=50, device=device,
+            )
+            grad_delta = torch.autograd.grad(loss_iter, delta0)[0]
+            delta0 = delta0.detach() - tfg_mu * grad_delta
+
         with torch.no_grad():
             if mog_means is None and t < 250:
                 step_size = 0
-            x_t = x_t_minus_1.detach().clone() - step_size * grad
+            x_t = x_t_minus_1.detach().clone() - step_size * grad - alpha_t_prev**0.5 * delta0
             if clamp:
                 x_t = x_t.clamp(-1.0, 1.0)
 
@@ -399,7 +429,8 @@ def run_and_save(model_uncond, model_cond, noise_scheduler,
                  nsamples, num_x_t, num_inference_steps, step_size_mode,
                  experiment_name, save_dir,
                  clamp=False, seeds=range(15), device='cuda',
-                 mog_means=None, mog_variances=None, weights=None):
+                 mog_means=None, mog_variances=None, weights=None,
+                 tfg_n_iter=0, tfg_mu=0.0):
 
     os.makedirs(save_dir, exist_ok=True)
     print(f'\n{"="*60}\n  EXPERIMENT: {experiment_name}\n{"="*60}')
@@ -423,6 +454,8 @@ def run_and_save(model_uncond, model_cond, noise_scheduler,
             mog_means           = mog_means,
             mog_variances       = mog_variances,
             weights             = weights,
+            tfg_n_iter          = tfg_n_iter,
+            tfg_mu              = tfg_mu,
         )
         elapsed  = time.time() - t0
         loss_val = loss.item()
@@ -447,6 +480,8 @@ def run_and_save(model_uncond, model_cond, noise_scheduler,
         'num_inference_steps': num_inference_steps,
         'step_size_mode':      step_size_mode,
         'clamp':               clamp,
+        'tfg_n_iter':          tfg_n_iter,
+        'tfg_mu':              tfg_mu,
         'results':             results,
         'loss_log':            loss_log,
         'seed_log':            seed_log,
@@ -564,6 +599,8 @@ def log_results(payload, preds, confs, digits_of_interest, experiment, args):
         "config/step_size_mode":      step_size_mode,
         "config/num_x_t":             num_x_t,
         "config/clamp":               int(payload['clamp']),
+        "config/tfg_n_iter":          payload['tfg_n_iter'],
+        "config/tfg_mu":              payload['tfg_mu'],
     }
     for d in digits_of_interest:
         log_dict[f"clf/digit_{d}"]      = digit_counts[d]
@@ -586,6 +623,10 @@ def main():
     p.add_argument("--num_x_t",             type=int,   default=3)
     p.add_argument("--nsamples",            type=int,   default=1500)
     p.add_argument("--clamp",               action="store_true", default=False)
+    p.add_argument("--tfg_n_iter",          type=int,   default=0,
+                   help="TFG Mean Guidance N_iter (Algorithm 1, Line 8). 0 = plain LGD.")
+    p.add_argument("--tfg_mu",              type=float, default=0.0,
+                   help="TFG Mean Guidance step size mu (Algorithm 1, Line 8).")
     p.add_argument("--n_seeds",             type=int,   default=15)
     p.add_argument("--smoke_test",          action="store_true")
     p.add_argument("--unimodal_var",        type=float, default=515)
@@ -634,7 +675,9 @@ def main():
                  f"_ss{args.step_size_mode}"
                  f"_xt{args.num_x_t}"
                  f"_ns{args.nsamples}"
-                 f"{clamp_str}")
+                 f"{clamp_str}"
+                 f"_tfgN{args.tfg_n_iter}"
+                 f"_tfgMu{args.tfg_mu}")
 
     save_dir = os.path.join(REPO_ROOT, "MNIST", "results", f"{experiment}_run", run_name)
 
@@ -655,6 +698,8 @@ def main():
             "num_x_t":             args.num_x_t,
             "nsamples":            args.nsamples,
             "clamp":               args.clamp,
+            "tfg_n_iter":          args.tfg_n_iter,
+            "tfg_mu":              args.tfg_mu,
             "n_seeds":             args.n_seeds,
             "global_seed":         GLOBAL_SEED,
             "smoke_test":          args.smoke_test,
@@ -713,6 +758,8 @@ def main():
         mog_means           = mog_means,
         mog_variances       = mog_variances,
         weights             = weights,
+        tfg_n_iter          = args.tfg_n_iter,
+        tfg_mu              = args.tfg_mu,
     )
 
     preds, confs = classify_generated_images(payload['results'], classifier, device)

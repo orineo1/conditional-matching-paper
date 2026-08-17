@@ -305,13 +305,17 @@ def optimize_LGD(model_uncond, model_cond_cm, noise_scheduler,
                  nsamples, num_x_t, num_inference_steps,
                  step_size_mode, device, seed=None, clamp=False,
                  mog_means=None, mog_variances=None, weights=None,
-                 tfg_n_iter=0, tfg_mu=0.0):
+                 tfg_n_iter=0, tfg_mu=0.0, use_variance_guidance=True):
     """
     Unified optimization loop for uniform, unimodal, and bimodal targets.
     If mog_means is None, uses uniform target.
 
     tfg_n_iter, tfg_mu: TFG (Algorithm 1) Mean Guidance hyper-parameters
     (N_iter, mu). Defaults (0, 0.0) reproduce plain LGD exactly.
+
+    use_variance_guidance: if False, disables Line 7 (Delta_t = rho_t *
+    grad_{x_t} log f(x0|t)) entirely — no gradient is taken w.r.t. x_t,
+    and only TFG Mean Guidance (Delta_0) drives the correction.
     """
     if seed is not None:
         set_seed(seed)
@@ -323,7 +327,7 @@ def optimize_LGD(model_uncond, model_cond_cm, noise_scheduler,
     x_t = torch.randn(1, 1, 28, 28, device=device, requires_grad=True)
 
     for i, t in enumerate(timesteps[:-1]):
-        x_t      = x_t.detach().clone().requires_grad_(True)
+        x_t      = x_t.detach().clone().requires_grad_(use_variance_guidance)
         residual = model_uncond(x_t, torch.tensor([t], device=device))
         alpha_t      = ddim.alphas_cumprod[t]
         alpha_t_prev = (ddim.alphas_cumprod[timesteps[i+1]]
@@ -335,27 +339,29 @@ def optimize_LGD(model_uncond, model_cond_cm, noise_scheduler,
         r_t       = torch.sqrt(beta_t)
         step_size = compute_step_size(r_t, t, step_size_mode)
 
-        losses = []
-        for _ in range(num_x_t):
-            x0_sample     = pred_x0 + r_t**2 * torch.randn_like(pred_x0)
-            target_angles = circular_to_angles(
-                model_cond_cm.sample(nsamples=nsamples, condition_x=x0_sample,
-                                     ts=[150., 50., 20., 10., 5., 1.])[0]
-            )
-            if mog_means is None:
-                ref_ang = torch.rand(nsamples, device=device) * 360.0
-            else:
-                ref_ang = generate_mog_samples(
-                    nsamples, mog_means, mog_variances, weights).squeeze()
+        grad = torch.zeros_like(x_t)
+        if use_variance_guidance:
+            losses = []
+            for _ in range(num_x_t):
+                x0_sample     = pred_x0 + r_t**2 * torch.randn_like(pred_x0)
+                target_angles = circular_to_angles(
+                    model_cond_cm.sample(nsamples=nsamples, condition_x=x0_sample,
+                                         ts=[150., 50., 20., 10., 5., 1.])[0]
+                )
+                if mog_means is None:
+                    ref_ang = torch.rand(nsamples, device=device) * 360.0
+                else:
+                    ref_ang = generate_mog_samples(
+                        nsamples, mog_means, mog_variances, weights).squeeze()
 
-            losses.append(-sliced_wasserstein_distance(
-                angles_to_circular(target_angles),
-                angles_to_circular(ref_ang),
-                n_projections=50, device=device,
-            ))
+                losses.append(-sliced_wasserstein_distance(
+                    angles_to_circular(target_angles),
+                    angles_to_circular(ref_ang),
+                    n_projections=50, device=device,
+                ))
 
-        log_me = -torch.logsumexp(torch.stack(losses), dim=0) + math.log(num_x_t)
-        grad   = torch.autograd.grad(log_me, x_t, retain_graph=True)[0]
+            log_me = -torch.logsumexp(torch.stack(losses), dim=0) + math.log(num_x_t)
+            grad   = torch.autograd.grad(log_me, x_t, retain_graph=True)[0]
 
         # TFG Mean Guidance (Algorithm 1, Line 8): Delta_0 = Delta_0 + mu_t * grad_{x0|t} log f(x0|t + Delta_0)
         # Re-samples y ~ p(y | x0|t + Delta_0) at every inner iteration, since the
@@ -430,7 +436,7 @@ def run_and_save(model_uncond, model_cond, noise_scheduler,
                  experiment_name, save_dir,
                  clamp=False, seeds=range(15), device='cuda',
                  mog_means=None, mog_variances=None, weights=None,
-                 tfg_n_iter=0, tfg_mu=0.0):
+                 tfg_n_iter=0, tfg_mu=0.0, use_variance_guidance=True):
 
     os.makedirs(save_dir, exist_ok=True)
     print(f'\n{"="*60}\n  EXPERIMENT: {experiment_name}\n{"="*60}')
@@ -456,6 +462,7 @@ def run_and_save(model_uncond, model_cond, noise_scheduler,
             weights             = weights,
             tfg_n_iter          = tfg_n_iter,
             tfg_mu              = tfg_mu,
+            use_variance_guidance = use_variance_guidance,
         )
         elapsed  = time.time() - t0
         loss_val = loss.item()
@@ -482,6 +489,7 @@ def run_and_save(model_uncond, model_cond, noise_scheduler,
         'clamp':               clamp,
         'tfg_n_iter':          tfg_n_iter,
         'tfg_mu':              tfg_mu,
+        'use_variance_guidance': use_variance_guidance,
         'results':             results,
         'loss_log':            loss_log,
         'seed_log':            seed_log,
@@ -601,6 +609,7 @@ def log_results(payload, preds, confs, digits_of_interest, experiment, args):
         "config/clamp":               int(payload['clamp']),
         "config/tfg_n_iter":          payload['tfg_n_iter'],
         "config/tfg_mu":              payload['tfg_mu'],
+        "config/use_variance_guidance": int(payload['use_variance_guidance']),
     }
     for d in digits_of_interest:
         log_dict[f"clf/digit_{d}"]      = digit_counts[d]
@@ -627,6 +636,9 @@ def main():
                    help="TFG Mean Guidance N_iter (Algorithm 1, Line 8). 0 = plain LGD.")
     p.add_argument("--tfg_mu",              type=float, default=0.0,
                    help="TFG Mean Guidance step size mu (Algorithm 1, Line 8).")
+    p.add_argument("--disable_variance_guidance", action="store_true", default=False,
+                   help="Disable Line 7 (Delta_t = rho_t grad_xt log f(x0|t)) entirely, "
+                        "avoiding any gradient w.r.t. x_t; only Delta_0 (Mean Guidance) is used.")
     p.add_argument("--n_seeds",             type=int,   default=15)
     p.add_argument("--smoke_test",          action="store_true")
     p.add_argument("--unimodal_var",        type=float, default=515)
@@ -677,7 +689,8 @@ def main():
                  f"_ns{args.nsamples}"
                  f"{clamp_str}"
                  f"_tfgN{args.tfg_n_iter}"
-                 f"_tfgMu{args.tfg_mu}")
+                 f"_tfgMu{args.tfg_mu}"
+                 f"_vg{0 if args.disable_variance_guidance else 1}")
 
     save_dir = os.path.join(REPO_ROOT, "MNIST", "results", f"{experiment}_run", run_name)
 
@@ -700,6 +713,7 @@ def main():
             "clamp":               args.clamp,
             "tfg_n_iter":          args.tfg_n_iter,
             "tfg_mu":              args.tfg_mu,
+            "use_variance_guidance": not args.disable_variance_guidance,
             "n_seeds":             args.n_seeds,
             "global_seed":         GLOBAL_SEED,
             "smoke_test":          args.smoke_test,
@@ -760,6 +774,7 @@ def main():
         weights             = weights,
         tfg_n_iter          = args.tfg_n_iter,
         tfg_mu              = args.tfg_mu,
+        use_variance_guidance = not args.disable_variance_guidance,
     )
 
     preds, confs = classify_generated_images(payload['results'], classifier, device)

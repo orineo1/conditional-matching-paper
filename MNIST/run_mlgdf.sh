@@ -31,6 +31,8 @@ CLAMP=false                # true | false
 # ── TFG Mean Guidance (Algorithm 1, Line 8) ───────────────────────────────────
 TFG_N_ITER=0               # 0 = plain LGD (no mean guidance)
 TFG_MU=0.0                 # mean guidance step size
+USE_VARIANCE_GUIDANCE=true # false = disable Line 7 (Delta_t, grad w.r.t. x_t) entirely,
+                            #         use only Delta_0 (Mean Guidance) — requires TFG_N_ITER > 0
 
 # ── W&B ───────────────────────────────────────────────────────────────────────
 WANDB_ENTITY=""           # your W&B username or team, or leave blank for default
@@ -89,6 +91,7 @@ echo "    nsamples            : $NSAMPLES"
 echo "    clamp               : $CLAMP"
 echo "    tfg_n_iter          : $TFG_N_ITER"
 echo "    tfg_mu              : $TFG_MU"
+echo "    use_variance_guidance: $USE_VARIANCE_GUIDANCE"
 [ "$EXPERIMENT" = "unimodal" ] && echo "    unimodal_var        : $UNIMODAL_VAR"
 [ "$EXPERIMENT" = "bimodal"  ] && echo "    bimodal_var         : $BIMODAL_VAR"
 python -c "import torch; print(f'GPU available: {torch.cuda.is_available()}')"
@@ -122,8 +125,9 @@ CMD="python run_mlgdf.py \
     --wandb_entity          \"$WANDB_ENTITY\" \
     --wandb_mode            $WANDB_MODE"
 
-[ "$CLAMP"      = "true" ] && CMD="$CMD --clamp"
-[ "$SMOKE_TEST" = "true" ] && CMD="$CMD --smoke_test"
+[ "$CLAMP"      = "true" ]  && CMD="$CMD --clamp"
+[ "$SMOKE_TEST" = "true" ]  && CMD="$CMD --smoke_test"
+[ "$USE_VARIANCE_GUIDANCE" = "false" ] && CMD="$CMD --disable_variance_guidance"
 
 echo "Running: $CMD"
 eval $CMD

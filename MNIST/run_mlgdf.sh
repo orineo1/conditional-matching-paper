@@ -28,6 +28,10 @@ NUM_X_T=3
 NSAMPLES=1500
 CLAMP=false                # true | false
 
+# ── TFG Mean Guidance (Algorithm 1, Line 8) ───────────────────────────────────
+TFG_N_ITER=0               # 0 = plain LGD (no mean guidance)
+TFG_MU=0.0                 # mean guidance step size
+
 # ── W&B ───────────────────────────────────────────────────────────────────────
 WANDB_ENTITY=""           # your W&B username or team, or leave blank for default
 WANDB_MODE="online"       # online | offline | disabled
@@ -83,6 +87,8 @@ echo "    step_size_mode      : $STEP_SIZE_MODE"
 echo "    num_x_t             : $NUM_X_T"
 echo "    nsamples            : $NSAMPLES"
 echo "    clamp               : $CLAMP"
+echo "    tfg_n_iter          : $TFG_N_ITER"
+echo "    tfg_mu              : $TFG_MU"
 [ "$EXPERIMENT" = "unimodal" ] && echo "    unimodal_var        : $UNIMODAL_VAR"
 [ "$EXPERIMENT" = "bimodal"  ] && echo "    bimodal_var         : $BIMODAL_VAR"
 python -c "import torch; print(f'GPU available: {torch.cuda.is_available()}')"
@@ -111,6 +117,8 @@ CMD="python run_mlgdf.py \
     --nsamples              $NSAMPLES \
     --unimodal_var          $UNIMODAL_VAR \
     --bimodal_var           $BIMODAL_VAR \
+    --tfg_n_iter            $TFG_N_ITER \
+    --tfg_mu                $TFG_MU \
     --wandb_entity          \"$WANDB_ENTITY\" \
     --wandb_mode            $WANDB_MODE"
 

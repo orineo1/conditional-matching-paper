@@ -1,24 +1,23 @@
 """
-2D grid search over optimize_LGD's reuse_frac x momentum, comparing every
-grid point back to the "regular" baseline (reuse_frac=0.0, momentum=0.0 —
+Sweep optimize_LGD's reuse_frac (at a single fixed momentum) and compare
+every point back to the "regular" baseline (reuse_frac=0.0, momentum=0.0 —
 full fresh samples every step, no gradient smoothing) on all four metrics:
 L2 GMM, L2 to x*, MMD, and wall time. Runnable standalone / via sbatch.
 
 For one experiment (2D_cond_1D / 5D_cond_1D / 10D_cond_1D) and a single
-fixed num_x_t, sweeps every (reuse_frac, momentum) combination — default
-reuse_frac in {0.0..0.9 step 0.1}, momentum in {0.0, 0.9} (no smoothing vs.
-the standard Adam beta1) — for the LGD and/or LGD-CM methods. When
-momentum > 0, beta2 (default 0.999, the standard Adam value) is also
-passed to optimize_LGD, switching on the full Adam-style adaptive update
-(see Optimization.py); momentum == 0 always means the raw, unsmoothed
-gradient regardless of beta2.
+fixed num_x_t, runs:
+  - reuse_frac in {0.0..0.9 step 0.1} (default), all at --momentum (default
+    0.9, the standard Adam beta1 — beta2 defaults to 0.999, also standard)
+  - plus exactly one baseline point: reuse_frac=0.0, momentum=0.0 (no
+    reuse, no smoothing — the original optimize_LGD behavior)
+for the LGD and/or LGD-CM methods.
 
 Writes out, per experiment:
   - a JSON file with every run's final_loss (MMD), l2_gmm, l2_x, time
   - a summary CSV (mean/std per (method, reuse_frac, momentum), plus each
-    point's delta from the (0.0, 0.0) baseline)
-  - PNG heatmaps: L2 GMM, L2 to x*, MMD, wall time — one grid per method,
-    reuse_frac x momentum, with the baseline cell outlined
+    point's delta from the baseline)
+  - PNG line plots: L2 GMM, L2 to x*, MMD, wall time vs reuse_frac at the
+    swept momentum, with the baseline as a dashed reference line
   - PNG baseline-comparison bar charts (same four metrics)
 
 Example:
@@ -49,13 +48,17 @@ import experiment_utils
 from sweep_common import EXPERIMENT_CONFIGS, load_or_generate_gmm_params, load_or_train_models
 
 
+BASELINE = (0.0, 0.0)   # (reuse_frac, momentum) — the "regular" full-fresh-samples run
+
+
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--experiment", required=True, choices=list(EXPERIMENT_CONFIGS.keys()))
     p.add_argument("--num_x_t", type=int, default=3, help="Fixed num_x_t for this sweep (not swept).")
     p.add_argument("--reuse_fracs", type=float, nargs="+",
                     default=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9])
-    p.add_argument("--momentums", type=float, nargs="+", default=[0.0, 0.9])
+    p.add_argument("--momentum", type=float, default=0.9,
+                    help="Single momentum (Adam beta1) value applied across the whole reuse_frac sweep.")
     p.add_argument("--beta2", type=float, default=0.999,
                     help="Adam beta2, used whenever momentum > 0 (see Optimization.optimize_LGD).")
     p.add_argument("--methods", nargs="+", choices=["LGD", "LGD-CM"], default=["LGD", "LGD-CM"])
@@ -108,57 +111,52 @@ def run_grid_point(model_uncond, cond_model, CM_flag, num_x_t, reuse_frac, momen
 METRICS = [("l2_gmm", "L2 GMM"), ("l2_x", "L2 to x*"), ("final_loss", "MMD"), ("times", "Wall time (s)")]
 
 
-def make_heatmaps(results, methods, reuse_fracs, momentums, plots_dir, experiment_name, num_x_t):
+def make_sweep_plot(results, methods, reuse_fracs, momentum, plots_dir, experiment_name, num_x_t):
     os.makedirs(plots_dir, exist_ok=True)
-    baseline_rf, baseline_m = reuse_fracs[0], momentums[0]  # (0.0, 0.0) by default grids
 
-    for method in methods:
-        fig, axes = plt.subplots(2, 2, figsize=(13, 10))
-        for ax, (key, label) in zip(axes.flat, METRICS):
-            grid = np.array([[np.mean(results[method][(rf, m)][key]) for rf in reuse_fracs] for m in momentums])
-            im = ax.imshow(grid, aspect="auto", origin="lower", cmap="viridis")
-            ax.set_xticks(range(len(reuse_fracs)))
-            ax.set_xticklabels([f"{rf:.1f}" for rf in reuse_fracs])
-            ax.set_yticks(range(len(momentums)))
-            ax.set_yticklabels([f"{m:.2f}" for m in momentums])
-            ax.set_xlabel("reuse_frac")
-            ax.set_ylabel("momentum")
-            ax.set_title(f"{label} mean")
-            fig.colorbar(im, ax=ax, shrink=0.8)
+    fig, axes = plt.subplots(2, 2, figsize=(12, 9))
+    for ax, (key, label) in zip(axes.flat, METRICS):
+        for method in methods:
+            means = [np.mean(results[method][(rf, momentum)][key]) for rf in reuse_fracs]
+            stds = [np.std(results[method][(rf, momentum)][key]) for rf in reuse_fracs]
+            ax.errorbar(reuse_fracs, means, yerr=stds, marker="o", capsize=3,
+                        label=f"{method} (momentum={momentum})")
 
-            # Outline the baseline cell (0.0, 0.0) so it's easy to spot on every panel.
-            if baseline_rf in reuse_fracs and baseline_m in momentums:
-                bi, bj = reuse_fracs.index(baseline_rf), momentums.index(baseline_m)
-                ax.add_patch(plt.Rectangle((bi - 0.5, bj - 0.5), 1, 1, fill=False, edgecolor="red", linewidth=2.5))
+            baseline_vals = results[method][BASELINE][key]
+            baseline_mean, baseline_std = np.mean(baseline_vals), np.std(baseline_vals)
+            ax.axhline(baseline_mean, linestyle="--", linewidth=1.2,
+                       label=f"{method} baseline (reuse_frac=0, momentum=0)")
+            ax.axhspan(baseline_mean - baseline_std, baseline_mean + baseline_std, alpha=0.08)
 
-        fig.suptitle(f"{experiment_name} | {method} | num_x_t={num_x_t} "
-                      f"(baseline reuse_frac={baseline_rf}, momentum={baseline_m} outlined in red)")
-        plt.tight_layout()
-        fig.savefig(os.path.join(plots_dir, f"grid_heatmaps_{method}.png"), dpi=150)
-        plt.close(fig)
+        ax.set_xlabel("reuse_frac")
+        ax.set_ylabel(label)
+        ax.set_title(f"{label} vs reuse_frac (mean ± std)")
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=7)
+    fig.suptitle(f"{experiment_name} | num_x_t={num_x_t} | momentum={momentum} vs baseline")
+    plt.tight_layout()
+    fig.savefig(os.path.join(plots_dir, "grid_sweep_vs_baseline.png"), dpi=150)
+    plt.close(fig)
 
 
-def make_baseline_comparison(results, methods, reuse_fracs, momentums, plots_dir, experiment_name, num_x_t):
-    baseline_rf, baseline_m = reuse_fracs[0], momentums[0]
-
+def make_baseline_comparison(results, methods, grid_points, plots_dir, experiment_name, num_x_t):
     for method in methods:
         fig, axes = plt.subplots(2, 2, figsize=(13, 9))
-        baseline_r = results[method][(baseline_rf, baseline_m)]
+        baseline_r = results[method][BASELINE]
         for ax, (key, label) in zip(axes.flat, METRICS):
-            grid_points = [(rf, m) for m in momentums for rf in reuse_fracs]
             means = [np.mean(results[method][pt][key]) for pt in grid_points]
             stds = [np.std(results[method][pt][key]) for pt in grid_points]
             xlabels = [f"rf={rf:.1f}\nm={m:.2f}" for (rf, m) in grid_points]
 
-            colors = ["red" if pt == (baseline_rf, baseline_m) else "steelblue" for pt in grid_points]
+            colors = ["red" if pt == BASELINE else "steelblue" for pt in grid_points]
             x_pos = np.arange(len(grid_points))
             ax.bar(x_pos, means, yerr=stds, color=colors, capsize=2)
             ax.axhline(np.mean(baseline_r[key]), color="red", linestyle="--", linewidth=1,
-                       label=f"baseline mean ({baseline_rf}, {baseline_m})")
+                       label="baseline (reuse_frac=0, momentum=0)")
             ax.set_xticks(x_pos)
             ax.set_xticklabels(xlabels, rotation=90, fontsize=6)
             ax.set_ylabel(label)
-            ax.set_title(f"{label}: every grid point vs baseline")
+            ax.set_title(f"{label}: every point vs baseline")
             ax.grid(True, alpha=0.3, axis="y")
             ax.legend(fontsize=7)
 
@@ -204,8 +202,13 @@ def main():
     methods = [m for m in args.methods if m in method_models]
 
     reuse_fracs = args.reuse_fracs
-    momentums = args.momentums
-    grid_points = [(rf, m) for m in momentums for rf in reuse_fracs]
+    momentum = args.momentum
+
+    # reuse_frac sweep at the fixed momentum, plus exactly one explicit baseline
+    # point (0.0, 0.0) — not a full reuse_frac x momentum cartesian grid.
+    grid_points = [(rf, momentum) for rf in reuse_fracs]
+    if BASELINE not in grid_points:
+        grid_points.append(BASELINE)
 
     results = {}
     for method in methods:
@@ -227,10 +230,10 @@ def main():
             "nsamples_in_optim_for_mmd": args.nsamples,
             "n_runs": args.n_runs,
             "reuse_fracs": reuse_fracs,
-            "momentums": momentums,
+            "momentum": momentum,
             "beta2": args.beta2,
             "methods": methods,
-            "baseline": {"reuse_frac": reuse_fracs[0], "momentum": momentums[0]},
+            "baseline": {"reuse_frac": BASELINE[0], "momentum": BASELINE[1]},
             "x_star": x_star.detach().cpu().tolist() if isinstance(x_star, torch.Tensor) else x_star,
         },
         "results": {
@@ -244,10 +247,9 @@ def main():
         json.dump(out, f, indent=2)
     print(f"[Results] Saved JSON to {json_path}")
 
-    baseline_rf, baseline_m = reuse_fracs[0], momentums[0]
     summary_rows = []
     for method in methods:
-        baseline_means = {key: np.mean(results[method][(baseline_rf, baseline_m)][key]) for key, _ in METRICS}
+        baseline_means = {key: np.mean(results[method][BASELINE][key]) for key, _ in METRICS}
         for rf, m in grid_points:
             r = results[method][(rf, m)]
             row = {
@@ -267,8 +269,8 @@ def main():
     summary_df.to_csv(csv_path, index=False)
     print(f"[Results] Saved summary CSV to {csv_path}")
 
-    make_heatmaps(results, methods, reuse_fracs, momentums, plots_dir, args.experiment, args.num_x_t)
-    make_baseline_comparison(results, methods, reuse_fracs, momentums, plots_dir, args.experiment, args.num_x_t)
+    make_sweep_plot(results, methods, reuse_fracs, momentum, plots_dir, args.experiment, args.num_x_t)
+    make_baseline_comparison(results, methods, grid_points, plots_dir, args.experiment, args.num_x_t)
     print(f"[Results] Saved plots to {plots_dir}")
 
 

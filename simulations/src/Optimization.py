@@ -59,7 +59,14 @@ def optimize_LGD(model_uncond, model_cond, mog_means, mog_variances, weights, mu
         for j in range(num_x_t):
             x0_sample = pred_x0 + r_t * torch.randn_like(pred_x0)
 
-            n_reuse = int(round(reuse_frac * nsamples)) if prev_target_samples[j] is not None else 0
+            if prev_target_samples[j] is not None:
+                # Buffer now holds only the previous step's fresh draws (one step
+                # old), so it can hold fewer than nsamples rows when reuse_frac > 0.5
+                # (n_new_prev = nsamples * (1 - reuse_frac) < n_reuse needed here).
+                # Clamp so target_samples always has exactly nsamples rows.
+                n_reuse = min(int(round(reuse_frac * nsamples)), prev_target_samples[j].shape[0])
+            else:
+                n_reuse = 0
             n_new = nsamples - n_reuse
 
             if n_new > 0:
@@ -76,7 +83,10 @@ def optimize_LGD(model_uncond, model_cond, mog_means, mog_variances, weights, mu
             else:
                 target_samples = new_samples
 
-            prev_target_samples[j] = target_samples.detach().clone()
+            # Buffer only the freshly generated portion, not the full reused+new
+            # concatenation — otherwise staleness compounds across steps instead
+            # of staying bounded to "one step old".
+            prev_target_samples[j] = new_samples.detach().clone() if new_samples is not None else None
 
             mog_samples = generate_mog_samples_not_differentiable(nsamples, mog_means, mog_variances, weights)
             loss_val = mmd_loss(target_samples, mog_samples)

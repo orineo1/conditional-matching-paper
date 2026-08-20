@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=hybrid-sweep
-#SBATCH --output=logs/hybrid_sweep_%j.log
-#SBATCH --error=logs/hybrid_sweep_%j.err
+#SBATCH --output=hybrid_sweep_%j.log   # written to wherever you run `sbatch` from
+#SBATCH --error=hybrid_sweep_%j.err
 #SBATCH --time=12:00:00
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
@@ -53,7 +53,6 @@ export CUBLAS_WORKSPACE_CONFIG=":4096:8"
 # REPO_ROOT should point to the root of this repository.
 export REPO_ROOT="${REPO_ROOT:?REPO_ROOT is not set. Export it before submitting.}"
 
-mkdir -p "$REPO_ROOT/simulations/scripts/logs"
 mkdir -p "$REPO_ROOT/simulations/checkpoints/${EXPERIMENT}"
 mkdir -p "$REPO_ROOT/simulations/results/${EXPERIMENT}"
 

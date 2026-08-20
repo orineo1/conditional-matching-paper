@@ -22,7 +22,7 @@ NSAMPLES=250                # NSAMPLES_IN_OPTIM_FOR_MMD
 SEED=42
 METHODS="LGD LGD-CM"        # any of: LGD LGD-CM
 REUSE_FRACS="0.0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9"
-MOMENTUMS="0.0 0.5 0.9 0.99"   # first value (0.0) is the "no smoothing" baseline
+MOMENTUMS="0.0 0.9"          # 0.0 = no smoothing (baseline), 0.9 = standard Adam beta1
 BETA2=0.999                  # Adam beta2, used whenever momentum > 0
 FORCE_RETRAIN=true           # true | false — true always retrains and overwrites the saved checkpoints
 

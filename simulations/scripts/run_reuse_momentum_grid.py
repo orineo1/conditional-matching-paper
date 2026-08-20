@@ -6,11 +6,12 @@ L2 GMM, L2 to x*, MMD, and wall time. Runnable standalone / via sbatch.
 
 For one experiment (2D_cond_1D / 5D_cond_1D / 10D_cond_1D) and a single
 fixed num_x_t, sweeps every (reuse_frac, momentum) combination — default
-reuse_frac in {0.0..0.9 step 0.1}, momentum in {0.0, 0.5, 0.9, 0.99} — for
-the LGD and/or LGD-CM methods. When momentum > 0, beta2 (default 0.999) is
-also passed to optimize_LGD, switching on the full Adam-style adaptive
-update (see Optimization.py); momentum == 0 always means the raw,
-unsmoothed gradient regardless of beta2.
+reuse_frac in {0.0..0.9 step 0.1}, momentum in {0.0, 0.9} (no smoothing vs.
+the standard Adam beta1) — for the LGD and/or LGD-CM methods. When
+momentum > 0, beta2 (default 0.999, the standard Adam value) is also
+passed to optimize_LGD, switching on the full Adam-style adaptive update
+(see Optimization.py); momentum == 0 always means the raw, unsmoothed
+gradient regardless of beta2.
 
 Writes out, per experiment:
   - a JSON file with every run's final_loss (MMD), l2_gmm, l2_x, time
@@ -54,7 +55,7 @@ def parse_args():
     p.add_argument("--num_x_t", type=int, default=3, help="Fixed num_x_t for this sweep (not swept).")
     p.add_argument("--reuse_fracs", type=float, nargs="+",
                     default=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9])
-    p.add_argument("--momentums", type=float, nargs="+", default=[0.0, 0.5, 0.9, 0.99])
+    p.add_argument("--momentums", type=float, nargs="+", default=[0.0, 0.9])
     p.add_argument("--beta2", type=float, default=0.999,
                     help="Adam beta2, used whenever momentum > 0 (see Optimization.optimize_LGD).")
     p.add_argument("--methods", nargs="+", choices=["LGD", "LGD-CM"], default=["LGD", "LGD-CM"])

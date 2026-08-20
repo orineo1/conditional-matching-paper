@@ -21,6 +21,7 @@ def optimize_LGD(model_uncond, model_cond, mog_means, mog_variances, weights, mu
                  nsamples=250, num_x_t=3, loss="MMD", CM=False, device="cuda", FLAG=False,
                  zeta=1.0,           # <-- guidance strength (ζ)
                  reuse_frac=0.0,     # <-- NEW: fraction of `nsamples` carried over from the previous step
+                 momentum=0.0,       # <-- NEW: EMA weight (β) on past guidance gradients, 0 = no smoothing (old behavior)
                  return_history=False):   # <-- NEW: also return per-step diagnostics (grad norm, loss, n_reuse)
 
     mmd_loss = MMDLoss(kernel=RBF())
@@ -35,6 +36,7 @@ def optimize_LGD(model_uncond, model_cond, mog_means, mog_variances, weights, mu
     # Always detached: the graph they were produced on is freed after the previous
     # step's backward(), so they contribute to the MMD *value* but zero gradient.
     prev_target_samples = [None] * num_x_t
+    grad_ema = None   # EMA buffer over guidance gradients, used when momentum > 0
     history = []
 
     for t in pbar:
@@ -102,10 +104,22 @@ def optimize_LGD(model_uncond, model_cond, mog_means, mog_variances, weights, mu
         log_mean_exp_loss.backward()
 
         grad = x_t.grad.clone()
+
+        # EMA-smooth the guidance gradient across steps: grad_ema is a weighted
+        # average of past gradients (weight momentum, momentum^2, ...), so the
+        # applied correction is less sensitive to a single noisy MC estimate.
+        # momentum=0.0 makes grad_ema == grad every step (identical to before).
+        if momentum > 0.0:
+            grad_ema = grad.clone() if grad_ema is None else momentum * grad_ema + (1 - momentum) * grad
+            grad_to_apply = grad_ema
+        else:
+            grad_to_apply = grad
+
         if return_history:
             history.append({
                 "t": t,
                 "grad_norm": grad.norm().item(),
+                "grad_ema_norm": grad_to_apply.norm().item(),
                 "log_mean_exp_loss": log_mean_exp_loss.item(),
                 "best_mmd_so_far": best_mmd_loss,
                 "n_reuse": n_reuse,
@@ -113,7 +127,7 @@ def optimize_LGD(model_uncond, model_cond, mog_means, mog_variances, weights, mu
             })
 
         with torch.no_grad():
-            x_t = x_t_minus_1.detach().clone() - zeta * grad
+            x_t = x_t_minus_1.detach().clone() - zeta * grad_to_apply
 
     condition = x_t.view(1, -1).repeat(nsamples, 1)
     target_samples, _, _ = model_cond.sample(nsamples=nsamples, condition_x=condition, device=device)

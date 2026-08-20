@@ -22,7 +22,7 @@ NSAMPLES=250                # NSAMPLES_IN_OPTIM_FOR_MMD
 SEED=42
 METHODS="LGD LGD-CM"        # any of: LGD LGD-CM
 REUSE_FRACS="0.0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9"
-FORCE_RETRAIN=false          # true | false
+FORCE_RETRAIN=true           # true | false — true always retrains and overwrites the saved checkpoints
 
 # ── Misc ──────────────────────────────────────────────────────────────────────
 SMOKE_TEST=false            # true = 2 runs / 2 reuse_fracs only, for quick debug

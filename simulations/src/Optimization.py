@@ -21,7 +21,9 @@ def optimize_LGD(model_uncond, model_cond, mog_means, mog_variances, weights, mu
                  nsamples=250, num_x_t=3, loss="MMD", CM=False, device="cuda", FLAG=False,
                  zeta=1.0,           # <-- guidance strength (ζ)
                  reuse_frac=0.0,     # <-- NEW: fraction of `nsamples` carried over from the previous step
-                 momentum=0.0,       # <-- NEW: EMA weight (β) on past guidance gradients, 0 = no smoothing (old behavior)
+                 momentum=0.0,       # <-- NEW: β1, EMA weight on past guidance gradients, 0 = no smoothing (old behavior)
+                 beta2=None,         # <-- NEW: set (e.g. 0.999) to switch on full Adam-style adaptive scaling
+                 adam_eps=1e-8,      # <-- NEW: denominator epsilon for the Adam-style update, only used if beta2 is set
                  return_history=False):   # <-- NEW: also return per-step diagnostics (grad norm, loss, n_reuse)
 
     mmd_loss = MMDLoss(kernel=RBF())
@@ -36,7 +38,9 @@ def optimize_LGD(model_uncond, model_cond, mog_means, mog_variances, weights, mu
     # Always detached: the graph they were produced on is freed after the previous
     # step's backward(), so they contribute to the MMD *value* but zero gradient.
     prev_target_samples = [None] * num_x_t
-    grad_ema = None   # EMA buffer over guidance gradients, used when momentum > 0
+    grad_ema = None      # first-moment (β1) EMA buffer over guidance gradients
+    grad_sq_ema = None   # second-moment (β2) EMA buffer, only used in Adam mode (beta2 is not None)
+    adam_step = 0        # counts applied updates, for Adam-style bias correction
     history = []
 
     for t in pbar:
@@ -105,11 +109,21 @@ def optimize_LGD(model_uncond, model_cond, mog_means, mog_variances, weights, mu
 
         grad = x_t.grad.clone()
 
-        # EMA-smooth the guidance gradient across steps: grad_ema is a weighted
-        # average of past gradients (weight momentum, momentum^2, ...), so the
-        # applied correction is less sensitive to a single noisy MC estimate.
-        # momentum=0.0 makes grad_ema == grad every step (identical to before).
-        if momentum > 0.0:
+        # momentum == 0: no smoothing, identical to the original code (grad_to_apply == grad).
+        # momentum > 0, beta2 is None: plain EMA/Polyak momentum on the gradient only.
+        # momentum > 0, beta2 set: full Adam-style update — first AND second moment
+        #   EMAs with bias correction, so each coordinate's step is also rescaled by
+        #   its own recent gradient magnitude (adaptive), not just direction-smoothed.
+        if momentum > 0.0 and beta2 is not None:
+            adam_step += 1
+            grad_ema = torch.zeros_like(grad) if grad_ema is None else grad_ema
+            grad_sq_ema = torch.zeros_like(grad) if grad_sq_ema is None else grad_sq_ema
+            grad_ema = momentum * grad_ema + (1 - momentum) * grad
+            grad_sq_ema = beta2 * grad_sq_ema + (1 - beta2) * grad ** 2
+            m_hat = grad_ema / (1 - momentum ** adam_step)
+            v_hat = grad_sq_ema / (1 - beta2 ** adam_step)
+            grad_to_apply = m_hat / (v_hat.sqrt() + adam_eps)
+        elif momentum > 0.0:
             grad_ema = grad.clone() if grad_ema is None else momentum * grad_ema + (1 - momentum) * grad
             grad_to_apply = grad_ema
         else:

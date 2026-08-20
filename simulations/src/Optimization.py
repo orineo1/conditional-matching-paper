@@ -19,7 +19,9 @@ from tqdm import tqdm
 # Optimize LGD using Monte Carlo-based guidance
 def optimize_LGD(model_uncond, model_cond, mog_means, mog_variances, weights, mu_list, Sigma_list, alpha,
                  nsamples=250, num_x_t=3, loss="MMD", CM=False, device="cuda", FLAG=False,
-                 zeta=1.0):          # <-- NEW: guidance strength (ζ)
+                 zeta=1.0,           # <-- guidance strength (ζ)
+                 reuse_frac=0.0,     # <-- NEW: fraction of `nsamples` carried over from the previous step
+                 return_history=False):   # <-- NEW: also return per-step diagnostics (grad norm, loss, n_reuse)
 
     mmd_loss = MMDLoss(kernel=RBF())
     best_mmd_loss = float("inf")
@@ -28,6 +30,12 @@ def optimize_LGD(model_uncond, model_cond, mog_means, mog_variances, weights, mu
     x_t = torch.zeros(model_uncond.nfeatures, device=device, requires_grad=True)
     x_t = x_t.unsqueeze(0)
     pbar = tqdm(range(model_uncond.diffusion_steps - 1, 0, -1)) if FLAG else range(model_uncond.diffusion_steps - 1, 0, -1)
+
+    # Buffer of previous step's target_samples per MC index j, used when reuse_frac > 0.
+    # Always detached: the graph they were produced on is freed after the previous
+    # step's backward(), so they contribute to the MMD *value* but zero gradient.
+    prev_target_samples = [None] * num_x_t
+    history = []
 
     for t in pbar:
         x_t = x_t.detach().clone().requires_grad_(True)
@@ -47,12 +55,28 @@ def optimize_LGD(model_uncond, model_cond, mog_means, mog_variances, weights, mu
             continue
 
         losses = []
+        n_reuse, n_new = 0, nsamples
         for j in range(num_x_t):
             x0_sample = pred_x0 + r_t * torch.randn_like(pred_x0)
-            condition = x0_sample.view(1, -1).repeat(nsamples, 1)
-            target_samples, _,_ = model_cond.sample(nsamples=nsamples, condition_x=condition, device=device)
-            if not CM:
-                target_samples = target_samples[:, model_cond.condition_on:]
+
+            n_reuse = int(round(reuse_frac * nsamples)) if prev_target_samples[j] is not None else 0
+            n_new = nsamples - n_reuse
+
+            if n_new > 0:
+                condition = x0_sample.view(1, -1).repeat(n_new, 1)
+                new_samples, _, _ = model_cond.sample(nsamples=n_new, condition_x=condition, device=device)
+                if not CM:
+                    new_samples = new_samples[:, model_cond.condition_on:]
+            else:
+                new_samples = None
+
+            if n_reuse > 0:
+                reused = prev_target_samples[j][:n_reuse]
+                target_samples = torch.cat([reused, new_samples], dim=0) if new_samples is not None else reused
+            else:
+                target_samples = new_samples
+
+            prev_target_samples[j] = target_samples.detach().clone()
 
             mog_samples = generate_mog_samples_not_differentiable(nsamples, mog_means, mog_variances, weights)
             loss_val = mmd_loss(target_samples, mog_samples)
@@ -68,8 +92,18 @@ def optimize_LGD(model_uncond, model_cond, mog_means, mog_variances, weights, mu
         log_mean_exp_loss.backward()
 
         grad = x_t.grad.clone()
+        if return_history:
+            history.append({
+                "t": t,
+                "grad_norm": grad.norm().item(),
+                "log_mean_exp_loss": log_mean_exp_loss.item(),
+                "best_mmd_so_far": best_mmd_loss,
+                "n_reuse": n_reuse,
+                "n_new": n_new,
+            })
+
         with torch.no_grad():
-            x_t = x_t_minus_1.detach().clone() - zeta * grad   # <-- only change: zeta * grad
+            x_t = x_t_minus_1.detach().clone() - zeta * grad
 
     condition = x_t.view(1, -1).repeat(nsamples, 1)
     target_samples, _, _ = model_cond.sample(nsamples=nsamples, condition_x=condition, device=device)
@@ -82,6 +116,8 @@ def optimize_LGD(model_uncond, model_cond, mog_means, mog_variances, weights, mu
     del x_t, condition, target_samples, mog_samples
     torch.cuda.empty_cache() if device == "cuda" else None
 
+    if return_history:
+        return x_t_final, x_t_final, final_loss.detach(), history
     return x_t_final, x_t_final, final_loss.detach()
 
 

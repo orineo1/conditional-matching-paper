@@ -22,13 +22,14 @@ NSAMPLES=250                # NSAMPLES_IN_OPTIM_FOR_MMD
 SEED=42
 METHODS="LGD LGD-CM"        # any of: LGD LGD-CM
 REUSE_FRACS="0.0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9"
-MOMENTUM=0.9                  # single momentum (Adam beta1) applied across the whole reuse_frac sweep
-BETA2=0.999                   # Adam beta2, used since momentum > 0
+MOMENTUMS="0.0 0.9"          # 0.0 = no smoothing (baseline), 0.9 = standard Adam beta1
+BETA2=0.999                  # Adam beta2, used whenever momentum > 0
 FORCE_RETRAIN=true           # true | false — true always retrains and overwrites the saved checkpoints
 
-# NOTE: this runs len(REUSE_FRACS) points at MOMENTUM, plus exactly one extra
-# baseline point (reuse_frac=0.0, momentum=0.0) — not a full reuse_frac x
-# momentum cross product. Total points = len(REUSE_FRACS) + 1, times METHODS.
+# NOTE: the grid runs len(REUSE_FRACS) x len(MOMENTUMS) x len(METHODS) points,
+# each with N_RUNS seeded optimize_LGD calls — this is the full cross product,
+# so it costs (num reuse_fracs) x (num momentums) x more than run_hybrid_sweep.sh.
+# Trim REUSE_FRACS/MOMENTUMS below or raise --time above if that's too slow.
 
 # ── Misc ──────────────────────────────────────────────────────────────────────
 SMOKE_TEST=false            # true = 2 runs / tiny grid only, for quick debug
@@ -73,7 +74,7 @@ echo "    n_runs        : $N_RUNS"
 echo "    nsamples      : $NSAMPLES"
 echo "    methods       : $METHODS"
 echo "    reuse_fracs   : $REUSE_FRACS"
-echo "    momentum      : $MOMENTUM"
+echo "    momentums     : $MOMENTUMS"
 echo "    beta2         : $BETA2"
 echo "    force_retrain : $FORCE_RETRAIN"
 python -c "import torch; print(f'GPU available: {torch.cuda.is_available()}')"
@@ -88,7 +89,7 @@ export PYTHONPATH="$REPO_ROOT/simulations/src:$PYTHONPATH"
 if [ "$SMOKE_TEST" = "true" ]; then
     N_RUNS=2
     REUSE_FRACS="0.0 0.5"
-    MOMENTUM=0.9
+    MOMENTUMS="0.0 0.9"
 fi
 
 CMD="python run_reuse_momentum_grid.py \
@@ -99,7 +100,7 @@ CMD="python run_reuse_momentum_grid.py \
     --seed        $SEED \
     --methods     $METHODS \
     --reuse_fracs $REUSE_FRACS \
-    --momentum    $MOMENTUM \
+    --momentums   $MOMENTUMS \
     --beta2       $BETA2"
 
 [ "$FORCE_RETRAIN" = "true" ] && CMD="$CMD --force_retrain"

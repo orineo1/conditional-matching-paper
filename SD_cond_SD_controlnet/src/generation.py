@@ -231,11 +231,13 @@ def run_dps_step_clip(
     variation_prompt,
     loss_fn=compute_mmd,
     loss_scale=1.0,
+    prev_variation_clip=None,
+    reuse_frac=0.0,
 ):
     """
     CLIP-space MMD/SWD DPS step — core of the MLGD-F algorithm.
 
-    Gradient flows through all num_variations Sprinter passes:
+    Gradient flows through all freshly-generated Sprinter passes:
         latents_step -> UNet -> pred_x0 -> VAE decode -> pixels
         -> CLIP encode -> loss (MMD or SWD) vs target embeddings
 
@@ -243,20 +245,32 @@ def run_dps_step_clip(
     Uses torch.utils.checkpoint for memory efficiency (batch_size=1).
 
     Args:
-        loss_fn:    callable with signature loss_fn(generated, targets) -> scalar.
-        loss_scale: multiply loss before grad to amplify weak gradients.
+        num_variations:      total CLIP embeddings to compute the loss over this step
+                              (may vary step-to-step under a schedule).
+        loss_fn:              callable with signature loss_fn(generated, targets) -> scalar.
+        loss_scale:           multiply loss before grad to amplify weak gradients.
+        prev_variation_clip:  detached CLIP embeddings freshly generated at the *previous*
+                               step (one step old), or None on the first step / when unused.
+        reuse_frac:           fraction of num_variations reused from prev_variation_clip
+                               instead of generated fresh here (0.0 = original behavior).
 
     Returns:
-        (grad, loss_scaled, zeta_i, loss_norm, vl_clip_flat)
+        (grad, loss_scaled, zeta_i, loss_norm, vl_clip_flat, new_variation_clip)
+        new_variation_clip is this step's freshly-generated embeddings (detached),
+        to pass back in as prev_variation_clip on the next call.
     """
     from clip_utils import encode_images_clip
 
     device = pixel_x0_norm.device
     clip_model.to(device)
 
+    n_reuse = min(int(round(reuse_frac * num_variations)), prev_variation_clip.shape[0]) \
+        if prev_variation_clip is not None else 0
+    n_new = num_variations - n_reuse
+
     variation_clip_list = []
-    for start_idx in range(0, num_variations, variation_batch_size):
-        end_idx = min(start_idx + variation_batch_size, num_variations)
+    for start_idx in range(0, n_new, variation_batch_size):
+        end_idx = min(start_idx + variation_batch_size, n_new)
         bs = end_idx - start_idx
         ctrl_batch = pixel_x0_norm[0].unsqueeze(0).repeat(bs, 1, 1, 1)
 
@@ -283,11 +297,19 @@ def run_dps_step_clip(
         )
         variation_clip_list.append(var_clip)
 
-    variation_clip_embs = torch.cat(variation_clip_list, dim=0)
+    new_variation_clip = torch.cat(variation_clip_list, dim=0) if variation_clip_list else None
     torch.cuda.empty_cache()
+
+    if n_reuse > 0:
+        reused = prev_variation_clip[:n_reuse]
+        variation_clip_embs = torch.cat([reused, new_variation_clip], dim=0) \
+            if new_variation_clip is not None else reused
+    else:
+        variation_clip_embs = new_variation_clip
 
     print(
         f"      var_clip_embs: shape={variation_clip_embs.shape} "
+        f"(n_new={n_new}, n_reuse={n_reuse}) "
         f"nan={torch.isnan(variation_clip_embs).sum().item()} "
         f"range=[{variation_clip_embs.min().item():.4f}, "
         f"{variation_clip_embs.max().item():.4f}] "
@@ -305,6 +327,7 @@ def run_dps_step_clip(
     )[0]
 
     vl_clip_flat = variation_clip_embs.detach().cpu().numpy()
+    new_variation_clip_detached = new_variation_clip.detach().clone() if new_variation_clip is not None else None
     del variation_clip_list, variation_clip_embs
 
-    return grad, loss_scaled, zeta_i, loss_norm, vl_clip_flat
+    return grad, loss_scaled, zeta_i, loss_norm, vl_clip_flat, new_variation_clip_detached

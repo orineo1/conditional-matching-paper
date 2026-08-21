@@ -89,9 +89,21 @@ def parse_args():
                    help="Generalised RBF exponent (>1 = sharper falloff)")
 
     # Variations / eval
-    p.add_argument("--num_variations", type=int, default=6)
+    p.add_argument("--num_variations", type=int, default=6,
+                   help="Base/max number of conditional images generated per scribble per step")
+    p.add_argument("--num_variations_schedule", type=str, default="constant",
+                   choices=["constant", "linear_up", "linear_down", "cosine"],
+                   help="How num_variations varies across the guidance steps (see schedule_num_variations)")
+    p.add_argument("--num_variations_min", type=int, default=1,
+                   help="Floor for num_variations under a non-constant schedule")
     p.add_argument("--eval_interval",  type=int, default=0,
                    help="Evaluate intermediate MMD every N steps (0 = auto ~5 checkpoints)")
+
+    # Hybrid sampling (see simulations/src/Optimization.py for the same idea in the toy setting)
+    p.add_argument("--reuse_frac", type=float, default=0.0,
+                   help="Fraction of num_variations reused from the previous step's fresh embeddings")
+    p.add_argument("--adamdps", action="store_true",
+                   help="AdamDPS gradient stabilization (arXiv:2603.16797), fixed beta1=0.9, beta2=0.999")
 
     # Prompts
     p.add_argument("--prompt",          type=str, default="")
@@ -142,6 +154,27 @@ def parse_args():
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def schedule_num_variations(step_idx, total_steps, num_variations, num_variations_min, schedule):
+    """
+    Number of conditional images to generate from the scribble at guidance
+    step `step_idx` (0-indexed) out of `total_steps`. `num_variations` is the
+    max/base value (the "constant" schedule is the original fixed behavior).
+    """
+    if schedule == "constant" or total_steps <= 1:
+        return num_variations
+    frac = step_idx / (total_steps - 1)   # 0.0 at first step, 1.0 at last step
+    lo, hi = num_variations_min, num_variations
+    if schedule == "linear_up":
+        n = lo + frac * (hi - lo)
+    elif schedule == "linear_down":
+        n = hi - frac * (hi - lo)
+    elif schedule == "cosine":
+        n = hi - (hi - lo) * (1 - np.cos(np.pi * frac)) / 2   # smooth decay, hi -> lo
+    else:
+        raise ValueError(f"Unknown num_variations_schedule: {schedule}")
+    return max(1, round(n))
+
 
 def pil_images_to_tensor(pil_list, device):
     tensors = [TF.to_tensor(img).unsqueeze(0) for img in pil_list]
@@ -504,6 +537,10 @@ def main():
             "steps_run":                    args.n_steps - args.start_step,
             "scheduler_type":               type(architect.scheduler).__name__,
             "num_variations":               args.num_variations,
+            "num_variations_schedule":      args.num_variations_schedule,
+            "num_variations_min":           args.num_variations_min,
+            "reuse_frac":                   args.reuse_frac,
+            "adamdps":                      args.adamdps,
             "base_zeta":                    args.base_zeta,
             "guidance_scale":               args.guidance_scale,
             "controlnet_scale":             args.controlnet_scale,
@@ -588,6 +625,9 @@ def main():
 
     step_gradients = []
     step_vis_data  = []
+    prev_variation_clip = None          # one-step-old CLIP embeddings, used when args.reuse_frac > 0
+    adam_m, adam_v, adam_step = None, None, 0   # AdamDPS moment state, used when args.adamdps
+    ADAM_BETA1, ADAM_BETA2, ADAM_EPS = 0.9, 0.999, 1e-8
     target_clip_np = all_clip_embeddings.cpu().numpy()
     softmax_man_prompt   = target_groups[-1][1]   # last group (most masculine)
     softmax_woman_prompt = target_groups[0][1]    # first group (most feminine)
@@ -686,14 +726,18 @@ def main():
         )
         pixel_x0_norm = torch.clamp((pixel_x0 + 1.0) / 2.0, 0.0, 1.0)
 
-        grad, mmd_loss, zeta_i, loss_norm, vl_clip_flat = run_dps_step_clip(
+        step_num_variations = schedule_num_variations(
+            i, len(timesteps_to_run), args.num_variations, args.num_variations_min, args.num_variations_schedule
+        )
+
+        grad, mmd_loss, zeta_i, loss_norm, vl_clip_flat, prev_variation_clip = run_dps_step_clip(
             latents=latents,
             latents_step=latents_step,
             noise_pred=noise_pred,
             pixel_x0_norm=pixel_x0_norm,
             sprinter=sprinter,
             all_clip_embeddings=all_clip_embeddings,
-            num_variations=args.num_variations,
+            num_variations=step_num_variations,
             variation_batch_size=1,
             base_zeta_prime=args.base_zeta,
             clip_model=clip_model,
@@ -703,16 +747,26 @@ def main():
             variation_prompt=args.sprinter_variation_prompt,
             loss_fn=loss_fn,
             loss_scale=args.loss_scale,
+            prev_variation_clip=prev_variation_clip,
+            reuse_frac=args.reuse_frac,
         )
 
         grad_norm = grad.norm().item()
         zeta_val  = zeta_i.item() if isinstance(zeta_i, torch.Tensor) else zeta_i
-        print(f"  MMD={mmd_loss.item():.6f}  ζi={zeta_val:.4f}  ∥∇∥={grad_norm:.6f}", flush=True)
+        print(f"  MMD={mmd_loss.item():.6f}  ζi={zeta_val:.4f}  ∥∇∥={grad_norm:.6f}  "
+              f"num_variations={step_num_variations}", flush=True)
 
         if torch.isnan(grad).any():
             print(f"  ⚠️  NaN in gradient at step {i} — skipping correction", flush=True)
             correction = torch.zeros_like(latents_step)
         else:
+            if args.adamdps:
+                adam_step += 1
+                adam_m = grad.clone() if adam_m is None else ADAM_BETA1 * adam_m + (1 - ADAM_BETA1) * grad
+                adam_v = grad ** 2 if adam_v is None else ADAM_BETA2 * adam_v + (1 - ADAM_BETA2) * grad ** 2
+                m_hat = adam_m / (1 - ADAM_BETA1 ** adam_step)
+                v_hat = adam_v / (1 - ADAM_BETA2 ** adam_step)
+                grad = m_hat / (v_hat.sqrt() + ADAM_EPS)
             correction = -zeta_i * grad
 
         step_gradients.append({
@@ -723,6 +777,7 @@ def main():
             "zeta_i":          zeta_val,
             "loss_norm":       loss_norm.item(),
             "correction_norm": zeta_val * grad_norm,
+            "num_variations":  step_num_variations,
         })
 
         wandb_log = {
@@ -731,6 +786,7 @@ def main():
             "gradient_norm":   grad_norm,
             "zeta":            zeta_val,
             "correction_norm": zeta_val * grad_norm,
+            "num_variations":  step_num_variations,
         }
 
         if i % eval_interval == 0:

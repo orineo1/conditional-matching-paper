@@ -36,6 +36,10 @@ OUTPUT_DIR="$REPO/output/mlgd_f_${SLURM_JOB_ID}"
 mkdir -p "$OUTPUT_DIR"
 
 # ── 5. Run ────────────────────────────────────────────────────────────────────
+ADAMDPS=false   # set to true to enable AdamDPS gradient stabilization
+EXTRA_ARGS=()
+[ "$ADAMDPS" = "true" ] && EXTRA_ARGS+=(--adamdps)
+
 python scripts/run_mlgd_f.py \
     --output_dir "$OUTPUT_DIR" \
     --wandb_project "mlgdf-gender" \
@@ -43,6 +47,10 @@ python scripts/run_mlgd_f.py \
     --n_steps 30 \
     --start_step 15 \
     --num_variations 6 \
+    --num_variations_schedule constant \
+    --num_variations_min 1 \
+    --reuse_frac 0.0 \
+    "${EXTRA_ARGS[@]}" \
     --base_zeta 5.0 \
     --guidance_scale 0.0 \
     --controlnet_scale 0.5 \

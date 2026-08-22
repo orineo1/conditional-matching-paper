@@ -264,6 +264,10 @@ def run_dps_step_clip(
     device = pixel_x0_norm.device
     clip_model.to(device)
 
+    if prev_variation_clip is not None and torch.isnan(prev_variation_clip).any():
+        print("      ⚠️  prev_variation_clip contains NaN — discarding, generating fully fresh this step", flush=True)
+        prev_variation_clip = None
+
     n_reuse = min(int(round(reuse_frac * num_variations)), prev_variation_clip.shape[0]) \
         if prev_variation_clip is not None else 0
     n_new = num_variations - n_reuse
@@ -298,6 +302,9 @@ def run_dps_step_clip(
         variation_clip_list.append(var_clip)
 
     new_variation_clip = torch.cat(variation_clip_list, dim=0) if variation_clip_list else None
+    # Snapshot for the next step's reuse buffer immediately, before variation_clip_embs
+    # is handed to loss_fn/autograd — independent of anything that happens downstream.
+    new_variation_clip_detached = new_variation_clip.detach().clone() if new_variation_clip is not None else None
     torch.cuda.empty_cache()
 
     if n_reuse > 0:
@@ -327,7 +334,6 @@ def run_dps_step_clip(
     )[0]
 
     vl_clip_flat = variation_clip_embs.detach().cpu().numpy()
-    new_variation_clip_detached = new_variation_clip.detach().clone() if new_variation_clip is not None else None
     del variation_clip_list, variation_clip_embs
 
     return grad, loss_scaled, zeta_i, loss_norm, vl_clip_flat, new_variation_clip_detached

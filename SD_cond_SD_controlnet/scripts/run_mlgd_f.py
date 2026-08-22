@@ -818,12 +818,9 @@ def main():
             }
             step_vis_data.append(sd)
 
-        if np.isnan(vl_clip_flat).any():
-            print(f"  ⚠️  NaN in variation_clip_flat at step {i} — skipping visualize_step", flush=True)
-        else:
-            visualize_step(sd, architect, sprinter, target_clip_np,
-                           num_cond=5, save_path=os.path.join(steps_dir, f"step_{i:03d}.png"),
-                           pca_fixed=pca_fixed, group_names=group_names, group_sizes=group_sizes)
+        visualize_step(sd, architect, sprinter, target_clip_np,
+                       num_cond=5, save_path=os.path.join(steps_dir, f"step_{i:03d}.png"),
+                       pca_fixed=pca_fixed, group_names=group_names, group_sizes=group_sizes)
 
         latents = denoise_step(
             architect.scheduler, noise_pred, t, latents_step, correction=correction

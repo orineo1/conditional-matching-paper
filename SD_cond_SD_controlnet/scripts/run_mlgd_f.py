@@ -764,9 +764,20 @@ def main():
                 adam_step += 1
                 adam_m = grad.clone() if adam_m is None else ADAM_BETA1 * adam_m + (1 - ADAM_BETA1) * grad
                 adam_v = grad ** 2 if adam_v is None else ADAM_BETA2 * adam_v + (1 - ADAM_BETA2) * grad ** 2
-                m_hat = adam_m / (1 - ADAM_BETA1 ** adam_step)
-                v_hat = adam_v / (1 - ADAM_BETA2 ** adam_step)
-                grad = m_hat / (v_hat.sqrt() + ADAM_EPS)
+                if adam_step == 1:
+                    # With a single sample, m/sqrt(v) collapses to sign(grad) (unit
+                    # per-element magnitude) regardless of grad's actual scale — bias
+                    # correction or not, this can be an order of magnitude larger than
+                    # the raw gradient. Fine when amortized over thousands of training
+                    # steps; not fine when this loop only runs ~15 steps total. Use the
+                    # raw gradient unchanged for step 1 (matches the proven-stable
+                    # baseline exactly); adam_m/adam_v are still initialized here so the
+                    # bias-corrected transform behaves normally from step 2 onward.
+                    pass
+                else:
+                    m_hat = adam_m / (1 - ADAM_BETA1 ** adam_step)
+                    v_hat = adam_v / (1 - ADAM_BETA2 ** adam_step)
+                    grad = m_hat / (v_hat.sqrt() + ADAM_EPS)
             correction = -zeta_i * grad
 
         step_gradients.append({

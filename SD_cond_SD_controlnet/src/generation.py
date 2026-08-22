@@ -264,6 +264,14 @@ def run_dps_step_clip(
     device = pixel_x0_norm.device
     clip_model.to(device)
 
+    if prev_variation_clip is not None:
+        print(f"      [DEBUG] entry: prev_variation_clip shape={tuple(prev_variation_clip.shape)} "
+              f"dtype={prev_variation_clip.dtype} device={prev_variation_clip.device} "
+              f"data_ptr={prev_variation_clip.data_ptr()} "
+              f"nan={torch.isnan(prev_variation_clip).sum().item()} "
+              f"requires_grad={prev_variation_clip.requires_grad} "
+              f"is_leaf={prev_variation_clip.is_leaf}", flush=True)
+
     n_reuse = min(int(round(reuse_frac * num_variations)), prev_variation_clip.shape[0]) \
         if prev_variation_clip is not None else 0
     n_new = num_variations - n_reuse
@@ -298,10 +306,17 @@ def run_dps_step_clip(
         variation_clip_list.append(var_clip)
 
     new_variation_clip = torch.cat(variation_clip_list, dim=0) if variation_clip_list else None
+    if new_variation_clip is not None:
+        print(f"      [DEBUG] new_variation_clip right after cat: "
+              f"data_ptr={new_variation_clip.data_ptr()} "
+              f"nan={torch.isnan(new_variation_clip).sum().item()}", flush=True)
     torch.cuda.empty_cache()
 
     if n_reuse > 0:
         reused = prev_variation_clip[:n_reuse]
+        print(f"      [DEBUG] reused slice right after indexing: "
+              f"data_ptr={reused.data_ptr()} "
+              f"nan={torch.isnan(reused).sum().item()}", flush=True)
         variation_clip_embs = torch.cat([reused, new_variation_clip], dim=0) \
             if new_variation_clip is not None else reused
     else:
@@ -327,7 +342,15 @@ def run_dps_step_clip(
     )[0]
 
     vl_clip_flat = variation_clip_embs.detach().cpu().numpy()
+    if new_variation_clip is not None:
+        print(f"      [DEBUG] new_variation_clip right before storing (post loss/grad): "
+              f"data_ptr={new_variation_clip.data_ptr()} "
+              f"nan={torch.isnan(new_variation_clip).sum().item()}", flush=True)
     new_variation_clip_detached = new_variation_clip.detach().clone() if new_variation_clip is not None else None
+    if new_variation_clip_detached is not None:
+        print(f"      [DEBUG] new_variation_clip_detached right after clone: "
+              f"data_ptr={new_variation_clip_detached.data_ptr()} "
+              f"nan={torch.isnan(new_variation_clip_detached).sum().item()}", flush=True)
     del variation_clip_list, variation_clip_embs
 
     return grad, loss_scaled, zeta_i, loss_norm, vl_clip_flat, new_variation_clip_detached

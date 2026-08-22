@@ -762,8 +762,13 @@ def main():
         else:
             if args.adamdps:
                 adam_step += 1
+                raw_grad_norm = grad.norm().item()
                 adam_m = grad.clone() if adam_m is None else ADAM_BETA1 * adam_m + (1 - ADAM_BETA1) * grad
                 adam_v = grad ** 2 if adam_v is None else ADAM_BETA2 * adam_v + (1 - ADAM_BETA2) * grad ** 2
+                print(f"      [ADAMDPS] adam_step={adam_step} raw_grad_norm={raw_grad_norm:.6f} "
+                      f"adam_m: norm={adam_m.norm().item():.6f} nan={torch.isnan(adam_m).sum().item()} "
+                      f"adam_v: norm={adam_v.norm().item():.6f} min={adam_v.min().item():.6e} "
+                      f"max={adam_v.max().item():.6e} nan={torch.isnan(adam_v).sum().item()}", flush=True)
                 if adam_step == 1:
                     # With a single sample, m/sqrt(v) collapses to sign(grad) (unit
                     # per-element magnitude) regardless of grad's actual scale — bias
@@ -778,6 +783,12 @@ def main():
                     m_hat = adam_m / (1 - ADAM_BETA1 ** adam_step)
                     v_hat = adam_v / (1 - ADAM_BETA2 ** adam_step)
                     grad = m_hat / (v_hat.sqrt() + ADAM_EPS)
+                    print(f"      [ADAMDPS] adam_step={adam_step} "
+                          f"m_hat: norm={m_hat.norm().item():.6f} nan={torch.isnan(m_hat).sum().item()} "
+                          f"v_hat: norm={v_hat.norm().item():.6f} min={v_hat.min().item():.6e} "
+                          f"max={v_hat.max().item():.6e} nan={torch.isnan(v_hat).sum().item()} "
+                          f"-> grad: norm={grad.norm().item():.6f} nan={torch.isnan(grad).sum().item()}",
+                          flush=True)
             correction = -zeta_i * grad
 
         step_gradients.append({

@@ -234,7 +234,8 @@ class DiffusionModel(nn.Module):
         return losses
 
     # @torch.no_grad()
-    def sample(self, nsamples, condition_x=None, device="cpu", eta=0.0, t_start=None, t_end=None):
+    def sample(self, nsamples, condition_x=None, device="cpu", eta=0.0, t_start=None, t_end=None,
+               init_noise=None):
         """
         Sample from the DDIM model with optional conditioning.
 
@@ -245,6 +246,8 @@ class DiffusionModel(nn.Module):
             eta: Controls the stochasticity (0 = deterministic DDIM, 1 = DDPM)
             t_start: Starting timestep (default: diffusion_steps - 1)
             t_end: Ending timestep (default: 0)
+            init_noise: Optional [nsamples, nfeatures] tensor used as the initial
+                        x instead of a fresh torch.randn draw (e.g. antithetic pairs).
 
         Returns:
             x: Final sampled points.
@@ -267,8 +270,11 @@ class DiffusionModel(nn.Module):
         if t_end > t_start:
             raise ValueError(f"Invalid time range: t_end ({t_end}) cannot be greater than t_start ({t_start})")
 
-        # Initialize random noise
-        x = torch.randn(size=(nsamples, self.nfeatures), device=device, dtype=model_dtype)
+        # Initialize random noise (or a caller-provided noise, e.g. antithetic pairs)
+        if init_noise is not None:
+            x = init_noise.to(device=device, dtype=model_dtype)
+        else:
+            x = torch.randn(size=(nsamples, self.nfeatures), device=device, dtype=model_dtype)
         xt = [x.clone()]
         pred_x0_l=[]
 

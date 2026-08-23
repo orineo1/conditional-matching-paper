@@ -120,13 +120,32 @@ def pair_correlation(target_samples):
     return (num / denom).mean().item()
 
 
-def estimator_stats(grads, reference):
-    """grads: [n_trials, dim] tensor. Returns bias/variance/MSE against the reference gradient."""
+def estimator_stats(grads, reference, trim_frac=0.1):
+    """
+    grads: [n_trials, dim] tensor. Returns bias/variance/MSE against the reference
+    gradient, plus robust statistics of the per-trial error ||grad - reference|| --
+    median, IQR, max, and a trimmed variance (drops the top/bottom trim_frac of
+    trials before recomputing variance) -- so an "estimator is worse" result can be
+    checked for whether it's driven by a few outlier trials or is spread throughout.
+    """
     mean = grads.mean(dim=0)
     bias = (mean - reference).norm().item()
     variance = grads.var(dim=0, unbiased=True).sum().item()
     mse = ((grads - reference) ** 2).sum(dim=1).mean().item()
-    return {"bias_norm": bias, "variance": variance, "mse": mse}
+
+    errors = (grads - reference).norm(dim=1)
+    sorted_errors, _ = torch.sort(errors)
+    n = sorted_errors.shape[0]
+    q1, median, q3 = torch.quantile(sorted_errors, torch.tensor([0.25, 0.5, 0.75])).tolist()
+    n_trim = int(n * trim_frac)
+    trimmed = sorted_errors[n_trim: n - n_trim] if n_trim > 0 else sorted_errors
+    trimmed_variance = trimmed.var(unbiased=True).item()
+
+    return {
+        "bias_norm": bias, "variance": variance, "mse": mse,
+        "median_error": median, "iqr_error": q3 - q1, "max_error": sorted_errors[-1].item(),
+        "trimmed_variance": trimmed_variance,
+    }
 
 
 def main():
@@ -195,9 +214,18 @@ def main():
     mean_pair_correlation = float(np.mean(correlations))
     std_pair_correlation = float(np.std(correlations))
 
-    print(f"[A: pure noise]  bias={stats_A['bias_norm']:.6f} var={stats_A['variance']:.6f} mse={stats_A['mse']:.6f}")
-    print(f"[B: antithetic]  bias={stats_B['bias_norm']:.6f} var={stats_B['variance']:.6f} mse={stats_B['mse']:.6f}")
-    print(f"[Variance reduction factor A/B] {variance_reduction:.4f}")
+    trimmed_variance_reduction = (
+        stats_A["trimmed_variance"] / stats_B["trimmed_variance"] if stats_B["trimmed_variance"] > 0 else float("inf")
+    )
+
+    print(f"[A: pure noise]  bias={stats_A['bias_norm']:.6f} var={stats_A['variance']:.6f} mse={stats_A['mse']:.6f} "
+          f"median_err={stats_A['median_error']:.6f} iqr_err={stats_A['iqr_error']:.6f} "
+          f"max_err={stats_A['max_error']:.6f} trimmed_var={stats_A['trimmed_variance']:.6f}")
+    print(f"[B: antithetic]  bias={stats_B['bias_norm']:.6f} var={stats_B['variance']:.6f} mse={stats_B['mse']:.6f} "
+          f"median_err={stats_B['median_error']:.6f} iqr_err={stats_B['iqr_error']:.6f} "
+          f"max_err={stats_B['max_error']:.6f} trimmed_var={stats_B['trimmed_variance']:.6f}")
+    print(f"[Variance reduction factor A/B] raw={variance_reduction:.4f} "
+          f"(10%-trimmed, outlier-robust)={trimmed_variance_reduction:.4f}")
     print(f"[Paired-sample correlation] mean={mean_pair_correlation:.4f} std={std_pair_correlation:.4f} "
           f"(near -1 = antisymmetry holds, near 0 = pairing bought nothing)")
 
@@ -207,6 +235,7 @@ def main():
         "reference_grad": reference_flat.tolist(),
         "pure_noise": stats_A, "antithetic": stats_B,
         "variance_reduction_factor": variance_reduction,
+        "trimmed_variance_reduction_factor": trimmed_variance_reduction,
         "mean_pair_correlation": mean_pair_correlation,
         "std_pair_correlation": std_pair_correlation,
     }

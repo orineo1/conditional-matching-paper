@@ -222,17 +222,40 @@ def main():
 
         errors_A = (grads_A - reference_flat).norm(dim=1).cpu().numpy()
         errors_B = (grads_B - reference_flat).norm(dim=1).cpu().numpy()
+        color_A, color_B = "tab:blue", "tab:orange"
 
-        plt.figure(figsize=(6, 4))
-        plt.hist(errors_A, bins=30, alpha=0.6, label="pure noise (A)")
-        plt.hist(errors_B, bins=30, alpha=0.6, label="antithetic (B)")
-        plt.xlabel("||grad - reference||")
-        plt.ylabel("count")
-        plt.title(f"{args.experiment}  t={t}  nsamples={args.nsamples}")
-        plt.legend()
-        plt.tight_layout()
+        fig, axes = plt.subplots(1, 3, figsize=(16, 4.5))
+        suptitle = f"{args.experiment}  t={t}  nsamples={args.nsamples}"
+
+        ax = axes[0]
+        ax.hist(errors_A, bins=30, alpha=0.6, color=color_A, label="pure noise (A)")
+        ax.hist(errors_B, bins=30, alpha=0.6, color=color_B, label="antithetic (B)")
+        ax.set_xlabel("||grad - reference||")
+        ax.set_ylabel("count")
+        ax.set_title("Histogram")
+        ax.legend()
+
+        ax = axes[1]
+        for errors, color, label in [(errors_A, color_A, "pure noise (A)"), (errors_B, color_B, "antithetic (B)")]:
+            sorted_errors = np.sort(errors)
+            ecdf = np.arange(1, len(sorted_errors) + 1) / len(sorted_errors)
+            ax.step(sorted_errors, ecdf, where="post", color=color, label=label)
+        ax.set_xlabel("||grad - reference||")
+        ax.set_ylabel("empirical CDF")
+        ax.set_title("eCDF")
+        ax.legend()
+
+        ax = axes[2]
+        ax.boxplot([errors_A, errors_B], showfliers=True)
+        ax.set_xticks([1, 2])
+        ax.set_xticklabels(["pure noise (A)", "antithetic (B)"])
+        ax.set_ylabel("||grad - reference||")
+        ax.set_title("Boxplot")
+
+        fig.suptitle(suptitle)
+        fig.tight_layout()
         plot_path = os.path.join(results_dir, f"antithetic_gradient_t{t}_n{args.nsamples}_seed{args.seed}.png")
-        plt.savefig(plot_path, dpi=150)
+        fig.savefig(plot_path, dpi=150)
         print(f"[Results] Saved plot to {plot_path}")
     except ImportError:
         print("[Results] matplotlib not available, skipping plot")

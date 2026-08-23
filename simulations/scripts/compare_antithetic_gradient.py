@@ -188,6 +188,8 @@ def main():
     grads_A = torch.cat(grads_A, dim=0)
     grads_B = torch.cat(grads_B, dim=0)
     reference_flat = reference.view(-1)
+    errors_A = (grads_A - reference_flat).norm(dim=1)
+    errors_B = (grads_B - reference_flat).norm(dim=1)
 
     stats_A = estimator_stats(grads_A, reference_flat)
     stats_B = estimator_stats(grads_B, reference_flat)
@@ -201,6 +203,18 @@ def main():
     print(f"[Paired-sample correlation] mean={mean_pair_correlation:.4f} std={std_pair_correlation:.4f} "
           f"(near -1 = antisymmetry holds, near 0 = pairing bought nothing)")
 
+    # Per-trial breakdown, so any run can be inspected individually to check
+    # whether the aggregate variance is driven by a handful of outlier trials.
+    trials = [
+        {
+            "trial": i,
+            "grad_A": grads_A[i].tolist(), "error_A": errors_A[i].item(),
+            "grad_B": grads_B[i].tolist(), "error_B": errors_B[i].item(),
+            "pair_correlation_B": correlations[i],
+        }
+        for i in range(args.n_trials)
+    ]
+
     out = {
         "experiment": args.experiment, "t": t, "nsamples": args.nsamples,
         "n_trials": args.n_trials, "n_ref": args.n_ref, "seed": args.seed,
@@ -209,6 +223,7 @@ def main():
         "variance_reduction_factor": variance_reduction,
         "mean_pair_correlation": mean_pair_correlation,
         "std_pair_correlation": std_pair_correlation,
+        "trials": trials,
     }
     json_path = os.path.join(results_dir, f"antithetic_gradient_t{t}_n{args.nsamples}_seed{args.seed}.json")
     with open(json_path, "w") as f:
@@ -220,8 +235,8 @@ def main():
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
 
-        errors_A = (grads_A - reference_flat).norm(dim=1).cpu().numpy()
-        errors_B = (grads_B - reference_flat).norm(dim=1).cpu().numpy()
+        errors_A = errors_A.cpu().numpy()
+        errors_B = errors_B.cpu().numpy()
         color_A, color_B = "tab:blue", "tab:orange"
 
         fig, axes = plt.subplots(1, 3, figsize=(16, 4.5))

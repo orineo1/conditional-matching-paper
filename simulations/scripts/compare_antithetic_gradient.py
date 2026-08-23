@@ -2,23 +2,31 @@
 compare_antithetic_gradient.py -- Does antithetic noise reduce the variance of
 optimize_LGD's Monte Carlo guidance gradient? (arXiv:2506.06185, applied to 2D_cond_1D)
 
-At a single frozen x_t (num_x_t=1), model_cond.sample()'s only randomness --
-since it's called with eta=0.0 -- is one initial Gaussian draw per row. We
-compare two ways of drawing it:
+Checks two conditional samplers optimize_LGD can use for target_samples:
+    lgd     -- model_cond, the conditional diffusion model. Called with
+               eta=0.0, so its only randomness is one initial Gaussian draw
+               per row (deterministic DDIM afterward).
+    lgd_cm  -- model_cm, the consistency model. Unlike lgd, it draws fresh
+               noise at every one of its ~15 sampling steps, so antithetic
+               pairing here negates the *entire* per-step noise trajectory
+               for the paired row, not just a single initial draw.
+
+For each sampler, we compare two ways of drawing its noise:
     A (baseline): nsamples independent draws.
     B (antithetic): nsamples/2 draws z paired with their negation -z.
 against an analytic reference gradient computed from the known GMM (no
-diffusion sampling involved at all, since the true P(Y|X) is known in closed
-form for this experiment).
+diffusion/CM sampling involved at all, since the true P(Y|X) is known in
+closed form for this experiment).
 
 Example:
-    python compare_antithetic_gradient.py --experiment 2D_cond_1D --n_trials 200
+    python compare_antithetic_gradient.py --experiment 2D_cond_1D --model both --n_trials 200
 """
 
 import os
 import sys
 import json
 import argparse
+from functools import partial
 
 import numpy as np
 import torch
@@ -32,10 +40,15 @@ import experiment_utils
 from LossFunctions import MMDLoss, RBF
 from sweep_common import EXPERIMENT_CONFIGS, load_or_generate_gmm_params, load_or_train_models
 
+# Must match ConsistencyModeliCT.sample()'s default `ts` schedule.
+CM_TS = [80, 40, 20, 10, 5, 2, 1, 0.5, 0.25, 0.125, 0.062, 0.031, 0.015, 0.007, 0.002]
+
 
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--experiment", default="2D_cond_1D", choices=list(EXPERIMENT_CONFIGS.keys()))
+    p.add_argument("--model", default="both", choices=["lgd", "lgd_cm", "both"],
+                    help="Which conditional sampler(s) to check: LGD (diffusion), LGD-CM (consistency model), or both")
     p.add_argument("--t", type=int, default=None, help="Diffusion timestep to freeze x_t at (default: mid-trajectory)")
     p.add_argument("--nsamples", type=int, default=250, help="Sample budget for estimators A and B (must be even)")
     p.add_argument("--n_trials", type=int, default=200, help="Independent repetitions per estimator")
@@ -80,13 +93,8 @@ def reference_gradient(x_t_frozen, t, model_uncond, mu_list, Sigma_list, alpha,
     return x_t.grad.clone(), loss_value
 
 
-def mc_gradient(x_t_frozen, t, model_uncond, model_cond, mog_means, mog_variances, weights,
-                 r_t_z0, mmd_loss, nsamples, device, antithetic):
-    """The gradient optimize_LGD actually takes (num_x_t=1), via model_cond.sample()."""
-    x_t = x_t_frozen.clone().requires_grad_(True)
-    x0_sample = pred_x0_and_x0_sample(x_t, t, model_uncond, r_t_z0, device)
-    condition = x0_sample.view(1, -1).repeat(nsamples, 1)
-
+def sample_targets_lgd(model_cond, condition, nsamples, device, antithetic):
+    """LGD sampler: model_cond.sample(), antithetic-paired on its one initial noise draw."""
     if antithetic:
         half = nsamples // 2
         z = torch.randn(half, model_cond.nfeatures, device=device)
@@ -97,7 +105,32 @@ def mc_gradient(x_t_frozen, t, model_uncond, model_cond, mog_means, mog_variance
     target_samples, _, _ = model_cond.sample(
         nsamples=nsamples, condition_x=condition, device=device, init_noise=init_noise,
     )
-    target_samples = target_samples[:, model_cond.condition_on:]
+    return target_samples[:, model_cond.condition_on:]
+
+
+def sample_targets_lgd_cm(model_cm, condition, nsamples, device, antithetic):
+    """LGD-CM sampler: model_cm.sample(), antithetic-paired on its whole per-step noise trajectory."""
+    if antithetic:
+        half = nsamples // 2
+        z = torch.randn(len(CM_TS), half, model_cm.nfeatures, device=device)
+        init_noise = torch.cat([z, -z], dim=1)
+    else:
+        init_noise = None
+
+    target_samples, _, _ = model_cm.sample(
+        nsamples=nsamples, condition_x=condition, ts=CM_TS, device=device, init_noise=init_noise,
+    )
+    return target_samples
+
+
+def mc_gradient(x_t_frozen, t, model_uncond, sample_targets, mog_means, mog_variances, weights,
+                 r_t_z0, mmd_loss, nsamples, device, antithetic):
+    """The gradient optimize_LGD actually takes (num_x_t=1), via sample_targets(condition, ...)."""
+    x_t = x_t_frozen.clone().requires_grad_(True)
+    x0_sample = pred_x0_and_x0_sample(x_t, t, model_uncond, r_t_z0, device)
+    condition = x0_sample.view(1, -1).repeat(nsamples, 1)
+
+    target_samples = sample_targets(condition, nsamples, device, antithetic)
 
     mog_samples = dist_utils.generate_mog_samples_not_differentiable(nsamples, mog_means, mog_variances, weights)
     loss = mmd_loss(target_samples, mog_samples)
@@ -140,55 +173,27 @@ def scalar_stats(values, reference):
     return {"bias": bias, "variance": variance, "mse": mse}
 
 
-def main():
-    args = parse_args()
-    cfg = EXPERIMENT_CONFIGS[args.experiment]
-    assert args.nsamples % 2 == 0, "--nsamples must be even for antithetic pairing"
-
-    base_dir = args.base_dir or os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-    params_dir = os.path.join(base_dir, "params")
-    checkpoint_dir = os.path.join(base_dir, "checkpoints", args.experiment)
-    results_dir = args.output_dir or os.path.join(base_dir, "results", args.experiment)
-    for d in (checkpoint_dir, results_dir):
-        os.makedirs(d, exist_ok=True)
-
-    experiment_utils.set_global_seed(args.seed)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    mmd_loss = MMDLoss(kernel=RBF())
-
-    mu_list, Sigma_list, alpha, mog_means, mog_variances, weights, x_star = load_or_generate_gmm_params(
-        cfg, params_dir, results_dir, args.experiment, args.seed
-    )
-    model_uncond, model_cond, _ = load_or_train_models(
-        cfg, mu_list, Sigma_list, alpha, checkpoint_dir, args.experiment, args.seed, device, args.force_retrain
-    )
-
-    t = args.t if args.t is not None else model_uncond.diffusion_steps // 2
-    x_t_frozen = freeze_x_t(model_uncond, t, device, args.seed)
-
-    # Draw #1 (x0_sample's own perturbation) is held fixed: we're isolating Draw #2 only.
-    current_var = model_uncond.betas[t].to(device)
-    r_t = current_var / torch.sqrt(1 + current_var ** 2)
-    r_t_z0 = r_t * torch.randn(1, model_uncond.nfeatures, device=device)
-
-    print(f"[Setup] experiment={args.experiment} t={t} nsamples={args.nsamples} "
+def run_comparison(model_label, sample_targets, x_t_frozen, t, model_uncond, mu_list, Sigma_list, alpha,
+                    mog_means, mog_variances, weights, r_t_z0, mmd_loss, args, results_dir):
+    """Runs the full A-vs-B comparison for one sampler (LGD or LGD-CM) and writes its JSON + plot."""
+    print(f"[Setup] model={model_label} experiment={args.experiment} t={t} nsamples={args.nsamples} "
           f"n_trials={args.n_trials} n_ref={args.n_ref}", flush=True)
 
     reference, reference_loss = reference_gradient(
         x_t_frozen, t, model_uncond, mu_list, Sigma_list, alpha,
-        mog_means, mog_variances, weights, r_t_z0, mmd_loss, args.n_ref, device,
+        mog_means, mog_variances, weights, r_t_z0, mmd_loss, args.n_ref, x_t_frozen.device,
     )
-    print(f"[Reference] grad={reference.view(-1).tolist()} loss={reference_loss:.6f}", flush=True)
+    print(f"[{model_label}] [Reference] grad={reference.view(-1).tolist()} loss={reference_loss:.6f}", flush=True)
 
     grads_A, grads_B, correlations, losses_A, losses_B = [], [], [], [], []
     for i in range(args.n_trials):
         grad_A, _, loss_A = mc_gradient(
-            x_t_frozen, t, model_uncond, model_cond, mog_means, mog_variances, weights,
-            r_t_z0, mmd_loss, args.nsamples, device, antithetic=False,
+            x_t_frozen, t, model_uncond, sample_targets, mog_means, mog_variances, weights,
+            r_t_z0, mmd_loss, args.nsamples, x_t_frozen.device, antithetic=False,
         )
         grad_B, samples_B, loss_B = mc_gradient(
-            x_t_frozen, t, model_uncond, model_cond, mog_means, mog_variances, weights,
-            r_t_z0, mmd_loss, args.nsamples, device, antithetic=True,
+            x_t_frozen, t, model_uncond, sample_targets, mog_means, mog_variances, weights,
+            r_t_z0, mmd_loss, args.nsamples, x_t_frozen.device, antithetic=True,
         )
         grads_A.append(grad_A)
         grads_B.append(grad_B)
@@ -196,7 +201,7 @@ def main():
         losses_B.append(loss_B)
         correlations.append(pair_correlation(samples_B))
         if (i + 1) % max(1, args.n_trials // 10) == 0:
-            print(f"[Trial] {i + 1}/{args.n_trials}", flush=True)
+            print(f"[{model_label}] [Trial] {i + 1}/{args.n_trials}", flush=True)
 
     grads_A = torch.cat(grads_A, dim=0)
     grads_B = torch.cat(grads_B, dim=0)
@@ -218,16 +223,18 @@ def main():
         loss_stats_A["variance"] / loss_stats_B["variance"] if loss_stats_B["variance"] > 0 else float("inf")
     )
 
-    print(f"[A: pure noise]  bias={stats_A['bias_norm']:.6f} var={stats_A['variance']:.6f} mse={stats_A['mse']:.6f}")
-    print(f"[B: antithetic]  bias={stats_B['bias_norm']:.6f} var={stats_B['variance']:.6f} mse={stats_B['mse']:.6f}")
-    print(f"[Variance reduction factor A/B] {variance_reduction:.4f}")
-    print(f"[Paired-sample correlation] mean={mean_pair_correlation:.4f} std={std_pair_correlation:.4f} "
-          f"(near -1 = antisymmetry holds, near 0 = pairing bought nothing)")
-    print(f"[MMD loss A: pure noise]  bias={loss_stats_A['bias']:.6f} var={loss_stats_A['variance']:.6f} "
-          f"mse={loss_stats_A['mse']:.6f}")
-    print(f"[MMD loss B: antithetic]  bias={loss_stats_B['bias']:.6f} var={loss_stats_B['variance']:.6f} "
-          f"mse={loss_stats_B['mse']:.6f}")
-    print(f"[MMD loss variance reduction factor A/B] {loss_variance_reduction:.4f} "
+    print(f"[{model_label}] [A: pure noise]  bias={stats_A['bias_norm']:.6f} var={stats_A['variance']:.6f} "
+          f"mse={stats_A['mse']:.6f}")
+    print(f"[{model_label}] [B: antithetic]  bias={stats_B['bias_norm']:.6f} var={stats_B['variance']:.6f} "
+          f"mse={stats_B['mse']:.6f}")
+    print(f"[{model_label}] [Variance reduction factor A/B] {variance_reduction:.4f}")
+    print(f"[{model_label}] [Paired-sample correlation] mean={mean_pair_correlation:.4f} "
+          f"std={std_pair_correlation:.4f} (near -1 = antisymmetry holds, near 0 = pairing bought nothing)")
+    print(f"[{model_label}] [MMD loss A: pure noise]  bias={loss_stats_A['bias']:.6f} "
+          f"var={loss_stats_A['variance']:.6f} mse={loss_stats_A['mse']:.6f}")
+    print(f"[{model_label}] [MMD loss B: antithetic]  bias={loss_stats_B['bias']:.6f} "
+          f"var={loss_stats_B['variance']:.6f} mse={loss_stats_B['mse']:.6f}")
+    print(f"[{model_label}] [MMD loss variance reduction factor A/B] {loss_variance_reduction:.4f} "
           f"(this is the scalar the paper's control-variate argument is about; "
           f"the gradient is a higher-dimensional, nonlinear function of the same samples)")
 
@@ -244,7 +251,7 @@ def main():
     ]
 
     out = {
-        "experiment": args.experiment, "t": t, "nsamples": args.nsamples,
+        "model": model_label, "experiment": args.experiment, "t": t, "nsamples": args.nsamples,
         "n_trials": args.n_trials, "n_ref": args.n_ref, "seed": args.seed,
         "reference_grad": reference_flat.tolist(), "reference_loss": reference_loss,
         "pure_noise": stats_A, "antithetic": stats_B,
@@ -255,10 +262,11 @@ def main():
         "std_pair_correlation": std_pair_correlation,
         "trials": trials,
     }
-    json_path = os.path.join(results_dir, f"antithetic_gradient_t{t}_n{args.nsamples}_seed{args.seed}.json")
+    tag = f"{model_label}_t{t}_n{args.nsamples}_seed{args.seed}"
+    json_path = os.path.join(results_dir, f"antithetic_gradient_{tag}.json")
     with open(json_path, "w") as f:
         json.dump(out, f, indent=2)
-    print(f"[Results] Saved JSON to {json_path}")
+    print(f"[{model_label}] [Results] Saved JSON to {json_path}")
 
     try:
         import matplotlib
@@ -270,7 +278,7 @@ def main():
         color_A, color_B = "tab:blue", "tab:orange"
 
         fig, axes = plt.subplots(1, 3, figsize=(16, 4.5))
-        suptitle = f"{args.experiment}  t={t}  nsamples={args.nsamples}"
+        suptitle = f"{model_label}  {args.experiment}  t={t}  nsamples={args.nsamples}"
 
         ax = axes[0]
         ax.hist(errors_A, bins=30, alpha=0.6, color=color_A, label="pure noise (A)")
@@ -299,11 +307,56 @@ def main():
 
         fig.suptitle(suptitle)
         fig.tight_layout()
-        plot_path = os.path.join(results_dir, f"antithetic_gradient_t{t}_n{args.nsamples}_seed{args.seed}.png")
+        plot_path = os.path.join(results_dir, f"antithetic_gradient_{tag}.png")
         fig.savefig(plot_path, dpi=150)
-        print(f"[Results] Saved plot to {plot_path}")
+        print(f"[{model_label}] [Results] Saved plot to {plot_path}")
     except ImportError:
-        print("[Results] matplotlib not available, skipping plot")
+        print(f"[{model_label}] [Results] matplotlib not available, skipping plot")
+
+
+def main():
+    args = parse_args()
+    cfg = EXPERIMENT_CONFIGS[args.experiment]
+    assert args.nsamples % 2 == 0, "--nsamples must be even for antithetic pairing"
+
+    base_dir = args.base_dir or os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+    params_dir = os.path.join(base_dir, "params")
+    checkpoint_dir = os.path.join(base_dir, "checkpoints", args.experiment)
+    results_dir = args.output_dir or os.path.join(base_dir, "results", args.experiment)
+    for d in (checkpoint_dir, results_dir):
+        os.makedirs(d, exist_ok=True)
+
+    experiment_utils.set_global_seed(args.seed)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    mmd_loss = MMDLoss(kernel=RBF())
+
+    mu_list, Sigma_list, alpha, mog_means, mog_variances, weights, x_star = load_or_generate_gmm_params(
+        cfg, params_dir, results_dir, args.experiment, args.seed
+    )
+    model_uncond, model_cond, model_cm = load_or_train_models(
+        cfg, mu_list, Sigma_list, alpha, checkpoint_dir, args.experiment, args.seed, device, args.force_retrain
+    )
+
+    t = args.t if args.t is not None else model_uncond.diffusion_steps // 2
+    x_t_frozen = freeze_x_t(model_uncond, t, device, args.seed)
+
+    # Draw #1 (x0_sample's own perturbation) is held fixed: we're isolating Draw #2 only.
+    # Shared across models so LGD and LGD-CM are compared at the exact same x0_sample.
+    current_var = model_uncond.betas[t].to(device)
+    r_t = current_var / torch.sqrt(1 + current_var ** 2)
+    r_t_z0 = r_t * torch.randn(1, model_uncond.nfeatures, device=device)
+
+    samplers = {
+        "lgd": partial(sample_targets_lgd, model_cond),
+        "lgd_cm": partial(sample_targets_lgd_cm, model_cm),
+    }
+    models_to_run = ["lgd", "lgd_cm"] if args.model == "both" else [args.model]
+
+    for model_label in models_to_run:
+        run_comparison(
+            model_label, samplers[model_label], x_t_frozen, t, model_uncond, mu_list, Sigma_list, alpha,
+            mog_means, mog_variances, weights, r_t_z0, mmd_loss, args, results_dir,
+        )
 
 
 if __name__ == "__main__":

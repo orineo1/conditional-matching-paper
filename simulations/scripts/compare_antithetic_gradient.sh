@@ -13,6 +13,7 @@
 # ══════════════════════════════════════════════════════════════════════════════
 
 EXPERIMENT="2D_cond_1D"
+MODEL="both"            # lgd | lgd_cm | both
 T=""                    # diffusion timestep to freeze x_t at; empty = mid-trajectory
 NSAMPLES=250
 N_TRIALS=200
@@ -47,6 +48,7 @@ export PYTHONPATH="$REPO_ROOT/simulations/src:$PYTHONPATH"
 
 CMD="python compare_antithetic_gradient.py \
     --experiment $EXPERIMENT \
+    --model      $MODEL \
     --nsamples   $NSAMPLES \
     --n_trials   $N_TRIALS \
     --n_ref      $N_REF \

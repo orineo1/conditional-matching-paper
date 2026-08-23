@@ -246,16 +246,25 @@ class ConsistencyModeliCT(nn.Module):
         return weighted_loss.mean()
 
 
-    def sample(self, nsamples=250, condition_x=None,ts: List[float]=[80, 40, 20, 10, 5, 2, 1, 0.5, 0.25, 0.125, 0.062, 0.031, 0.015, 0.007, 0.002],device=None):
+    def sample(self, nsamples=250, condition_x=None,ts: List[float]=[80, 40, 20, 10, 5, 2, 1, 0.5, 0.25, 0.125, 0.062, 0.031, 0.015, 0.007, 0.002],device=None,
+               init_noise=None):
+        """
+        Args:
+            init_noise: optional [len(ts), nsamples, nfeatures] tensor of unit-normal
+                draws used instead of fresh torch.randn calls -- one per sampling
+                step (index 0 = initial draw, indices 1.. = the per-step z in the
+                loop below), e.g. for antithetic trajectory pairing.
+        """
         device = self.device if device is None else device
         if condition_x is not None:
             condition_x = condition_x.to(device)
 
-        x = torch.randn(nsamples, self.nfeatures, device=device) * ts[0]
+        init_z = init_noise[0].to(device) if init_noise is not None else torch.randn(nsamples, self.nfeatures, device=device)
+        x = init_z * ts[0]
         x = x.to(device)
 
-        for t in ts[1:]:
-            z = torch.randn_like(x)
+        for step, t in enumerate(ts[1:], start=1):
+            z = init_noise[step].to(device) if init_noise is not None else torch.randn_like(x)
             x = x + math.sqrt(t ** 2 - self.eps ** 2) * z
             x = self(x, t, cond=condition_x)
 

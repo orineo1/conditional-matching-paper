@@ -1,0 +1,701 @@
+% Working notes: CDM with discrete inputs (prompt optimization).
+% Self-contained — compiles standalone in Overleaf; sections are structured
+% to be lifted into the main paper.
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage[colorlinks=true,linkcolor=blue]{hyperref}
+
+\newcommand{\G}{\mathcal{G}}
+\newcommand{\Ploss}{\mathcal{L}}
+\newcommand{\Pd}{\mathcal{P}}
+\newcommand{\xhat}{\hat{x}_0}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\dec}{\mathrm{dec}}
+\newcommand{\mask}{\mathbf{m}}
+\newcommand{\Lsurr}{\Ploss_{\mathrm{surr}}}
+
+\title{Conditional Distribution Matching with Discrete Inputs:\\
+Prompt Optimization via Twisted SMC\\
+\large Working notes --- experimental summary}
+\author{Shaul Tolkovsky\thanks{Notes compiled from the
+\texttt{discrete-x-smc} experimental branch; all runs on a single L40S.}}
+\date{July 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We extend Conditional Distribution Matching (CDM) to \emph{discrete} inputs:
+find a prompt $x^\ast$ such that the induced conditional
+$\Pd(Y \mid X{=}x^\ast)$ of a frozen text-to-image model matches a target
+distribution $\G(Y)$. Gradients with respect to $x$ do not exist, so we
+replace MLGD's gradient correction with \emph{selection}: a twisted
+Sequential Monte Carlo sampler over a masked (absorbing) discrete diffusion
+prior, in which the distributional loss enters only as a scalar. Three
+additions make the method work at scale: (i) \emph{cross-modal tilted
+proposals} --- a CLIP-text surrogate nominates and ranks candidate tokens so
+that rare target-relevant words are actually proposed; (ii) a
+\emph{remasking corrector} that lets the chain revise committed tokens; and
+(iii) a non-distilled conditional sampler, which we show is \emph{necessary}
+for multimodal targets because adversarially distilled models (SDXL-Turbo)
+collapse linguistic ambiguity to a single mode. With the full stack, a
+multimodal target defined by the prompt ``an old man or young woman
+smiling'' is recovered from a 75\%-masked corruption in 5/6 runs up to the
+estimation noise floor of the objective, with induced demographics matching
+the target.
+\end{abstract}
+
+\section{Problem}
+CDM \emph{(main paper)} seeks an input whose induced conditional matches a
+user-specified target distribution. Here the input space is discrete: $x$
+is a token sequence (a prompt), the conditional model is a frozen
+text-to-image generator $f_\phi$, and we seek
+\begin{equation}
+\label{eq:objective}
+x^\ast \;=\; \arg\min_x \Ploss(x), \qquad
+\Ploss(x) \;=\; \mathrm{MMD}^2\!\big( \{ \mathrm{CLIP}(y_j) \}_{j=1}^{n_{\mathrm{cond}}},\; S_\G \big),
+\quad y_j \sim f_\phi(x, \cdot),
+\end{equation}
+where $S_\G$ is a fixed set of CLIP embeddings of target images
+($n_{\mathrm{cond}}{=}8$ with common random numbers so $\Ploss$ is a
+deterministic, memoizable function of $x$). As in the main paper we target
+the tempered posterior
+$\mathcal{Q}_\beta(x) \propto \Pd(x)\, e^{-\beta \Ploss(x)}$.
+
+\section{Method}
+\label{sec:method}
+
+\subsection{Setup and notation}
+\label{sec:notation}
+Let $V$ be a vocabulary of $A$ word tokens and $\mask \notin V$ a
+distinguished \textsc{mask} symbol. A \emph{canvas} is a fixed-length
+sequence $x = (x^1, \dots, x^{L}) \in (V \cup \{\mask\})^{L}$; we call a
+canvas \emph{decoded} if no position carries $\mask$. The prompt handed to
+the image model is $\dec(x)$: a fixed natural-language prefix (e.g.\ ``a
+photo of'') followed by the canvas words. $V$ is the intersection of the
+masked LM's alphabetic word tokens with CLIP's single-token words
+($A \approx 18\mathrm{k}$ for BERT), so that one canvas slot is exactly one
+CLIP text token --- this alignment is what makes the cross-modal proposals
+of \S\ref{sec:tilt} possible.
+
+\paragraph{The loss oracle.} For a decoded canvas, $\Ploss$ in
+\eqref{eq:objective} is computed by generating $n_{\mathrm{cond}}{=}8$
+images $y_j \sim f_\phi(\dec(x), \cdot)$ with \emph{common random numbers}
+(the same $n_{\mathrm{cond}}$ initial latents for every prompt), embedding
+them with CLIP ViT-L/14, and evaluating the biased (V-statistic) squared
+maximum mean discrepancy against the target set
+$S_\G = \{s_1,\dots,s_{n_{\mathrm{targ}}}\}$, $n_{\mathrm{targ}}{=}64$:
+\begin{equation}
+\mathrm{MMD}^2(E, S_\G)
+= \frac{1}{n^2}\!\sum_{j,j'} k(e_j, e_{j'})
++ \frac{1}{m^2}\!\sum_{l,l'} k(s_l, s_{l'})
+- \frac{2}{nm}\!\sum_{j,l} k(e_j, s_l),
+\qquad
+k(u,v) = e^{-\gamma \|u - v\|^2},
+\end{equation}
+with the RBF bandwidth set by the median heuristic on the target set,
+$\gamma^{-1} = \mathrm{median}\{\|s_l - s_{l'}\|^2\}_{l<l'}$. Common random
+numbers make $\Ploss$ a \emph{deterministic function of the prompt string},
+so evaluations are memoized and repeated queries are free. Nothing
+downstream uses gradients of $\Ploss$; it is consumed strictly as a scalar
+(a ``loss oracle'').
+
+\paragraph{Goal.} Sample from the tempered posterior
+\begin{equation}
+\label{eq:tempered}
+\mathcal{Q}_\beta(x_0) \;\propto\; \Pd(x_0)\, e^{-\beta \Ploss(x_0)},
+\end{equation}
+where $\Pd$ is a prior over decoded canvases (defined next) and
+$\beta > 0$ is an inverse temperature ($\beta{=}200$ throughout). As
+$\beta \to \infty$, $\mathcal{Q}_\beta$ concentrates on the minimizers of
+$\Ploss$ within the support of $\Pd$; the prior's role is to restrict the
+search to fluent English rather than adversarial token strings.
+
+\subsection{The prior: masked (absorbing) discrete diffusion}
+\label{sec:prior}
+\paragraph{Forward process.} Discrete times $t = 0, 1, \dots, T$
+($T{=}16$). Given a decoded canvas $x_0$, the forward process masks each
+position independently:
+\begin{equation}
+q(x_t \mid x_0) = \prod_{i=1}^{L} q(x_t^i \mid x_0^i),
+\qquad
+q(x_t^i = \mask \mid x_0^i) = \tfrac{t}{T},
+\quad
+q(x_t^i = x_0^i \mid x_0^i) = 1 - \tfrac{t}{T},
+\end{equation}
+so $x_T$ is all-masked and information is destroyed by \emph{absorption}
+only --- a token is either intact or masked, never substituted.
+
+\paragraph{Denoiser.} The learned object is the conditional
+$p_\theta(x_0^i = v \mid x_t)$ for masked positions $i$, i.e.\ ``which word
+sits under this mask given the visible context''. This is \emph{exactly}
+the masked-language-modelling objective, so an off-the-shelf MLM
+(\texttt{bert-base-uncased}) is a legitimate denoiser without any training;
+we also use LLaDA-8B, a diffusion LM trained explicitly with this
+objective. Both expose the same interface: per-position marginals
+$p_\theta(\cdot \mid x_t) \in \Delta(V)$ over the restricted vocabulary.
+
+\paragraph{Reverse kernel.} One reverse step $r_\theta(x_{t-1} \mid x_t)$
+acts independently per position: an \emph{unmasked} position is copied
+unchanged; a \emph{masked} position unmasks with probability $1/t$, and if
+it unmasks, its word is drawn from the denoiser marginal truncated to its
+top-$k$ ($k{=}50$, renormalized --- standard top-$k$ decoding; this
+truncation modifies the prior we sample, not the correctness of the
+weighting below). The rate $1/t$ makes the reverse marginals consistent
+with the forward ones: a position masked at time $t$ survives to time
+$t-j$ with probability $\prod_{s=t-j+1}^{t}(1 - \tfrac1s) = \tfrac{t-j}{t}$,
+and at $t{=}1$ everything unmasks, so the chain always terminates decoded.
+The prior $\Pd(x_0)$ in \eqref{eq:tempered} is \emph{defined} as the law of
+$x_0$ under running $r_\theta$ from the all-masked canvas.
+
+\subsection{Guidance: a Feynman--Kac model solved by twisted SMC}
+\label{sec:smc}
+We cannot evaluate $\Pd(x_0)$ or its gradients; what we \emph{can} do is
+simulate the reverse chain and query the scalar oracle $\Ploss$. This is
+precisely the setting of Feynman--Kac (FK) models: reweight a simulable
+Markov chain by potential functions so that its \emph{final} state is
+distributed according to a twisted target.
+
+\paragraph{Optimal twist.} Define, for each time $t$, the value function
+(``twist'')
+\begin{equation}
+\label{eq:twist}
+h_t(x_t) \;=\; \E\!\left[ e^{-\beta \Ploss(x_0)} \,\middle|\, x_t \right],
+\end{equation}
+the expectation being over the remainder of the reverse chain
+$x_{t-1}, \dots, x_0 \sim r_\theta$ started at $x_t$. Two properties
+matter:
+\begin{enumerate}
+\item[(i)] \emph{Terminal exactness}: a decoded canvas has no remaining
+randomness, so $h_0(x_0) = e^{-\beta \Ploss(x_0)}$ exactly.
+\item[(ii)] \emph{Tower property}: by the law of total expectation,
+$\E_{r_\theta}\!\left[ h_{t-1}(x_{t-1}) \mid x_t \right] = h_t(x_t)$.
+\end{enumerate}
+
+\paragraph{The FK path targets.} For the chain started at $t_0$ (see
+\S\ref{sec:sdedit} for the start distribution $\mu$), define unnormalized
+path densities
+\begin{equation}
+\gamma_t(x_{t_0:t}) \;=\;
+\mu(x_{t_0}) \prod_{s=t}^{t_0-1} r_\theta(x_{s} \mid x_{s+1})
+\;\cdot\; h_t(x_t),
+\qquad t = t_0, \dots, 0 .
+\end{equation}
+At $t{=}0$, by (i), the $x_0$-marginal of $\gamma_0$ is proportional to
+$\Pd(x_0)\, e^{-\beta \Ploss(x_0)} = \mathcal{Q}_\beta(x_0)$ --- the target
+\eqref{eq:tempered}. Sequential importance sampling on this sequence, with
+the prior kernel $r_\theta$ as proposal, gives the incremental weight
+\begin{equation}
+\label{eq:incw}
+\alpha_t(x_t, x_{t-1})
+\;=\;
+\frac{\gamma_{t-1}(x_{t_0:t-1})}
+     {\gamma_{t}(x_{t_0:t})\; r_\theta(x_{t-1} \mid x_t)}
+\;=\;
+\frac{h_{t-1}(x_{t-1})}{h_t(x_t)} ,
+\end{equation}
+because everything except the twists cancels. By (ii) these weights have
+conditional mean one, and with the \emph{exact} twist they are the
+minimum-variance choice (the ``optimal twist'' of the SMC literature).
+
+\paragraph{The algorithm.} $N{=}128$ particles $\{x^n\}$ with log-weights
+$\{\log w^n\}$:
+\begin{enumerate}
+\item \textbf{Init} ($t = t_0$): draw $x^n \sim \mu$, set
+$\log w^n = \log \hat h_{t_0}(x^n)$.
+\item \textbf{Propagate}: $x^n_{t-1} \sim r_\theta(\cdot \mid x^n_t)$
+(or the tilted proposal of \S\ref{sec:tilt}, followed by the corrector of
+\S\ref{sec:corrector}).
+\item \textbf{Reweight}:
+$\log w^n \mathrel{+}= \log \hat h_{t-1}(x^n_{t-1}) - \log \hat h_{t}(x^n_{t})
+\;[\,+ \log r_\theta - \log q \text{ if tilted}\,]$.
+\item \textbf{Resample}: with normalized weights
+$W^n = e^{\log w^n} / \sum_m e^{\log w^m}$, compute the effective sample
+size $\mathrm{ESS} = 1 / \sum_n (W^n)^2$ (the number of ``useful''
+particles: $N$ when weights are uniform, $1$ when one particle carries all
+mass). If $\mathrm{ESS} < N/2$, resample systematically (duplicate
+high-weight particles, kill low-weight ones, preserving expectations) and
+reset $\log w^n = 0$.
+\item Loop $t \to t-1$ until $t{=}0$; report the best decoded particle
+by $\Ploss$ (optimization view) or the weighted ensemble (sampling view).
+\end{enumerate}
+
+\paragraph{Plug-in twist estimators.} The exact $h_t$ of \eqref{eq:twist}
+is intractable; we substitute a plug-in $\hat h_t$ built from the
+denoiser's factorized posterior
+$\tilde p_\theta(x_0 \mid x_t) = \prod_{i:\, x_t^i = \mask}
+p_\theta(x_0^i \mid x_t)$ (independent fills --- itself an approximation,
+since true fills are correlated):
+\begin{align}
+\textbf{mode:}\quad
+& \xhat(x_t)^i =
+\begin{cases}
+x_t^i & x_t^i \neq \mask\\
+\arg\max_v p_\theta(v \mid x_t) & \text{else}
+\end{cases},
+& \hat h_t(x_t) &= e^{-\beta_t \Ploss(\dec(\xhat))},
+\\[2pt]
+\textbf{sampled:}\quad
+& x_0^{(j)} \sim \tilde p_\theta(\cdot \mid x_t),\; j = 1{:}n_{\mathrm{dec}},
+& \hat h_t(x_t) &= \frac{1}{n_{\mathrm{dec}}}
+\sum_{j=1}^{n_{\mathrm{dec}}} e^{-\beta_t \Ploss(\dec(x_0^{(j)}))}.
+\end{align}
+Mode costs one oracle call per particle per step; sampled costs
+$n_{\mathrm{dec}}$ (we use $4$--$8$) and is unbiased for the twist
+\emph{under the factorized posterior} --- the residual bias is exactly the
+factorization. Crucially, plug-in error cannot corrupt the final target:
+the reweighting telescopes,
+\begin{equation}
+\sum_{t=1}^{t_0} \big[ \log \hat h_{t-1} - \log \hat h_t \big]
++ \log \hat h_{t_0}
+\;=\; \log \hat h_0 \;=\; -\beta\, \Ploss(x_0),
+\end{equation}
+and $\hat h_0$ is exact by terminal exactness (i). Intermediate twist error
+therefore only shifts \emph{where resampling focuses compute} (variance /
+efficiency), not the distribution the weights ultimately encode --- the
+standard consistency argument for twisted SMC with approximate twists.
+
+\paragraph{$\beta$-annealing.} We use the schedule
+$\beta_t = \beta\,(T - t)/T$: zero guidance at $t{=}T$, full $\beta$ at
+$t{=}0$. Rationale: early in the chain most positions are masked, so
+$\xhat$ is dominated by the denoiser's unconditional guesses and
+$\Ploss(\xhat)$ is nearly uninformative about the particle --- full-strength
+weighting there just resamples on noise and collapses diversity before any
+signal exists. Since $\beta_0 = \beta$, the final target is still
+$\mathcal{Q}_\beta$. Annealing was essential in every setting we tested
+(without it, the toy benchmark drops from 5/5 to 0/5 recovery).
+
+\subsection{SDEdit-style initialization (editing and recovery)}
+\label{sec:sdedit}
+Rather than starting all-masked ($\mu = \delta_{\text{all-}\mask}$,
+$t_0 = T$), every particle starts from a \emph{source} canvas
+$x_{\mathrm{src}}$ with each position independently re-masked w.p.\
+$t_0/T$ --- an exact draw from the forward corruption
+$q(x_{t_0} \mid x_{\mathrm{src}})$ --- and the reverse chain runs from
+$t_0$ ($t_0/T = 0.75$ throughout). Because particles now differ at
+initialization, the correct initial FK weight is the twist itself,
+$\log w^n = \log \hat h_{t_0}(x^n)$ (for the identical all-masked start
+this is a constant and reduces to uniform weights, so from-scratch
+behavior is unchanged). The \emph{recovery} task sets
+$x_{\mathrm{src}} = x_{\mathrm{true}}$ (denoise your way back); the
+\emph{editing} task sets it to a semantically different prompt.
+
+\subsection{Cross-modal tilted proposals}
+\label{sec:tilt}
+Bootstrap SMC proposes from the prior and lets weights select --- but
+selection cannot select what is never proposed. At vocabulary scale the
+denoiser's marginals concentrate on generic words; target-relevant rare
+words (``rain'') sit at rank ${\sim}5{,}000$ of $18\mathrm{k}$ and are
+effectively never drawn by top-$k$ sampling. We therefore \emph{tilt} the
+proposal toward the target using a differentiable surrogate, and pay for
+it exactly in the weights.
+
+\paragraph{Surrogate.} Let
+$\bar s_\G = \frac{1}{|S_\G|}\sum_l s_l \big/ \|\cdot\|$ be the normalized
+mean target embedding and
+\begin{equation}
+\Lsurr(x) \;=\; 1 - \cos\!\big( \mathrm{CLIP}_{\mathrm{text}}(\dec(x)),\;
+\bar s_\G \big),
+\end{equation}
+a \emph{text-side} proxy for the image-side loss: no image generation, one
+text-encoder forward. CLIP's shared text--image embedding space is what
+makes comparing a \emph{prompt} embedding to \emph{image} embeddings
+meaningful; this is the cross-modal step.
+
+\paragraph{Step 1 --- gradient nomination.} Write the canvas one-hot:
+slot $i$ carries $q_i \in \Delta(V)$, and the CLIP text embedding of slot
+$i$ is $q_i^\top E$ with $E \in \mathbb{R}^{A \times d}$ the token
+embedding matrix. Relaxing $q_i$ to the simplex makes $\Lsurr$
+differentiable in $(q_1,\dots,q_L)$; \emph{one} backprop at the current
+mode-decode $\xhat$ yields
+$g_{i,v} = \partial \Lsurr / \partial q_{i,v}$ for \emph{all} slots $i$
+and words $v$ simultaneously --- a first-order estimate of the effect of
+substituting word $v$ into slot $i$ (Gibbs-with-Gradients style). This
+gradient is used \emph{only to nominate}: candidate pool
+$C_i = \mathrm{top}\text{-}k\big(p_\theta(\cdot \mid x_t)\big) \cup
+\mathrm{top}\text{-}k(-g_{i,\cdot})$, $k = 50$.
+
+\paragraph{Step 2 --- exact scoring.} For each nominee $v \in C_i$,
+evaluate $\Lsurr(\xhat^{\,i \leftarrow v})$ --- where
+$\xhat^{\,i \leftarrow v}$ denotes the mode decode with slot $i$ replaced
+by word $v$ --- \emph{exactly}, with one batched
+CLIP-text forward over the pool ($|C_i| \le 100$ prompts). No Taylor
+approximation survives into the numbers used for sampling.
+
+\paragraph{Step 3 --- tilted fill and exact weight correction.} A position
+that unmasks draws its word from
+\begin{equation}
+\label{eq:tiltq}
+q_i(v) \;\propto\;
+p_\theta(v \mid x_t)\;
+e^{-\lambda\, \beta_{t-1}\, \Lsurr(\xhat^{\,i \leftarrow v})},
+\qquad v \in C_i,
+\end{equation}
+with tilt strength $\lambda{=}1$. Changing the proposal from $r_\theta$ to
+$q$ changes the denominator of \eqref{eq:incw}, so each tilted fill
+contributes the exact correction
+$\log p_\theta(v \mid x_t) - \log q_i(v)$ to the particle's log-weight
+(these accumulate over filled positions within the step). Consequence:
+\emph{a biased surrogate can bias only efficiency, never the target} ---
+if $\Lsurr$ nominates junk, the weights pay for it and resampling discards
+it. The one caveat is support: $q$ puts no mass outside $C_i$, comparable
+in kind to the top-$k$ truncation already present in the baseline kernel.
+
+A pure first-order tilt over the full vocabulary
+($q(v) \propto p_\theta(v) e^{-\lambda \beta g_{i,v}}$, the published
+D-CBG recipe) \emph{fails} here --- loss increases with tilt strength ---
+because the Taylor error at the distance of a full one-hot swap is larger
+than the signal. Nominate-with-gradients, score-exactly is what works.
+Since the surrogate lives entirely in text space, its overhead at image
+scale is ${\sim}25\%$ of wall-clock.
+
+\subsection{Remasking corrector}
+\label{sec:corrector}
+Absorbing diffusion can never revise an unmasked token --- whatever is
+committed (from the source prompt or an early bad fill) survives verbatim
+unless re-masked. We observed exactly this failure: corrupted source
+tokens surviving into final answers. The corrector inserts, after each
+propagation step, an independent re-masking of every \emph{unmasked}
+position with probability
+\begin{equation}
+\sigma_t \;=\; \sigma\, \frac{t-1}{T}, \qquad \sigma = 0.2,
+\end{equation}
+which decays to $\sigma_1 = 0$ so the chain still terminates decoded. The
+composite kernel (unmask-fill $\circ$ re-mask) is treated as \emph{the}
+proposal kernel of the FK model: the telescoping identity of
+\S\ref{sec:smc} is agnostic to which kernel generated the path, so the
+final weights still encode $e^{-\beta \Ploss(x_0)}$ against the law of
+$x_0$ under the \emph{corrector-augmented} chain. That law is a
+(slightly) different effective prior than pure absorbing diffusion ---
+ReMDM-style schedules choose $\sigma_t$ to preserve the prior marginals
+exactly; our fixed decaying schedule treats this as an approximation, which
+we accept in exchange for reversibility. Empirically the corrector took
+the text-space rain benchmark from a $0.24$ plateau to \emph{exact
+recovery} ($\Ploss = 0.0000$) and produced the compositional straddle of
+\S\ref{sec:headline}.
+
+\section{Experiments}
+All image-scale runs: SDXL (Turbo 1-step or base 12-step CFG~3) as
+$f_\phi$, CLIP ViT-L/14 embeddings, $N{=}128$, $T{=}16$, $\beta{=}200$
+annealed, seeds $\{0,1,2\}$, single L40S, minutes per run (mode
+estimator).
+
+\subsection{Validation ladder}
+\textbf{Toy world} (5-slot grammar, 3{,}750 prompts, exact denoiser,
+brute-forceable optimum): with $\beta$-annealing the \emph{sampled}
+estimator recovers the generating prompt 5/5 seeds; \emph{mode} 1/5 (its
+deterministic twist is biased and all failures collapse to the same wrong
+prompt). \textbf{At image scale the ranking flips}: mode $\geq$ sampled on
+every seed (e.g.\ rain pair: mean $0.454$ vs $0.479$) at $1/12$ the cost
+--- greedy decodes are coherent sentences, factorized samples are not.
+Mode is the working configuration.
+
+\subsection{Prompt editing (unimodal target)}
+Target $\G$: images of \emph{``a photo of a person standing in the rain''}
+($\Ploss(x_{\mathrm{true}}) = 0.072$); source ``a photo of a man walking
+down the street'' ($\Ploss = 0.80$). Selection alone inserts rain
+semantics once in three seeds (best $0.393$); tilted proposals make rain
+vocabulary appear in 2/3 seeds (best $0.373$, ``man in precipitation
+water''); both plateau because 5 free tokens cannot express composition
+--- the target is \emph{distant full-body} silhouettes. Widening the
+canvas to 10 tokens breaks the plateau: $\Ploss = 0.189$
+(10-token optimum $0.095$), with generations visually interchangeable
+with the target. Across 18 baseline runs and 3 source--target pairs,
+untilted SMC reliably performs \emph{high-prior} semantic swaps
+(man$\to$woman: 6/6) and never inserts \emph{low-prior} content words ---
+the coverage bottleneck that the tilt fixes.
+
+\subsection{Distillation collapses ambiguity}
+\label{sec:distill}
+Defining $\G$ as a 50/50 mixture of ``old man smiling'' / ``young woman
+smiling'' images: under SDXL-\textbf{Turbo}, all seeds converge to the
+identical single-mode prompt (``a photo of a woman smiling in the image'',
+induced $p(\mathrm{male}){=}0.01$ vs target $0.49$), and a probe over
+hand-crafted straddle prompts shows why: \emph{no} prompt beats the
+single-mode floor; disjunctions \emph{blend} attributes (old, mixed-gender
+people) rather than sampling modes; ``a person smiling'' induces
+$p(\mathrm{male}) = 0.007$. Under non-distilled SDXL-\textbf{base}
+(12 steps, CFG 3) the picture inverts: disjunction prompts \emph{beat}
+both components ($0.086$ vs $0.090/0.097$) and ``a person smiling'' jumps
+to $p(\mathrm{male}) = 0.56$. Re-running the mixture optimization with the
+base sampler, recovered prompts induce genuinely mixed demographics
+($p(\mathrm{male}) \in \{0.26, 0.78\}$ vs target $0.54$). Because the SMC
+never differentiates through $f_\phi$, this sampler swap is architecturally
+free --- in contrast to MLGD-F, whose memory tractability requires the
+distilled model. \emph{Selection-based guidance decouples CDM from
+distilled samplers.}
+
+\subsection{Headline: recovery of a multimodal target}
+\label{sec:headline}
+Ground truth $x_{\mathrm{true}} = $ ``a photo of an old man or young woman
+smiling'' (a 7-token disjunction the base sampler renders bimodally);
+$\G$ = its own 64 images; $\Ploss(x_{\mathrm{true}}) = 0.099$ is the
+finite-sample noise floor of the objective. Particles start from
+$x_{\mathrm{true}}$ with 75\% of tokens masked (classic denoising setup).
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{llccc}
+\toprule
+prior & recovered prompt (best particle) & $\Ploss$ & $p(\mathrm{male})$ & $p(\mathrm{old})$ \\
+\midrule
+\multicolumn{2}{l}{\emph{target (measured on $S_\G$)}} & $0.099$ & $0.60$ & $0.84$ \\
+\midrule
+BERT  & ``some old woman or young man smiling'' & $0.083$ & $0.44$ & $0.85$ \\
+BERT  & ``an old man or boy was smiling''       & $0.093$ & $0.77$ & $0.88$ \\
+BERT  & ``an old boy or old woman smiling''     & $0.087$ & $0.51$ & $0.91$ \\
+LLaDA-8B & ``an old person or young person smiling'' (2 seeds) & $0.089$ & $0.48$ & $0.83$ \\
+LLaDA-8B & ``an elderly man smiling again showing the'' & $0.089$ & $0.81$ & $0.91$ \\
+\bottomrule
+\end{tabular}
+\caption{Noised-truth recovery of the multimodal target. 5/6 runs recover
+the disjunction structure; all reach or beat the ground-truth prompt's own
+empirical loss, i.e.\ they are statistically indistinguishable from the
+optimum (demographics computed on 64 \emph{fresh} generations, so this is
+not overfitting to the target set). The trained diffusion LM (LLaDA)
+contributes fluency and cross-seed stability.}
+\end{table}
+
+Editing from a semantically \emph{far} source (``one person sitting
+quietly inside the office'') does not recover the disjunction (best
+$0.106$ with corrector vs floor $0.099$), but the corrector produced a
+qualitatively distinct solution: ``a photo of her laughing with her father''
+--- matching the mixture \emph{compositionally} (both modes in one image,
+induced $0.55/0.60$) rather than distributionally. CLIP-space MMD
+partially conflates the two; we flag this as a metric-level ambiguity.
+
+\subsection{Equal-compute baselines}
+\label{sec:baselines}
+Each baseline receives $\sim$250 unique loss-oracle evaluations per seed,
+matched to (or above) the guided runs' consumption, and shares the
+memoized loss. \emph{SDEdit best-of-$B$}: $B{=}256$ independent
+\emph{unguided} denoisings from the same noised source (same prior, same
+$t_0$, same top-$k$ reverse kernel --- everything except guidance), keep
+the lowest-loss decode. \emph{Random search}: $B{=}256$ uniform-random
+canvas fills.
+
+\begin{table}[h]
+\centering\small
+\begin{tabular}{llcc}
+\toprule
+task & method (equal oracle budget) & $\Ploss$ best (3 seeds) & disjunction found \\
+\midrule
+recovery & random prompt search ($B{=}256$) & $0.153$--$0.170$ & 0/3 \\
+recovery & SDEdit best-of-256, BERT     & $0.091$--$0.098$ & 3/3 \\
+recovery & SDEdit best-of-256, LLaDA    & $0.089$--$0.102$ & 2/3 \\
+recovery & \textbf{guided SMC (ours), BERT}  & $\mathbf{0.083}$--$0.093$ & 3/3 \\
+recovery & \textbf{guided SMC (ours), LLaDA} & $\mathbf{0.089}$ (all seeds) & 2/3 \\
+\midrule
+editing (far source) & SDEdit best-of-256, BERT & $0.157$--$0.163$ & 0/3 \\
+editing (far source) & \textbf{guided SMC (ours)} & $\mathbf{0.106}$ & compositional \\
+\bottomrule
+\end{tabular}
+\caption{Equal-compute baselines. Unguided restarts are competitive when
+the corruption preserves part of the answer (noised-truth recovery:
+best-of-256 inherits ${\sim}25\%$ of true tokens per candidate, and one of
+256 gets lucky), and no better than random search when the source is
+semantically far --- guidance accounts for the entire gap in the editing
+regime.}
+\end{table}
+
+The two regimes give the honest claim: guidance pays \emph{modestly} for
+recovery (per-seed best: guided mean $0.088$ vs unguided $0.094$; the
+population-level gap is large --- unguided median $0.18$ --- which is what
+``guidance concentrates compute'' looks like), and \emph{decisively} for
+editing, where 256 unguided restarts from a far source are statistically
+indistinguishable from pure random prompt search ($0.157$--$0.163$ vs
+$0.153$--$0.170$) while guided SMC reaches $0.106$, ${\sim}35\%$ better.
+
+\subsection{Ablations}
+\label{sec:ablations}
+One component removed per arm, everything else identical to the full
+stack (3 seeds each), on both tasks.
+
+\begin{table}[h]
+\centering\small
+\begin{tabular}{lcccc}
+\toprule
+& \multicolumn{2}{c}{recovery (floor $0.099$)} &
+\multicolumn{2}{c}{editing, far source} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+arm & $\Ploss$ per seed & mean & $\Ploss$ per seed & mean \\
+\midrule
+full stack        & $.083/.093/.087$ & $0.088$ & $.128/.124/.106$ & $0.119$ \\
+$-$ tilted proposals & $.089/.087/.088$ & $0.088$ & $.141/.102/.114$ & $0.119$ \\
+$-$ corrector     & $.084/.094/.087$ & $0.088$ & $.136/.115/.132$ & $0.128$ \\
+$-$ $\beta$-annealing & $.087/.087/.084$ & $0.086$ & $.135/.130/.132$ & $0.132$ \\
+unguided (best-of-256) & $.091/.094/.098$ & $0.094$ & $.157/.163/.159$ & $0.160$ \\
+\bottomrule
+\end{tabular}
+\caption{Component ablations. Recovery needs only the twisted selection
+itself: every knockout matches the full stack, and the entire
+guided-vs-unguided gap is the twist. On editing, $\beta$-annealing and the
+corrector each contribute (without annealing all seeds collapse to
+single-mode prompts), while the tilt is neutral \emph{on this target} ---
+its vocabulary (old/man/woman/smiling) is already high-prior. The tilt's
+demonstrated value is inserting \emph{low-prior} content words
+(\S ``prompt editing'': rain vocabulary appears only with tilt).}
+\end{table}
+
+A separate distilled-sampler arm on recovery is the sharpest collapse
+evidence we have: under SDXL-Turbo, 2/3 seeds recover $x_{\mathrm{true}}$
+\emph{verbatim} --- yet even the true disjunction prompt induces
+$p(\mathrm{male}) = 0.13$, and Turbo's own rendering of the target set has
+$p(\mathrm{male}) = 0.20$ vs $0.60$ under the base sampler. The text is
+recoverable; the multimodal distribution is unreachable
+(cf.\ \S\ref{sec:distill}).
+
+\subsection{A rate-based alternative: training-free CTMC guidance}
+\label{sec:ctmc}
+Twisted SMC is not the only way to consume a scalar oracle. Rate-ratio
+guidance (Nisonoff et al.; TFG-Flow) works on the continuous-time Markov
+chain directly: a \emph{single} chain, no particles, no weights, with the
+predictor $f(x_1) = e^{-\beta \Ploss(x_1)}$ reweighting each unmasking
+jump. For a masked coordinate $d$ unmasking at time $s$, the guided
+destination law is
+\begin{equation}
+q_d(v) \;\propto\;
+\E_{x_1 \sim \tilde p_\theta(\cdot \mid x_s)}
+\!\big[ f(x_1)\, \mathbf{1}\{x_1^d = v\} \big],
+\end{equation}
+estimated either by \textbf{Monte Carlo} ($K$ posterior decodes per step,
+$f$-weighted empirical law --- assumption-free, and attractive precisely
+because it needs \emph{only} the scalar oracle: no CLIP-text surrogate, no
+gradients, no shared embedding space), or in \textbf{closed form} under
+the relaxing assumption that $f$ is log-linear across coordinates
+($\log f = \sum_d \theta_d(x^d)$; then $q_d = \mathrm{softmax}(\log
+p_\theta + \gamma\,\theta_d)$, one denoiser pass, zero sampling).
+
+\textbf{In the toy world the method matches SMC}: MC rate guidance with
+$K{=}128$, $\gamma{=}10$, 16 restarts recovers the generating prompt 5/5
+seeds at ${\sim}9\times$ fewer raw oracle calls than the SMC toy
+configuration. The closed-form variant plateaus ($\Ploss \approx 0.08$ vs
+floor $0.009$) and \emph{degrades} as $\gamma$ grows: a
+distribution-matching loss couples coordinates by construction, so its
+additive projection is a poor surrogate --- the assumption's own scope
+caveat, measured.
+
+\textbf{At image scale the ranking inverts} (same tasks, matched
+${\sim}250$ unique oracle calls per seed):
+
+\begin{table}[h]
+\centering\small
+\begin{tabular}{lcc}
+\toprule
+method & recovery (mean) & editing (mean) \\
+\midrule
+twisted SMC (full stack)        & $\mathbf{0.088}$ & $\mathbf{0.119}$ \\
+unguided SDEdit best-of-256     & $0.094$ & $0.160$ \\
+CTMC rate ratio, MC $K{=}16{\times}4$ chains, $\gamma{=}10$ & $0.111$ & $0.165$ \\
+CTMC rate ratio, MC $K{=}16{\times}4$, $\gamma{=}3$  & $0.107$ & --- \\
+CTMC rate ratio, MC $K{=}64{\times}2$, $\gamma{=}10$ & $0.126$ & --- \\
+CTMC rate ratio, closed-form additive & $0.134$ & --- \\
+CTMC rate ratio, MC + DFM stochasticity $\eta{=}3$ & $0.140$ & --- \\
+CTMC rate ratio, MC + DFM stochasticity $\eta{=}8$ & $0.136$ & $0.143$ \\
+CTMC rate ratio, MC + regret-guided remask, $\eta{=}8$ & $0.131$ & $0.143$ \\
+\bottomrule
+\end{tabular}
+\caption{Rate-ratio guidance vs twisted SMC at image scale (floor
+$0.099$). Single-chain rate guidance trails even unguided restarts on
+recovery and adds nothing over unguided on editing; detailed-balance
+stochasticity ($\eta$) trades the two tasks against each other rather
+than closing the gap, and allocating the same churn by commit-time
+regret does not repair the trade-off.}
+\end{table}
+
+Three observations pin down \emph{why}. First, $\gamma{=}3$ vs
+$\gamma{=}10$ barely differ --- guidance strength is not the binding
+constraint. Second, reallocating the budget toward sharper per-step
+estimates ($K{=}64$, 2 chains) makes things \emph{worse} than $K{=}16$
+with 4 chains: better local twist estimates cannot help a chain that has
+already committed a bad token, whereas extra restarts can. Third --- and
+this addresses the natural objection that a single chain \emph{can} be
+made revisable --- we added the DFM detailed-balance corrector (Campbell
+et al.\ 2024): any rate $R^{\mathrm{DB}}$ in detailed balance with the
+conditional marginals can be added at strength $\eta$ without changing
+the prior's marginal flow, which for masking means unmasked coordinates
+re-mask at rate $\eta$ while the unmask rate grows to
+$(\dot\kappa + \eta\kappa)/(1-\kappa)$. In the toy this lifts MC rate
+guidance to 5/5 recovery ($\eta{=}8$). At image scale its effect is
+\emph{symmetric in the wrong way}: editing improves ($0.165 \to 0.143$,
+the best non-SMC editing result --- revision does help escape a bad
+source) but recovery \emph{degrades} ($0.111 \to 0.136$), because the
+same uniform churn that erases a bad initialization erases a good one ---
+at $\eta{=}8$ the recovery and editing chains become nearly
+indistinguishable, the initialization having been fully forgotten.
+Detailed-balance exploration is revision without \emph{selection}: it
+re-masks good and bad tokens at the same rate. SMC's resampling is the
+selective version of the same operation --- states die \emph{because} of
+their loss --- and that is the mechanism a single guided chain has no
+analogue of. We then tested whether that selectivity can be retrofitted
+at zero oracle cost: a \emph{regret-guided} remask keeps the same total
+churn as uniform $\eta{=}8$ but allocates it by softmax of each
+coordinate's commit regret --- the mean loss of the decodes that chose
+its committed token minus the mean over all refills, both cached for
+free from the $K$ decodes at its commit step --- so tokens that
+underperformed their own refill distribution re-mask preferentially
+(rate-ratio guidance applied to the remask jumps). It preserves the
+toy's 5/5 recovery, but at image scale it is indistinguishable from
+uniform churn: editing identical ($0.143$), recovery marginally better
+($0.136 \to 0.131$) yet still worse than no revision at all ($0.111$),
+and the recovery and editing trajectories still coincide. The failure
+localizes the problem precisely: the regret statistics are \emph{stale}
+--- they score a token against the canvas as it stood at commit time,
+not as it stands now --- whereas resampling always scores whole
+\emph{current} states. Selective single-chain revision would need fresh
+counterfactual twist estimates per unmasked coordinate at every step,
+exactly the cost that resampling amortizes across a population.
+Consistent with this,
+TFG-Flow's own benchmarks live in small alphabets (DNA: 4, proteins: 20),
+where per-step decodes cover the space and the toy result shows the
+method at its best. The closed-form arm is not useless --- one seed
+produced ``an elderly man or young woman smiling'' ($\Ploss{=}0.109$,
+demographics $0.63/0.88$ vs target $0.60/0.84$) at \emph{four}
+sampling-time oracle calls --- but on average the additive assumption
+costs more than the exactness buys.
+
+\section{Findings}
+\begin{enumerate}
+\item \textbf{Selection guides, gradients propose, correctors revise ---
+and each pays only in its regime} (\S\ref{sec:ablations}): recovery needs
+only twisted selection; annealing and the corrector matter for far-source
+editing; the tilt matters when the target demands low-prior vocabulary.
+Failure modes addressed: coverage (tilt), expressivity (canvas width),
+irreversibility (corrector), premature collapse (annealing).
+\item \textbf{Distilled samplers make mixtures unreachable}
+(\S\ref{sec:distill}); gradient-free guidance can swap them out at zero
+memory cost --- a structural advantage over backprop-through-$f_\phi$
+methods.
+\item \textbf{Estimator choice inverts with scale}: the unbiased sampled
+twist wins in the toy world; the biased-but-coherent mode twist wins with
+real LMs, at a fraction of the cost.
+\item \textbf{Pure first-order discrete guidance fails} where
+nominate-then-exact-score succeeds --- relevant to D-CBG-style methods.
+\item \textbf{Compositional vs.\ distributional straddling}: CLIP-MMD
+partially accepts ``both modes in one image'' as a substitute for ``a
+population mixing two modes''.
+\item \textbf{Selection over a population survives vocabulary scale;
+locally tilted rates do not} (\S\ref{sec:ctmc}): rate-ratio guidance
+matches SMC in small alphabets at lower cost, but at 18k-word vocabulary
+it is dominated at every $K$/restart split of the budget --- the missing
+ingredient is resampling, not estimate precision, and it cannot be
+imitated for free: remasking guided by cached commit-time regret is
+indistinguishable from uniform churn.
+\end{enumerate}
+
+\section{Limitations and next steps}
+Most results use 3 seeds on few targets; the corrector's effective prior
+is an approximation of the masked-diffusion prior
+(\S\ref{sec:corrector}); far-source editing stalls above the floor;
+prompts are optimal but not always fluent (except under LLaDA).
+Next: more targets (in particular low-prior-vocabulary multimodal targets,
+where the ablation predicts the tilt becomes load-bearing), a remasking
+corrector with ReMDM guarantees, and continuous-time formalism for the
+guidance theory.
+
+\end{document}

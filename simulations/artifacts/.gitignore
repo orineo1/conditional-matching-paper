@@ -1,0 +1,2 @@
+# trained checkpoints are regenerated on demand by experiments/_models.py
+checkpoints/

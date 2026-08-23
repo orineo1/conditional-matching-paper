@@ -102,8 +102,6 @@ def parse_args():
     # Hybrid sampling (see simulations/src/Optimization.py for the same idea in the toy setting)
     p.add_argument("--reuse_frac", type=float, default=0.0,
                    help="Fraction of num_variations reused from the previous step's fresh embeddings")
-    p.add_argument("--adamdps", action="store_true",
-                   help="AdamDPS gradient stabilization (arXiv:2603.16797), fixed beta1=0.9, beta2=0.999")
 
     # Prompts
     p.add_argument("--prompt",          type=str, default="")
@@ -540,7 +538,6 @@ def main():
             "num_variations_schedule":      args.num_variations_schedule,
             "num_variations_min":           args.num_variations_min,
             "reuse_frac":                   args.reuse_frac,
-            "adamdps":                      args.adamdps,
             "base_zeta":                    args.base_zeta,
             "guidance_scale":               args.guidance_scale,
             "controlnet_scale":             args.controlnet_scale,
@@ -626,8 +623,6 @@ def main():
     step_gradients = []
     step_vis_data  = []
     prev_variation_clip = None          # one-step-old CLIP embeddings, used when args.reuse_frac > 0
-    adam_m, adam_v, adam_step = None, None, 0   # AdamDPS moment state, used when args.adamdps
-    ADAM_BETA1, ADAM_BETA2, ADAM_EPS = 0.9, 0.999, 1e-8
     target_clip_np = all_clip_embeddings.cpu().numpy()
     softmax_man_prompt   = target_groups[-1][1]   # last group (most masculine)
     softmax_woman_prompt = target_groups[0][1]    # first group (most feminine)
@@ -760,42 +755,6 @@ def main():
             print(f"  ⚠️  NaN in gradient at step {i} — skipping correction", flush=True)
             correction = torch.zeros_like(latents_step)
         else:
-            if args.adamdps:
-                adam_step += 1
-                grad_dtype = grad.dtype
-                grad_f32 = grad.float()
-                # adamdps state (adam_m, adam_v) and math kept in float32 regardless of
-                # grad's native dtype. ADAM_EPS=1e-8 underflows to exactly 0.0 in fp16
-                # (fp16's smallest positive value is ~5.96e-8), so v_hat.sqrt() + eps
-                # could silently become a true 0.0 in fp16 wherever a small gradient's
-                # square underflows too — producing inf (m_hat/0) or nan (0/0) instead
-                # of the intended safe division. float32 keeps eps meaningful.
-                adam_m = grad_f32.clone() if adam_m is None else ADAM_BETA1 * adam_m + (1 - ADAM_BETA1) * grad_f32
-                adam_v = grad_f32 ** 2 if adam_v is None else ADAM_BETA2 * adam_v + (1 - ADAM_BETA2) * grad_f32 ** 2
-                print(f"      [ADAMDPS] adam_step={adam_step} raw_grad_norm={grad_f32.norm().item():.6f} "
-                      f"adam_m: norm={adam_m.norm().item():.6f} nan={torch.isnan(adam_m).sum().item()} "
-                      f"adam_v: norm={adam_v.norm().item():.6f} min={adam_v.min().item():.6e} "
-                      f"max={adam_v.max().item():.6e} nan={torch.isnan(adam_v).sum().item()}", flush=True)
-                if adam_step == 1:
-                    # With a single sample, m/sqrt(v) collapses to sign(grad) (unit
-                    # per-element magnitude) regardless of grad's actual scale — bias
-                    # correction or not, this can be an order of magnitude larger than
-                    # the raw gradient. Fine when amortized over thousands of training
-                    # steps; not fine when this loop only runs ~15 steps total. Use the
-                    # raw gradient unchanged for step 1 (matches the proven-stable
-                    # baseline exactly); adam_m/adam_v are still initialized here so the
-                    # bias-corrected transform behaves normally from step 2 onward.
-                    pass
-                else:
-                    m_hat = adam_m / (1 - ADAM_BETA1 ** adam_step)
-                    v_hat = adam_v / (1 - ADAM_BETA2 ** adam_step)
-                    grad = (m_hat / (v_hat.sqrt() + ADAM_EPS)).to(grad_dtype)
-                    print(f"      [ADAMDPS] adam_step={adam_step} "
-                          f"m_hat: norm={m_hat.norm().item():.6f} nan={torch.isnan(m_hat).sum().item()} "
-                          f"v_hat: norm={v_hat.norm().item():.6f} min={v_hat.min().item():.6e} "
-                          f"max={v_hat.max().item():.6e} nan={torch.isnan(v_hat).sum().item()} "
-                          f"-> grad: norm={grad.norm().item():.6f} nan={torch.isnan(grad).sum().item()}",
-                          flush=True)
             correction = -zeta_i * grad
 
         step_gradients.append({

@@ -93,6 +93,10 @@ def parse_args():
     p.add_argument("--eval_interval",  type=int, default=0,
                    help="Evaluate intermediate MMD every N steps (0 = auto ~5 checkpoints)")
 
+    # Hybrid sampling (see simulations/src/Optimization.py for the same idea in the toy setting)
+    p.add_argument("--reuse_frac", type=float, default=0.0,
+                   help="Fraction of num_variations reused from the previous step's fresh embeddings")
+
     # Prompts
     p.add_argument("--prompt",          type=str, default="")
     p.add_argument("--negative_prompt", type=str, default="")
@@ -504,6 +508,7 @@ def main():
             "steps_run":                    args.n_steps - args.start_step,
             "scheduler_type":               type(architect.scheduler).__name__,
             "num_variations":               args.num_variations,
+            "reuse_frac":                   args.reuse_frac,
             "base_zeta":                    args.base_zeta,
             "guidance_scale":               args.guidance_scale,
             "controlnet_scale":             args.controlnet_scale,
@@ -588,6 +593,7 @@ def main():
 
     step_gradients = []
     step_vis_data  = []
+    prev_variation_clip = None   # one-step-old CLIP embeddings, used when args.reuse_frac > 0
     target_clip_np = all_clip_embeddings.cpu().numpy()
     softmax_man_prompt   = target_groups[-1][1]   # last group (most masculine)
     softmax_woman_prompt = target_groups[0][1]    # first group (most feminine)
@@ -686,7 +692,7 @@ def main():
         )
         pixel_x0_norm = torch.clamp((pixel_x0 + 1.0) / 2.0, 0.0, 1.0)
 
-        grad, mmd_loss, zeta_i, loss_norm, vl_clip_flat = run_dps_step_clip(
+        grad, mmd_loss, zeta_i, loss_norm, vl_clip_flat, prev_variation_clip = run_dps_step_clip(
             latents=latents,
             latents_step=latents_step,
             noise_pred=noise_pred,
@@ -703,6 +709,8 @@ def main():
             variation_prompt=args.sprinter_variation_prompt,
             loss_fn=loss_fn,
             loss_scale=args.loss_scale,
+            prev_variation_clip=prev_variation_clip,
+            reuse_frac=args.reuse_frac,
         )
 
         grad_norm = grad.norm().item()

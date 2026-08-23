@@ -31,7 +31,9 @@ echo "============================================"
 export WANDB_API_KEY=YOUR_WANDB_API_KEY_HERE
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-REPO="YOUR_REPO_PATH_HERE"
+# Path to THIS subdirectory (SD_cond_SD_controlnet/), not the outer git repo root —
+# scripts/run_mlgd_f.py below is resolved relative to this path.
+REPO="YOUR_REPO_PATH_HERE/SD_cond_SD_controlnet"
 cd "$REPO"
 
 OUTPUT_DIR="output/mlgd_f_age_${SLURM_JOB_ID}"
@@ -50,6 +52,9 @@ python scripts/run_mlgd_f.py \
     --n_steps 30 \
     --start_step 15 \
     --num_variations 6 \
+    --num_variations_schedule constant \
+    --num_variations_min 1 \
+    --reuse_frac 0.0 \
     --base_zeta 5.0 \
     --guidance_scale 0.0 \
     --controlnet_scale 0.5 \

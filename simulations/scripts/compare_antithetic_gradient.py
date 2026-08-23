@@ -75,8 +75,9 @@ def reference_gradient(x_t_frozen, t, model_uncond, mu_list, Sigma_list, alpha,
 
     mog_samples = dist_utils.generate_mog_samples_not_differentiable(n_ref, mog_means, mog_variances, weights)
     loss = mmd_loss(target_samples, mog_samples)
+    loss_value = loss.item()
     loss.backward()
-    return x_t.grad.clone()
+    return x_t.grad.clone(), loss_value
 
 
 def mc_gradient(x_t_frozen, t, model_uncond, model_cond, mog_means, mog_variances, weights,
@@ -100,8 +101,9 @@ def mc_gradient(x_t_frozen, t, model_uncond, model_cond, mog_means, mog_variance
 
     mog_samples = dist_utils.generate_mog_samples_not_differentiable(nsamples, mog_means, mog_variances, weights)
     loss = mmd_loss(target_samples, mog_samples)
+    loss_value = loss.item()
     loss.backward()
-    return x_t.grad.clone(), target_samples.detach()
+    return x_t.grad.clone(), target_samples.detach(), loss_value
 
 
 def pair_correlation(target_samples):
@@ -127,6 +129,15 @@ def estimator_stats(grads, reference):
     variance = grads.var(dim=0, unbiased=True).sum().item()
     mse = ((grads - reference) ** 2).sum(dim=1).mean().item()
     return {"bias_norm": bias, "variance": variance, "mse": mse}
+
+
+def scalar_stats(values, reference):
+    """values: [n_trials] tensor of scalar MMD losses. Same bias/variance/MSE, for a scalar."""
+    values = values.float()
+    bias = (values.mean() - reference).item()
+    variance = values.var(unbiased=True).item()
+    mse = ((values - reference) ** 2).mean().item()
+    return {"bias": bias, "variance": variance, "mse": mse}
 
 
 def main():
@@ -163,24 +174,26 @@ def main():
     print(f"[Setup] experiment={args.experiment} t={t} nsamples={args.nsamples} "
           f"n_trials={args.n_trials} n_ref={args.n_ref}", flush=True)
 
-    reference = reference_gradient(
+    reference, reference_loss = reference_gradient(
         x_t_frozen, t, model_uncond, mu_list, Sigma_list, alpha,
         mog_means, mog_variances, weights, r_t_z0, mmd_loss, args.n_ref, device,
     )
-    print(f"[Reference] grad={reference.view(-1).tolist()}", flush=True)
+    print(f"[Reference] grad={reference.view(-1).tolist()} loss={reference_loss:.6f}", flush=True)
 
-    grads_A, grads_B, correlations = [], [], []
+    grads_A, grads_B, correlations, losses_A, losses_B = [], [], [], [], []
     for i in range(args.n_trials):
-        grad_A, _ = mc_gradient(
+        grad_A, _, loss_A = mc_gradient(
             x_t_frozen, t, model_uncond, model_cond, mog_means, mog_variances, weights,
             r_t_z0, mmd_loss, args.nsamples, device, antithetic=False,
         )
-        grad_B, samples_B = mc_gradient(
+        grad_B, samples_B, loss_B = mc_gradient(
             x_t_frozen, t, model_uncond, model_cond, mog_means, mog_variances, weights,
             r_t_z0, mmd_loss, args.nsamples, device, antithetic=True,
         )
         grads_A.append(grad_A)
         grads_B.append(grad_B)
+        losses_A.append(loss_A)
+        losses_B.append(loss_B)
         correlations.append(pair_correlation(samples_B))
         if (i + 1) % max(1, args.n_trials // 10) == 0:
             print(f"[Trial] {i + 1}/{args.n_trials}", flush=True)
@@ -197,19 +210,34 @@ def main():
     mean_pair_correlation = float(np.mean(correlations))
     std_pair_correlation = float(np.std(correlations))
 
+    losses_A_t = torch.tensor(losses_A)
+    losses_B_t = torch.tensor(losses_B)
+    loss_stats_A = scalar_stats(losses_A_t, reference_loss)
+    loss_stats_B = scalar_stats(losses_B_t, reference_loss)
+    loss_variance_reduction = (
+        loss_stats_A["variance"] / loss_stats_B["variance"] if loss_stats_B["variance"] > 0 else float("inf")
+    )
+
     print(f"[A: pure noise]  bias={stats_A['bias_norm']:.6f} var={stats_A['variance']:.6f} mse={stats_A['mse']:.6f}")
     print(f"[B: antithetic]  bias={stats_B['bias_norm']:.6f} var={stats_B['variance']:.6f} mse={stats_B['mse']:.6f}")
     print(f"[Variance reduction factor A/B] {variance_reduction:.4f}")
     print(f"[Paired-sample correlation] mean={mean_pair_correlation:.4f} std={std_pair_correlation:.4f} "
           f"(near -1 = antisymmetry holds, near 0 = pairing bought nothing)")
+    print(f"[MMD loss A: pure noise]  bias={loss_stats_A['bias']:.6f} var={loss_stats_A['variance']:.6f} "
+          f"mse={loss_stats_A['mse']:.6f}")
+    print(f"[MMD loss B: antithetic]  bias={loss_stats_B['bias']:.6f} var={loss_stats_B['variance']:.6f} "
+          f"mse={loss_stats_B['mse']:.6f}")
+    print(f"[MMD loss variance reduction factor A/B] {loss_variance_reduction:.4f} "
+          f"(this is the scalar the paper's control-variate argument is about; "
+          f"the gradient is a higher-dimensional, nonlinear function of the same samples)")
 
     # Per-trial breakdown, so any run can be inspected individually to check
     # whether the aggregate variance is driven by a handful of outlier trials.
     trials = [
         {
             "trial": i,
-            "grad_A": grads_A[i].tolist(), "error_A": errors_A[i].item(),
-            "grad_B": grads_B[i].tolist(), "error_B": errors_B[i].item(),
+            "grad_A": grads_A[i].tolist(), "error_A": errors_A[i].item(), "loss_A": losses_A[i],
+            "grad_B": grads_B[i].tolist(), "error_B": errors_B[i].item(), "loss_B": losses_B[i],
             "pair_correlation_B": correlations[i],
         }
         for i in range(args.n_trials)
@@ -218,9 +246,11 @@ def main():
     out = {
         "experiment": args.experiment, "t": t, "nsamples": args.nsamples,
         "n_trials": args.n_trials, "n_ref": args.n_ref, "seed": args.seed,
-        "reference_grad": reference_flat.tolist(),
+        "reference_grad": reference_flat.tolist(), "reference_loss": reference_loss,
         "pure_noise": stats_A, "antithetic": stats_B,
         "variance_reduction_factor": variance_reduction,
+        "pure_noise_loss": loss_stats_A, "antithetic_loss": loss_stats_B,
+        "loss_variance_reduction_factor": loss_variance_reduction,
         "mean_pair_correlation": mean_pair_correlation,
         "std_pair_correlation": std_pair_correlation,
         "trials": trials,

@@ -28,8 +28,9 @@ echo "============================================"
 export WANDB_API_KEY=YOUR_WANDB_API_KEY_HERE
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-# Repo root — adjust to wherever you cloned the repo
-REPO="YOUR_REPO_PATH_HERE"
+# Path to THIS subdirectory (SD_cond_SD_controlnet/), not the outer git repo root —
+# scripts/run_mlgd_f.py below is resolved relative to this path.
+REPO="YOUR_REPO_PATH_HERE/SD_cond_SD_controlnet"
 cd "$REPO"
 
 OUTPUT_DIR="$REPO/output/mlgd_f_${SLURM_JOB_ID}"
@@ -43,6 +44,7 @@ python scripts/run_mlgd_f.py \
     --n_steps 30 \
     --start_step 15 \
     --num_variations 6 \
+    --reuse_frac 0.0 \
     --base_zeta 5.0 \
     --guidance_scale 0.0 \
     --controlnet_scale 0.5 \

@@ -101,7 +101,23 @@ def mc_gradient(x_t_frozen, t, model_uncond, model_cond, mog_means, mog_variance
     mog_samples = dist_utils.generate_mog_samples_not_differentiable(nsamples, mog_means, mog_variances, weights)
     loss = mmd_loss(target_samples, mog_samples)
     loss.backward()
-    return x_t.grad.clone()
+    return x_t.grad.clone(), target_samples.detach()
+
+
+def pair_correlation(target_samples):
+    """
+    Pearson correlation between the (z, -z)-paired halves of an antithetic
+    target_samples batch (row i in the first half is paired with row
+    i + nsamples/2, matching how mc_gradient built init_noise). Near -1 would
+    match the paper's antisymmetry claim; near 0 means pairing bought nothing.
+    """
+    half = target_samples.shape[0] // 2
+    a, b = target_samples[:half], target_samples[half:]
+    a = a - a.mean(dim=0, keepdim=True)
+    b = b - b.mean(dim=0, keepdim=True)
+    num = (a * b).sum(dim=0)
+    denom = torch.sqrt((a ** 2).sum(dim=0) * (b ** 2).sum(dim=0)) + 1e-12
+    return (num / denom).mean().item()
 
 
 def estimator_stats(grads, reference):
@@ -153,16 +169,19 @@ def main():
     )
     print(f"[Reference] grad={reference.view(-1).tolist()}", flush=True)
 
-    grads_A, grads_B = [], []
+    grads_A, grads_B, correlations = [], [], []
     for i in range(args.n_trials):
-        grads_A.append(mc_gradient(
+        grad_A, _ = mc_gradient(
             x_t_frozen, t, model_uncond, model_cond, mog_means, mog_variances, weights,
             r_t_z0, mmd_loss, args.nsamples, device, antithetic=False,
-        ))
-        grads_B.append(mc_gradient(
+        )
+        grad_B, samples_B = mc_gradient(
             x_t_frozen, t, model_uncond, model_cond, mog_means, mog_variances, weights,
             r_t_z0, mmd_loss, args.nsamples, device, antithetic=True,
-        ))
+        )
+        grads_A.append(grad_A)
+        grads_B.append(grad_B)
+        correlations.append(pair_correlation(samples_B))
         if (i + 1) % max(1, args.n_trials // 10) == 0:
             print(f"[Trial] {i + 1}/{args.n_trials}", flush=True)
 
@@ -173,10 +192,14 @@ def main():
     stats_A = estimator_stats(grads_A, reference_flat)
     stats_B = estimator_stats(grads_B, reference_flat)
     variance_reduction = stats_A["variance"] / stats_B["variance"] if stats_B["variance"] > 0 else float("inf")
+    mean_pair_correlation = float(np.mean(correlations))
+    std_pair_correlation = float(np.std(correlations))
 
     print(f"[A: pure noise]  bias={stats_A['bias_norm']:.6f} var={stats_A['variance']:.6f} mse={stats_A['mse']:.6f}")
     print(f"[B: antithetic]  bias={stats_B['bias_norm']:.6f} var={stats_B['variance']:.6f} mse={stats_B['mse']:.6f}")
     print(f"[Variance reduction factor A/B] {variance_reduction:.4f}")
+    print(f"[Paired-sample correlation] mean={mean_pair_correlation:.4f} std={std_pair_correlation:.4f} "
+          f"(near -1 = antisymmetry holds, near 0 = pairing bought nothing)")
 
     out = {
         "experiment": args.experiment, "t": t, "nsamples": args.nsamples,
@@ -184,6 +207,8 @@ def main():
         "reference_grad": reference_flat.tolist(),
         "pure_noise": stats_A, "antithetic": stats_B,
         "variance_reduction_factor": variance_reduction,
+        "mean_pair_correlation": mean_pair_correlation,
+        "std_pair_correlation": std_pair_correlation,
     }
     json_path = os.path.join(results_dir, f"antithetic_gradient_t{t}_n{args.nsamples}_seed{args.seed}.json")
     with open(json_path, "w") as f:

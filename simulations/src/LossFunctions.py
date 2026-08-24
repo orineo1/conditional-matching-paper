@@ -25,6 +25,22 @@ class RBF(nn.Module):
         return torch.exp(-scaled).sum(dim=0)
 
 
+class EnergyKernel(nn.Module):
+    """
+    k(x, y) = -||x - y||_2. Plugging this into MMDLoss recovers (twice) the
+    energy distance between the two distributions (Sejdinovic et al. 2013,
+    "Equivalence of distance-based and RKHS-based statistics in hypothesis
+    testing") -- a non-Gaussian alternative to RBF with no bandwidth to tune.
+    """
+    def __init__(self, device='cpu'):
+        super().__init__()
+        self.device = device
+
+    def forward(self, X):
+        X = X.to(self.device)
+        return -torch.cdist(X, X, p=2)
+
+
 class MMDLoss(nn.Module):
     def __init__(self, kernel=None, device='cpu'):
         super().__init__()

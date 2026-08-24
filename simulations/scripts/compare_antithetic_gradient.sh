@@ -2,7 +2,7 @@
 #SBATCH --job-name=antithetic-gradient
 #SBATCH --output=antithetic_gradient_%j.log
 #SBATCH --error=antithetic_gradient_%j.err
-#SBATCH --time=04:00:00
+#SBATCH --time=08:00:00   # bumped: default N_T x N_X_T x kernel x model now multiplies out the point count
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
@@ -14,7 +14,11 @@
 
 EXPERIMENT="2D_cond_1D"
 MODEL="both"            # lgd | lgd_cm | both
-T=""                    # diffusion timestep to freeze x_t at; empty = mid-trajectory
+KERNEL="both"           # rbf | energy | both
+T=""                    # single explicit timestep; empty = use N_T/T_VALUES below
+T_VALUES=""             # explicit comma list, e.g. "20,50,80"; empty = use N_T
+N_T=5                   # number of timesteps to sweep, evenly spaced (ignored if T or T_VALUES set)
+N_X_T=3                 # number of independent reverse-diffusion trajectories per timestep
 NSAMPLES=250
 N_TRIALS=200
 N_REF=5000
@@ -49,12 +53,20 @@ export PYTHONPATH="$REPO_ROOT/simulations/src:$PYTHONPATH"
 CMD="python compare_antithetic_gradient.py \
     --experiment $EXPERIMENT \
     --model      $MODEL \
+    --kernel     $KERNEL \
+    --n_x_t      $N_X_T \
     --nsamples   $NSAMPLES \
     --n_trials   $N_TRIALS \
     --n_ref      $N_REF \
     --seed       $SEED"
 
-[ -n "$T" ] && CMD="$CMD --t $T"
+if [ -n "$T" ]; then
+    CMD="$CMD --t $T"
+elif [ -n "$T_VALUES" ]; then
+    CMD="$CMD --t_values $T_VALUES"
+else
+    CMD="$CMD --n_t $N_T"
+fi
 [ "$FORCE_RETRAIN" = "true" ] && CMD="$CMD --force_retrain"
 
 echo "Running: $CMD"

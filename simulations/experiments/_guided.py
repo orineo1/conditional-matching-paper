@@ -53,12 +53,17 @@ def n_for_step(t, sched, n_max, schedule):
 
 def run(model_cond, model_uncond, S_G, bandwidth, n_max, spatial, temporal,
         restart, schedule="constant", adam_rho=0.4, device="cpu",
-        guidance_target="x_t", mu_strength=1.0):
+        guidance_target="x_t", mu_strength=1.0, beta1=0.9, beta2=0.995,
+        delta=1e-8):
     """``guidance_target`` selects where the guidance gradient is taken.
 
     ``x_t``  DPS/LGD style: differentiate through the denoiser back to x_t and
              add the correction to the DDIM iterate. This is what Experiments
              2-4 use and what ``Optimization.optimize_LGD`` does.
+    ``beta1``/``beta2``/``delta`` are the Adam moment constants; the defaults are
+    the official AdamDPS values and are what Experiments 2-4 and 6 use, so
+    passing nothing reproduces them exactly.
+
     ``x0``   MPGD style: differentiate w.r.t. x_{0|t} treated as a LEAF, move
              x_{0|t} itself, then rebuild x_{t-1} from the moved clean estimate.
              Avoids backpropagating through the denoiser entirely. In TFG terms
@@ -67,7 +72,7 @@ def run(model_cond, model_uncond, S_G, bandwidth, n_max, spatial, temporal,
     T = model_uncond.diffusion_steps
     sched = DiffusionSchedule(T=T)
     mmd = MMDLoss(kernel=RBF(bandwidth=bandwidth, device="cpu"), device="cpu")
-    adam = (AdamGuidance(beta1=0.9, beta2=0.995, delta=1e-8, rho=adam_rho,
+    adam = (AdamGuidance(beta1=beta1, beta2=beta2, delta=delta, rho=adam_rho,
                          inv_sqrt_alpha=False) if temporal == "adam" else None)
 
     x = torch.zeros(1, model_uncond.nfeatures, device=device)

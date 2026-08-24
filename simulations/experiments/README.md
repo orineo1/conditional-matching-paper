@@ -34,9 +34,12 @@ call the combination **Adam-CDM**, not AdamDPS.
 | 4 | `exp4_nt_schedules.py` | Does an uneven `n_t` schedule beat a uniform one at equal budget? | constant vs time- vs noise-increasing, x {none, Adam}, plus a budget-matched constant | exact GMM L2, `sum_t n_t`, paired CI | **planned** | `python experiments/exp4_nt_schedules.py --n-max 16 --restarts 100` | `results/tfg/exp4_nt_schedules_nmax{n}.json` |
 | 5 | `exp5_dimy_scaling.py` | Does momentum help more as **dim(Y)** grows? | no-LGD x {none, Adam} across `d` and `n` | `Delta(d,n)`, `n*(d)` | **run, INVALID for its stated question** | `python experiments/exp5_dimy_scaling.py --restarts 50` | `results/tfg/exp5_dimy_scaling_*.json` |
 | 5A | `exp5a_plateau_mechanism.py` | Which part of Adam crosses the plateau? | none vs full Adam vs normalisation-only (`beta1 = 0`) | escape rate, near-optimum rate, exact GMM L2 | **run, supported** | `python experiments/exp5a_plateau_mechanism.py --d 8 --restarts 40` | `results/tfg/exp5a_plateau_mechanism_d{d}*.json` |
+| 5B | `exp5b_zeta_calibration.py` | What guidance strength makes the *baseline* a working optimiser at each dim(Y)? | zeta sweep per `d`, no-momentum arm only | reached-`x*` rate at large `n`, `zeta_d*` | **run; gate FAILED, and it corrects Exp 5** | `python experiments/exp5b_zeta_calibration.py --restarts 16` | `results/tfg/exp5b_zeta_calibration.json` |
 | 6 | `exp6_mpgd.py` | Does MPGD-style guidance help, and does momentum help on top of it? | 2x2: {`x_t`, `x0` (MPGD)} x {none, Adam} | exact GMM L2, success, paired CI | **run, negative** | `python experiments/exp6_mpgd.py --n 8 --restarts 100` | `results/tfg/exp6_mpgd_*.json` |
+| 7 | `exp7_adam_hyperparams.py` | Are the inherited Adam constants right for an MMD loss? | `beta1` x `beta2` x `n`, vs no-momentum | exact GMM L2, paired CI vs none | **run, null** | `python experiments/exp7_adam_hyperparams.py --restarts 40` | `results/tfg/exp7_adam_hyperparams_2D.json` |
+| 8 | `exp8_trust_region.py` | Does a noise-level trust region on the guidance step (`\|\|Delta_t\|\| <= sqrt(1-alphabar_t)`, `trust_noise1`) improve the no-LGD estimator at equal cost, and transfer across 2D/5D/10D? | **through the engine** (`GeneralizedTFG`, `step_clip="noise"`): baseline vs `trust_noise1` at `n in {4,8,16,32}`, paired; LGD and larger-n baselines for the Pareto frontier | exact GMM L2, paired CI + permutation p, conditional draws, wall time | **run (held-out, cluster), supported in 2D and 10D, null in 5D** | `python experiments/exp8_trust_region.py --setting 2D --restarts 100 --offset 1000 --lgd` | `results/tfg/exp8_trust_region_{setting}.json` |
 
-Experiment 1 is cheap (seconds). Experiments 2-6 train or load models on first
+Experiment 1 is cheap (seconds). Experiments 2-7 train or load models on first
 run (~1 min each, cached in `artifacts/checkpoints/`, git-ignored).
 
 ## Configuration
@@ -119,7 +122,7 @@ rate at `n = 4` rises with Adam; at `n = 32` it falls.
 So at `n = 8` the honest statement is: momentum improves the *no-LGD* estimator,
 but does **not** let it match LGD at one third of the conditional cost.
 
-### Experiment 5A -- the mechanism is normalisation, not momentum
+### Experiment 5A -- within Adam, the operative part is normalisation
 
 `dim(X) = 1`, `dim(Y) = 8`, `n = 32` (3,168 conditional calls/run), 250-sample
 target, 99 steps, 40 paired restarts, `zeta = 1.715`.
@@ -135,11 +138,20 @@ target, 99 steps, 40 paired restarts, `zeta = 1.715`.
   favouring normalise-only.
 
 Normalisation alone is not merely sufficient, it is **better than full Adam**;
-the `beta1` accumulation term actively hurts here. So what the other experiments
-loosely call "momentum helping" is really **per-coordinate normalisation**:
-dividing by `sqrt(v_hat)` turns a tiny but persistent gradient into a full-size
-`~rho` step instead of a `~1e-3` one, which is what crosses a shelf several units
-wide in 99 steps. Accumulation is not what does the work.
+the `beta1` accumulation term actively hurts here.
+
+**Scope.** "Here" is load-bearing. Experiment 7 sweeps the same two constants on
+the paper's 2D setting, where the baseline is already a working optimiser, and
+finds `beta1` makes no difference at all (`beta1 = 0` vs `0.9`: p = 0.81 at
+`n = 8`, p = 0.62 at `n = 4`). The `beta1` penalty is therefore specific to the
+plateau regime, not a general property of the guidance rule. Read 5A as "what
+crosses a plateau is normalisation", not as "momentum is useless". So within Adam the operative
+part is **per-coordinate normalisation**: dividing by `sqrt(v_hat)` turns a tiny
+gradient into a full-size `~rho` step instead of a `~1e-3` one. Experiment 5B
+then explains why that mattered *here* -- the baseline's `zeta` was about 4x too
+small, and normalisation supplies the missing factor. Against a properly
+calibrated baseline this is a step-size effect, not evidence that accumulating
+gradients across diffusion steps buys anything.
 
 An accumulation-only arm was run and then dropped from the script and from this
 README: with `beta2 -> 1` the update still divides by a frozen `sqrt(v_hat)`,
@@ -168,6 +180,98 @@ Skipping the backpropagation through the denoiser also discards the sensitivity
 of `x_{0|t}` to `x_t`, which is what carries the guidance signal in this setup.
 At the same conditional cost, MPGD is the wrong trade here.
 
+### Experiment 7 -- the inherited Adam constants are not a live variable
+
+Every other experiment uses `beta1 = 0.9, beta2 = 0.995, delta = 1e-8`, the
+official AdamDPS defaults, which were tuned for a **pointwise likelihood** loss.
+Ours is an MMD between a sample of the model conditional and a target set, whose
+gradient has a different noise structure, so the transfer needed checking.
+
+4 x 4 sweep over `beta1 in {0, 0.3, 0.6, 0.9}` x `beta2 in {0.9, 0.99, 0.995,
+0.999}`, at `n in {4, 8}`, 2D canonical, `rho = 0.4`, 40 restarts per cell, run
+on a **tuning block at `--offset 1000`** that is disjoint from the 0..99 block
+every reported number uses.
+
+- At `n = 4`, **all 16 cells** beat plain gradient guidance (`p <= 0.044`);
+  scores span 0.30-0.40.
+- At `n = 8`, 5 of 16 beat it; scores span 0.21-0.33.
+
+The apparent ranking among cells is sweep noise. Re-running the nominal winners
+against the default as a **paired** comparison:
+
+| n | default (0.9, 0.995) | challenger | diff | p |
+|---|---|---|---|---|
+| 4 | 0.3279 | 0.3035 (0.9, 0.9) | +0.0244 | 0.64 |
+| 8 | 0.2253 | 0.2076 (0.6, 0.995) | +0.0177 | 0.65 |
+| 8 | 0.2253 | 0.2160 (`beta1 = 0`) | +0.0094 | 0.81 |
+| 4 | 0.3279 | 0.3588 (`beta1 = 0`) | -0.0309 | 0.62 |
+
+Nothing is distinguishable from the default. Two consequences: the inherited
+constants cost us nothing on this setting and need no retuning, and the
+`beta1` effect found in Experiment 5A does not generalise beyond the plateau
+regime (see the scope note there).
+
+### Experiment 5B -- the Exp 5 "plateau" was a step-size artifact
+
+For each `d`, sweep `zeta` and take the smallest value at which the
+**no-momentum** baseline reaches `x*` on >= 80% of restarts at `n = 128`.
+Calibrating on the baseline, never on Adam, is what makes the downstream
+comparison fair. 16 restarts per cell; multipliers are on the Exp 5
+magnitude-matched `zeta`.
+
+| d | zeta_d* | multiplier | what the baseline does |
+|---|---|---|---|
+| 1 | **none found** | -- | converges to `x ~ +5.9` at every zeta; diverges above x8 |
+| 2 | 0.4926 | x0.5 | 100% reach `x*` |
+| 4 | 0.3884 | x0.5 | 100% reach `x*` |
+| **8** | **6.858** | **x4** | **100% reach `x*`** (0% at x0.5, x1, x2) |
+| 16 | none in grid | -- | 62% at x4, divergence by x8 |
+
+**This overturns the Experiment 5 conclusion.** At `d = 8`, four times the
+guidance strength makes plain gradient guidance reach the optimum on **100%** of
+restarts. So "Adam crosses a plateau that plain gradient guidance cannot" is
+**false**: plain guidance crosses it once `zeta` is large enough. What Exp 5
+actually compared was Adam against a baseline whose step size was about 4x too
+small -- and Adam's normalisation supplies roughly that missing factor.
+
+This is consistent with the `n = 2048` check rather than contradicting it: at a
+fixed, too-small `zeta`, more samples cannot help, because the deficiency is in
+the step size and not in the gradient estimate.
+
+**The gate fails at `d = 1`.** Chasing it turned up two real defects and one
+non-defect.
+
+*Defect 1 (fixed).* `dimy_benchmark.BASE_X[8]` read `-7.0` where the canonical
+file has `-8.0`, so `d = 1` was NOT the 2-D benchmark, contrary to the module's
+central claim. No test asserted that claim.
+`tests/test_dimy_benchmark_d1.py` now pins means, covariances, weights, `x*`,
+the target, and the population objective on a grid against
+`params/2D_cond_1D_gmm_params.pt`.
+
+*Defect 2 (worked around, not fixed).* Checkpoint filenames key on
+`seed` and `dim` but **not on the parameters**, so after the `BASE_X` fix the
+re-run silently reloaded a prior trained on the old distribution. The stale
+files are renamed `*.STALE_basex7.pt` rather than deleted. The cache key should
+include a hash of the parameters; changing it invalidates every checkpoint, so
+it is left as a decision rather than done here.
+
+*Not a defect.* The local minimum near `x ~ +6` is **genuine, and it is present
+in the paper's own canonical 2-D benchmark** (MMD^2 = 1.135 at `x = +6` against
+1.637 at `x = +2` and 1.839 at `x = +7`). Probing the gradient the runner
+actually sees at `d = 1` shows the objective is multimodal in `x`, with basins
+near `x ~ +1` and `x ~ +6` besides the global one at `x = -5`, and with
+`dL/dx < 0` at the `x_T = 0` start -- the guidance pushes *right*, away from the
+optimum, from the first step.
+
+So the gate failure is a **protocol** problem, not a benchmark defect: a single
+start at `x_T = 0` with a plain zeta-scaled gradient lands in a local minimum,
+and raising zeta diverges instead of escaping (0% reached, 75-100% diverged
+above x8). Both defects above were fixed or bypassed and the failure persisted
+unchanged, which is what identifies the cause as the protocol.
+
+`d = 16` is separately unresolved: its useful window lies between the x4 and x8
+multipliers and needs a finer grid.
+
 ### Experiment 5 -- what it does and does not establish
 
 **It does NOT answer the dim(Y) question it was built for.** At `d >= 8` the
@@ -185,12 +289,65 @@ the clearest sign the calibration is not comparable across `d`.
 population landscape: the MMD surface at `d = 8` reads 3.295 at `x = 0`, 3.252 at
 `x = -2`, and 0.085 at `x = -4`.
 
-**What it does establish** (and this is a real result, just a different one):
-Adam crosses a plateau that plain gradient guidance never crosses, and crosses it
-in the *correct* direction -- landing at -5.12, -5.15, -5.01, -4.98, -4.94 on
-roughly 60-75% of restarts. That is an optimisation result about the guidance
-rule, not a sample-complexity result about MMD. Experiment 5A isolates which part
-of Adam is responsible.
+**WHAT IT ESTABLISHES -- CORRECTED BY EXPERIMENT 5B.** The original reading was
+that Adam crosses a plateau plain gradient guidance *cannot*. That is wrong: the
+baseline crosses it on 100% of restarts at four times the guidance strength, so
+the barrier was the step size, not the rule. The surviving, weaker statement is
+that **Adam is far less sensitive to the choice of `zeta`** -- its normalisation
+rescales the update to a fixed magnitude, so it reaches `x*` at a `zeta` where
+the un-normalised baseline stalls. That is a robustness result, not evidence that
+momentum unlocks something otherwise unreachable.
+
+### Experiment 8 -- a noise-level trust region on the guidance step
+
+Found by the 2026-08 performance campaign (`experiments/model-optimization/`,
+Agent 4 screening of estimator/update rules, verified independently on a
+held-out block by Agent 6: `experiments/model-optimization/VERIFICATION.md`).
+The rule is a single engine switch, `TFGConfig.temporal.step_clip = "noise"`,
+`step_tau = 1`: after the temporal operator and `rho_t` scaling the step is
+rescaled so that `||Delta_t|| <= sqrt(1 - alphabar_t)` (line 9's `/sqrt(alpha_t)`
+unchanged; direction unchanged). It costs no conditional calls and no
+measurable wall time. Numbers below: **held-out block, offset 1000, 100 paired
+restarts**, no-LGD, no momentum, `rng=tape`, float32 (the experiments' dtype),
+engine path (`exp8_trust_region.py` / `engine_runner.py`). Diff = baseline - rule
+(+ = rule better), `*` = permutation p <= 0.05.
+
+| n | 2D baseline | 2D rule | diff | 5D baseline | 5D rule | diff | 10D baseline | 10D rule | diff |
+|---|---|---|---|---|---|---|---|---|---|
+| 4 | 0.597 | 0.196 | **+0.401*** | 0.534 | 0.508 | +0.026 | 0.667 | 0.615 | **+0.053*** |
+| 8 | 0.418 | 0.168 | **+0.250*** | 0.508 | 0.472 | **+0.036*** | 0.658 | 0.535 | **+0.123*** |
+| 16 | 0.282 | 0.192 | **+0.090*** | 0.449 | 0.441 | +0.008 | 0.564 | 0.489 | **+0.075*** |
+| 32 | 0.247 | 0.223 | **+0.024*** | 0.444 | 0.434 | +0.010 (p=.06) | 0.477 | 0.457 | +0.019 |
+
+Budget-matched (Pareto) statements, held-out:
+
+- **2D**: `trust_noise1` at `n = 8` (792 conditional draws, 0.168) beats the
+  plain baseline at `n = 96` (9504 draws, 0.259) and LGD/none at `n = 32`
+  (9504 draws, 0.225) and at `n = 8` (2376 draws, 0.201) -- a >= 3x and up to 12x
+  reduction in conditional cost at equal or better L2; success rate at `n = 8`
+  rises from ~40 % to ~80 %.
+- **10D**: `trust_noise1` at `n = 32` (3168 draws, 0.457) matches the baseline
+  at `n = 64` (6336 draws, 0.456), and at `n = 16` (1584 draws, 0.489) beats
+  LGD/none at `n = 8` (2376 draws, 0.518) -- a ~2x gain at `n <= 16`, null at
+  `n = 32`.
+- **5D**: null (all four diffs positive but only `n = 8` significant).
+
+**Limitations.** (i) In 5D the effect is within the seed-noise floor. (ii) The
+10D setting is **mis-calibrated at `zeta = 1`**: the unguided chain (`rho = 0`)
+scores 0.58, better than the guided no-LGD baseline at `n <= 8` (0.62-0.67) and
+than Adam at every `n`, and every rule that merely shrinks the 10D step wins
+there while the same rules are catastrophic in 2D. The raw gradient-norm median
+is 0.29-0.38 in 10D vs 0.04-0.09 in 2D with the same unit step multiplier, so
+the 10D gain partly measures "taming an over-sized step"; a fair dim(X) sweep
+needs the per-dimension `zeta_d` of Experiment 5B first. `trust_noise1` is
+invariant to that rescaling (the bound is in units of the noise level), which
+is why it is the one rule that wins in 10D without losing in 2D. (iii) The
+`success` metric (`|x - x*| < 0.5`) is 0 % for every arm in 5D/10D; it was
+defined for dim(X) = 1 and is not comparable across settings -- the L2 score is
+the metric. Related rules that did **not** transfer (held-out): absolute clips
+(`clip0.5`, `relclip1`), `relclip2` (best 2D rule, -0.047 at 10D n=4),
+`sqrt_floor` / `sqrtfloor_clip0.5` (pass 2D+5D, regress at 10D n=32); full
+verdicts in `experiments/model-optimization/VERIFICATION.md`.
 
 ### Discrepancy with earlier runs -- read before citing
 
@@ -224,11 +381,30 @@ the canonical file's target is realisable (`2.3e-08`, `x_opt = -5.0000328`).
   this.
 - A clean accumulation-only arm for Experiment 5A (raw momentum, no division at
   all), to close out the normalisation-vs-accumulation decomposition.
+- **Give Experiment 5B an escape mechanism before re-running the dim(Y) sweep.**
+  The `d = 1` gate fails on a genuine local minimum, not a benchmark defect, and
+  larger `zeta` diverges rather than escapes. The two candidates are the
+  noise-level trust region of Experiment 8, which is exactly a way to raise the
+  step without divergence, and multi-start / annealed `zeta`. The gate should
+  then measure basin-of-attraction rate rather than demanding 80% at one start.
+- **Key checkpoints on a parameter hash.** See Defect 2 under Experiment 5B: a
+  silently stale prior survived a change to the benchmark distribution.
+- `d = 16` needs a finer `zeta` grid between the x4 and x8 multipliers.
+- **Re-examine every Adam result against a calibrated baseline.** Exp 5B shows a
+  4x change in `zeta` moves the baseline from 0% to 100% success at `d = 8`. No
+  reported comparison should treat `zeta` as fixed background until the same
+  check has been done on the 2D setting used by Experiments 2, 3, 6 and 7.
 
 ## Engine options retained but not evaluated
 
 `tfg` also implements an adaptive `lambda_t` temporal rule, a target-resolution
 curriculum (`target_hierarchy.py`), a temporal gradient cache, and
 improvement-adaptive recurrence. They are configuration options with tests, but
-**no experiment here reports them** and none has a supported result. See
-`src/tfg/README.md`.
+**no experiment here reports them** and none has a supported result. The
+2026-08 campaign added (all opt-in, `src/tfg/README.md`): gradient-norm
+clipping variants (`temporal.grad_norm`), the step trust region
+(`temporal.step_clip`, Experiment 8), adaptive `n_t`, stale-gradient reuse,
+early-stopped recurrence, CRN/antithetic sampling, bandwidth policies and
+loss transforms (`tfg/distributional.py`), and the exact cached-target MMD
+(`tfg/fast_mmd.py`); only the trust region was promoted
+(`experiments/model-optimization/VERIFICATION.md`).

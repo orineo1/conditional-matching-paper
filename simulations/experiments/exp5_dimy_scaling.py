@@ -117,12 +117,36 @@ def probe_gradient_scale(params, model_uncond, S_G, bw, n=64, probes=12, seed=0)
 
 
 def run(params, model_uncond, S_G, bw, n, temporal, restart, adam_rho=0.4,
-        zeta=1.0, beta1=0.9, beta2=0.995, delta=1e-8):
+        zeta=1.0, beta1=0.9, beta2=0.995, delta=1e-8,
+        step_clip="none", step_tau=1.0, x_init=0.0):
+    """``step_clip`` is the noise-level trust region of Experiment 8, applied
+    here to the un-normalised update so that ``zeta`` can be raised far enough
+    to leave a local minimum without the step diverging:
+
+        step_clip="noise":  ||upd|| <= step_tau * sqrt(1 - alphabar_t)
+
+    Semantics match ``tfg.engine.GeneralizedTFG._step_clip`` -- magnitude only,
+    direction untouched. ``step_clip="none"`` reproduces the original loop
+    exactly, so every earlier Experiment 5/5A/5B result is unaffected.
+
+    ``x_init`` sets the start of the reverse trajectory. ``0.0`` is the original
+    behaviour and is kept as the default so earlier results reproduce, but it is
+    WRONG as a protocol: reverse diffusion starts from x_T ~ N(0, I), and fixing
+    x_T = 0 makes every restart share one basin, so the "restart" axis carries no
+    exploration at all. Pass ``x_init="randn"`` to draw x_T per restart, which is
+    what makes a success rate mean basin-of-attraction rate.
+    """
     T = model_uncond.diffusion_steps
     mmd = MMDLoss(kernel=RBF(bandwidth=bw, device="cpu"), device="cpu")
     adam = (AdamGuidance(beta1=beta1, beta2=beta2, delta=delta, rho=adam_rho,
                          inv_sqrt_alpha=False) if temporal == "adam" else None)
-    x = torch.zeros(1, 1, dtype=torch.float32)
+    if isinstance(x_init, str):
+        if x_init != "randn":
+            raise ValueError(f"unknown x_init {x_init!r}")
+        g0 = torch.Generator().manual_seed(0x5EED0000 ^ int(restart))
+        x = torch.randn(1, 1, generator=g0, dtype=torch.float32)
+    else:
+        x = torch.full((1, 1), float(x_init), dtype=torch.float32)
     calls, diverged = 0, False
     t0 = time.perf_counter()
     for t in range(T - 1, 0, -1):
@@ -136,6 +160,16 @@ def run(params, model_uncond, S_G, bw, n, temporal, restart, adam_rho=0.4,
         g, = torch.autograd.grad(loss, x, allow_unused=True)
         g = torch.zeros_like(x) if g is None else g
         upd = zeta * (g.detach() if adam is None else adam.step(g))
+        if step_clip != "none":
+            with torch.no_grad():
+                ab_t = model_uncond.baralphas[t].to(upd.device)
+                if step_clip == "noise":
+                    ref = step_tau * (1 - ab_t).sqrt()
+                elif step_clip == "ddim":
+                    ref = step_tau * (x_prev.detach() - x.detach()).norm()
+                else:
+                    raise ValueError(f"unknown step_clip {step_clip!r}")
+                upd = upd * torch.clamp(ref / (upd.norm() + 1e-12), max=1.0)
         with torch.no_grad():
             x = x_prev.detach() - upd
         if not torch.isfinite(x).all() or float(x.abs().max()) > 50.0:

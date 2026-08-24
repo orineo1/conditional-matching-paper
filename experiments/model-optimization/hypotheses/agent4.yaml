@@ -1,0 +1,146 @@
+# Agent 4 -- guidance estimator and update rules. Pre-registered 2026-08-23,
+# before the Stage-1 screening was run (engine_runner / screen.py).
+# Primary metric everywhere: failure-penalised mean exact GMM L2
+# (_common.penalised_score, PENALTY=2.0), paired over restart indices 0..39
+# (offset 0; offsets >= 1000 untouched for the verifier), with bootstrap 95% CI
+# and paired permutation p (_common.paired_stats). Secondary: success rate
+# (|x-x*|<0.5), conditional generator draws (cm_samples), wall time, peak RSS.
+# "Survive" = paired mean diff > 0 with p <= 0.05 at at least one n in 2D AND no
+# n where it is significantly worse; all at matched conditional calls.
+agent: 4
+area: guidance estimator / update rules
+baseline:
+  engine: simulations/src/tfg/engine.py (GeneralizedTFG) with the legacy switches
+          init=zeros, guidance_scaling=raw, smoothing=lgd_beta(LGD only),
+          n_schedule.eta_per_perturbation=True, repository_schedule float32;
+          proven bit-identical to experiments/_guided.py::run
+          (tests/test_engine_matches_guided.py).
+  arms: no_lgd/none, no_lgd/adam(rho=0.4,b1=.9,b2=.995), lgd/none ; n in {4,8,32} ; 2D then 5D/10D
+  rng: engine NoiseTape (rng=tape) for every paired comparison; rng=legacy rows reproduce README numbers.
+candidates:
+- id: A4-1a
+  name: normalisation-only temporal rule (Adam beta1=0)
+  switch: TFGConfig.temporal.mode=adam, beta1=0, adam_rho=0.4
+  mechanism: per-coordinate division by sqrt(v_hat) turns a tiny persistent gradient into a ~rho step; no accumulation.
+  expected_benefit: Exp 5A crosses plateaus at dim(Y)=8; in 2D Exp 7 found beta1 irrelevant -> expect ~= Adam at n=4,8 (better than none), ~= none or worse at n=32.
+  possible_bias: none (update rule, not an estimator); but it changes the effective step size so the comparison is not at equal step size.
+  affected_tasks: synthetic 2D/5D/10D no_lgd arms.
+  primary_metric: penalised L2, paired vs no_lgd/none.
+  compute_budget: same conditional calls as baseline (n*T).
+  rejection: not better than none at n=4 (p>0.05) in 2D.
+- id: A4-1b
+  name: gradient-norm clipping
+  switch: temporal.grad_norm=clip, grad_clip in {0.5, 0.1} (baseline grad-norm median ~0.06-0.1, p90 ~0.5-0.8, max ~10-50)
+  mechanism: bounds the rare huge MMD gradients (heavy tail from the CM sampler) that cause divergence / overshoot.
+  expected_benefit: fewer diverged restarts at n=4; small effect at n=32.
+  possible_bias: none for the estimator; truncates the step.
+  rejection: no improvement at n in {4,8} (p>0.05) AND no divergence reduction.
+- id: A4-1c
+  name: unit-norm gradient (direction only)
+  switch: temporal.grad_norm=unit, rho_scalar in {0.4, 0.1}
+  mechanism: sign-like update in norm; like Adam's normalisation but isotropic.
+  expected_benefit: similar to norm-only at small n; worse near the optimum (cannot shrink the step).
+  rejection: worse than norm-only at every n.
+- id: A4-2
+  name: adaptive n_t from gradient agreement / improvement
+  switch: n_schedule.type=adaptive, policy in {agreement (thr 0.5, 0.8), improvement}, n_min=max(2,n/4), n_max=4n, n_start=n, budget_total=n*T; CMSampler(cache=True) so the half-batch gradients are free (exact reuse of identical (x, key) draws)
+  mechanism: agreement = cos(grad on eta[:n/2], grad on eta[n/2:]); low agreement -> gradient is noise dominated -> spend more samples at the next step; budget keeps total calls EXACTLY equal to constant-n.
+  expected_benefit: reallocating samples from well-determined steps (early, x_t far from the target) to late noisy ones; modest (< 0.05) improvement at n=8.
+  possible_bias: none in the gradient (the full-batch gradient is used); the policy is a function of the same draws (no extra draws).
+  rejection: no n with p<=0.05 improvement.
+- id: A4-3
+  name: adaptive recurrence v1 (early-stopped N_recur)
+  switch: adaptive_recurrence.enabled, implementation=v1, max_recurrences=2, metric=next_state_tweedie, threshold=1e-2
+  mechanism: a second recurrence (re-noise + redo) is spent only where x_{t-1} is still moving.
+  expected_benefit: recurrence is known to help TFG on hard targets; here it costs up to 2x calls; compare against baseline at 2n (equal calls) -> expect NOT to beat it.
+  possible_bias: none.
+  compute_budget: <= 2 n T; compare with baseline n (same n per eval) and baseline 2n (same calls).
+  rejection: not better than baseline at the same calls.
+- id: A4-4a
+  name: common random numbers across steps (frozen conditional noise)
+  switch: n_schedule.eta_keying=frozen  (APPROXIMATE)
+  mechanism: same CM noise at every step -> the MMD surface seen by the optimiser is a single fixed sample surface; removes step-to-step gradient noise but is a biased gradient (optimises a fixed-sample objective).
+  expected_benefit: smoother trajectories, fewer divergences; risk of converging to the fixed-sample optimum (biased).
+  possible_bias: YES -- measured as the gap between the frozen-sample optimum and x*; reported via the L2 metric which uses the exact population L2.
+  rejection: worse or not better (p>0.05) at all n.
+- id: A4-4b
+  name: antithetic conditional noise pairs
+  switch: CMSampler(antithetic=True)
+  mechanism: second half of each batch uses the negated noise; exact in distribution (symmetric Gaussian), reduces variance of the MMD statistic through negative correlation of paired samples; but halves the number of independent draws through the (nonlinear) CM.
+  expected_benefit: small; could be negative if the CM map destroys the antithetic correlation.
+  possible_bias: none (exact).
+  rejection: not better at any n.
+- id: A4-5
+  name: robust bandwidth policies and stable loss transforms
+  switch: DistributionalLoss(bandwidth in {fixed (benchmark default), pooled (repository default), pooled_floor, target}, transform in {mmd2, sqrt_abs_eps (SD code), sqrt_floor})
+  mechanism: pooled bandwidth depends on the batch (gradient flows through it; collapses with tiny batches+targets); sqrt(|m|+eps) has gradient 1/(2 sqrt eps) near 0.
+  expected_benefit: on the synthetic benchmark the target is large (250) so pooled ~= fixed; sqrt transforms change the step-size profile (larger steps near the optimum) -> expect sqrt_abs_eps to be worse (overshoot / divergence), sqrt_floor in between.
+  possible_bias: none; these are different objectives, reported as such.
+  rejection: n/a (characterisation); a transform survives if better at some n with p<=0.05.
+- id: A4-6
+  name: stale-gradient reuse (temporal cache, refresh every k)
+  switch: temporal_cache.enabled, implementation=stale, refresh_every in {2,3}  (APPROXIMATE)
+  mechanism: predictor evaluated every k-th step only; the cached gradient is re-applied in between. Saves (k-1)/k of the conditional calls.
+  expected_benefit: at matched calls (stale2 at n vs baseline at n/2; stale2 at 2n vs baseline at n) the question is whether a bigger batch every other step beats a smaller batch every step. Expect roughly neutral, slightly worse late in the trajectory where x_t moves fast.
+  possible_bias: YES -- a stale gradient is evaluated at a previous x_t. Measured by the L2 metric; also reported: stale_steps.
+  rejection: worse than the call-matched baseline (p<=0.05) at all n.
+round1_verdicts:   # cluster screening, 40 paired restarts (0..39), rng=tape, see estimator/screening_tables.md
+  A4-1a norm_only: MIXED -> rejected as a transferable rule. 2D supported (n=4 +0.213 p=0.008; n=8 +0.126 p=0.006; n=32 +0.026 p=0.30); 5D null; 10D significantly WORSE (n=4 -0.121 p=0.004, n=8 -0.137 p=0.002, n=32 -0.181 p<0.001).
+  A4-1b clip (absolute): SUPPORTED but threshold is scale-dependent. clip0.5: 2D n=4 +0.364 (p<0.001, score 0.221 vs 0.585), n=8 +0.193 (p<0.001, 0.187 vs 0.381; beats LGD/none at n=32 (0.229) with 12x fewer calls), n=32 null; 10D n=32 -0.067 (p=0.04). clip0.1: 10D n=4 +0.092 (p=0.011), n=8 +0.122 (p=0.001), n=32 null; 5D n=8 +0.062 (p=0.08); 2D n=8 -0.131 (p=0.04), n=32 -0.356 (p<0.001). -> round 2 scale-free rules.
+  A4-1c unit0.4: SUPPORTED in 2D (n=4 +0.311 p<0.001, n=8 +0.120 p=0.047), null/negative elsewhere (10D n=32 -0.094 p=0.005). Rejected as transferable.
+  A4-2 adaptive n (agreement 0.5/0.8, improvement): REJECTED. Null or negative everywhere at equal calls (2D n=8 adapt_agree0.8 -0.273 p=0.002; 10D n=32 -0.144 p<0.001).
+  A4-3 recur2 early-stopped recurrence: REJECTED (null at 2x calls; e.g. 2D n=4 +0.05 p=0.58 for 792 vs 396 calls).
+  A4-4a crn: REJECTED (null; 2D/adam n=8 -0.133 p=0.023; 10D n=32 -0.065 p=0.02).
+  A4-4b antithetic: REJECTED (null; 2D/adam n=32 -0.043 p=0.005; 10D/adam n=32 +0.069 p=0.052 the only positive).
+  A4-5 sqrt_floor: SUPPORTED (small, never significantly negative). 2D n=4 +0.268 (p=0.002), n=32 +0.051 (p=0.008); 5D n=32 +0.019 (p<0.001, 36/40 wins); 10D null. sqrt_abs_eps / bw_pooled / bw_pooled_floor: null.
+  A4-6 stale2/3: REJECTED (worse at 1/k calls everywhere it is significant: 2D n=8 -0.227 p=0.001, 5D n=4 -0.338 p<0.001, 10D n=32 -0.195 p<0.001).
+  seed-noise floor: baseline(tape) vs baseline(legacy rng) differ by up to 0.08 at 40 restarts; treat |diff| < 0.08 without p<=0.05 as noise.
+round2_candidates:   # implemented as opt-in engine switches, tests in tests/test_agent4_candidates.py
+- id: A4-7a
+  name: relative clip (running median / EMA of past raw gradient norms)
+  switch: temporal.grad_norm=clip_rel, clip_ref in {median, ema(0.9)}, grad_clip=c in {0.5,1,2}
+  mechanism: threshold = c x typical past norm; causal (first step unclipped); invariant to the gradient scale so ONE constant can transfer across 2D/5D/10D (where raw-norm medians are 0.04-0.1, 0.09-0.25, 0.29-0.38).
+  expected: c=1 (median) reproduces clip0.5's 2D gain and clip0.1's 10D gain; c=2 weaker; c=0.5 over-clips at n=32.
+  rejection: no c with p<=0.05 gains in at least two of three dims, or any dim significantly worse at n=32.
+- id: A4-7b
+  name: quantile clip
+  switch: temporal.grad_norm=clip_quantile, grad_clip=q in {0.5,0.75}
+  mechanism: clip to the q-quantile of past norms; q=0.5 == relclip1(median).
+  rejection: as 7a.
+- id: A4-7c
+  name: trust region on the applied step
+  switch: temporal.step_clip in {noise: ||Delta|| <= tau sqrt(1-ab_t), ddim: ||Delta|| <= tau ||x_ddim - x_t||}, step_tau in {0.1,0.3,1}
+  mechanism: bounds the step by the noise level / the DDIM move, both of which shrink toward t=1 (annealed trust region).
+  rejection: as 7a.
+- id: A4-7d
+  name: sqrt_floor + clip
+  switch: DistributionalLoss(transform=sqrt_floor) + grad_norm clip c in {0.5,0.1} or clip_rel 1
+  mechanism: loss-scale normalisation plus a tail cap.
+  rejection: not better than the better of its two parts.
+- id: A4-8
+  name: combinations (clip + Adam, clip + LGD)
+  switch: arms no_lgd/adam and lgd/none with clip0.5 / clip0.1 / relclip1
+  question: does a clipped no-LGD at n=8 match LGD/none at n=8 and n=32 (3x / 12x calls)?
+- id: A4-9
+  name: budget-matched Pareto cells
+  cells: baseline no_lgd/none at n in {2,4,8,16,24,32,64,96} (round 1) vs best rules at n in {4,8,16,32}; wall_s and cm_samples in every row.
+round2_verdicts:   # cluster, 40 paired restarts, diff = base - cand (+ better), bold = p<=0.05; see estimator/round2_matrix.md
+  transfer_criterion: never significantly worse in any (dim, n) cell AND significant wins in >= 2 dims
+  A4-7a relclip2 (2 x running median): SUPPORTED, transfers. 2D +0.414/+0.237/+0.113/+0.040 at n=4/8/16/32 (all p<=0.05; 0.144 at n=8 vs 0.381), 5D n=16/32 +0.010/+0.009 (p<=0.05), 10D null (-0.049..+0.008).
+  A4-7a relclip_ema2: SUPPORTED, transfers. 2D +0.356/+0.199/+0.108/+0.051, 5D n=32 +0.018, 10D null.
+  A4-7a relclip1 / relclip_ema1 / relclip0.5 / relclip_ema0.5: REJECTED as transferable (2D wins, but 10D n=32 -0.07 (relclip1), 2D n=32 -0.23/-0.25 (0.5 variants)).
+  A4-7b qclip0.5 (== relclip1): as relclip1. qclip0.75: 2D wins (+0.39/+0.18/+0.08), never significant elsewhere; no 10D loss but no transfer (single-dim win).
+  A4-7c trust_noise1: SUPPORTED, transfers, best overall. 2D +0.407/+0.200/+0.094/+0.021, 5D +0.028/+0.034/+0.040*/+0.006, 10D -0.009/+0.094*/+0.030/+0.038; never negative. trust_noise0.3: wins in all dims at n<=8 (5D n=4 +0.094, 10D n=8 +0.105) but 2D n=32 -0.037 (n.s.). trust_noise0.1: 10D/5D wins, 2D catastrophic (-0.38 at n=32).
+  A4-7c trust_ddim: REJECTED. Wins everywhere in 10D (+0.08..+0.19; tau=1 also in 5D +0.09..+0.11) but catastrophic in 2D (-0.2..-0.46); tau=0.1 gives the UNGUIDED score in 2D/5D (0.595/0.91 == rho=0 0.597/0.912), i.e. guidance switched off.
+  A4-7d sqrt_floor: SUPPORTED (small, never negative): 2D n=4 +0.268, n=32 +0.051; 5D n=16/32 +0.043/+0.019; 10D null. sqrtfloor_clip0.5: 2D/5D wins but 10D n=32 -0.074 -> no transfer; sqrtfloor_clip0.1 as clip0.1; sqrtfloor_relclip1 worse than its parts.
+  A4-8 clip+Adam: REJECTED. Never significant positive (2D +0.03..+0.10 n.s.), 10D n=16/32 -0.075/-0.083 (clip0.5), -0.106/-0.122 (clip0.1). Adam itself is worse than plain guidance in 5D/10D; plain+relclip2/trust_noise1 beats Adam in every dim (2D n=8 0.144/0.181 vs 0.303).
+  A4-8 clip+LGD: REJECTED (adds little; 5D n=32 +0.017/+0.018 for clip0.5/relclip1 the only significant gains; 10D n=32 -0.154). Clipped no-LGD n=8 beats LGD n=8 (3x calls) AND LGD n=32 (12x) in 2D (relclip2 +0.112 / +0.085, p<=0.001); matches LGD n=8 in 5D/10D (trust_noise1 -0.010/+0.001, n.s.) but not LGD n=32 there.
+  A4-9 Pareto: rules cost no wall time and no calls; 2D relclip2 at n=4 (396 calls, 0.171) beats baseline at n=96 (9504 calls, 0.251); 5D trust_noise1 n=8 ~ baseline n=32; 10D trust_noise1 n=8 ~ baseline n=24, clip0.1 n=4 ~ baseline n=24.
+  10D regime: 0% success at every n (also 5D) is the dim(x)=1 threshold |x-x*|<0.5 applied to dim 9/4; the L2 score is the metric. 10D is MIS-CALIBRATED (zeta=1): the unguided chain (0.581) beats guided no-LGD at n=4/8 (0.62) and Adam at all n; every step-shrinking rule wins there and is catastrophic in 2D; raw grad-norm medians are 0.29-0.38 vs 0.04-0.09 in 2D. Needs the exp5b zeta_d calibration before a dim sweep; scale-free rules are invariant to it.
+  survivors: trust_noise1, relclip2, relclip_ema2, sqrt_floor (small).
+interaction_hypotheses_for_combination_runs:
+- trust_noise1 + relclip2 (tail cap on the gradient AND annealed step bound) -- expected >= each alone in 5D/10D at n<=8.
+- trust_noise1 with a calibrated zeta_d (exp5b) -- the fair dim sweep.
+- sqrt_floor + trust_noise1 -- for the SD loss (already sqrt) the noise-level trust region needs no scale constant.
+- trust_noise1 + LGD at n=4 -- does the annealed bound let LGD work at n=4.
+- (superseded by round 1/2) norm_only + clip, adapt_agree + antithetic, stale2 + adam: parents rejected.

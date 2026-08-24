@@ -1,0 +1,181 @@
+# Agent 5 (systems / autograd efficiency) -- one entry per optimisation.
+# exactness: EXACT = bit-identical | REORDER = same arithmetic, float32 reduction order
+# differs (per-step agreement ~1e-6, end-to-end trajectory may diverge because the
+# guided loop is chaotic at float32 resolution, see systems/AUDIT.md 1.0) | NUMERICS.
+agent: agent5_systems
+entries:
+
+- name: sys_batched_restarts
+  mechanism: >
+    Run the B restarts of one (setting, arm, n) cell as one batch: x is (B, d); the
+    unconditional denoiser, the CM sampler (B*M*n rows), the per-set MMDs and the
+    element-wise Adam moments are all row-separable; per-(restart, t, j) conditional
+    noise is pre-drawn from the same key_seed seeds with a torch.Generator; diverged
+    rows are masked out. Implemented in systems/runners.py::run_batched_restarts.
+  expected_benefit: >
+    CPU throughput 5 -> 35-90 restarts/s (7-25x) at n=8, saturating ~25-30 r/s at n=32
+    on 4 threads (systems/BENCH.md). Same conditional-call count; no memory change.
+  possible_bias: >
+    None in expectation: rows never interact. Float32 reduction order changes above
+    ~32 rows (BLAS kernel choice), so individual restarts can land in a different
+    mode than the sequential run (end-to-end |dx| up to O(1) on a few restarts) even
+    though per-step gradients agree to <= 2e-4 abs. Divergence masking must freeze
+    rows exactly when the sequential loop would break.
+  affected_tasks: [synthetic_2D, synthetic_5D, synthetic_10D, MNIST(seeds), SD(variations/seeds)]
+  primary_metric: restarts_per_s at equal cond_samples; L2 mean/median/success_rate over restarts
+  exactness: REORDER
+  rejection_criterion: >
+    teacher-forced per-step gradient max-abs diff > 1e-3, or paired L2 distribution
+    over >= 20 restarts differs from sequential at perm_p < 0.05 in either direction,
+    or per-restart cost does not fall by >= 3x at B >= 8.
+
+- name: sys_mmd_blocks_cached_yy
+  mechanism: >
+    Replace LossFunctions.MMDLoss's (n+m)^2 stacked kernel by XX (n x n) and XY (n x m)
+    blocks with the target-target block YY computed once per run (it is a constant,
+    carries no gradient, and is 94% of the kernel entries at n=8); optionally batched
+    over the M perturbation sets with one cdist call (systems/runners.py::BatchedMMD).
+  expected_benefit: MMD forward 460 us -> 92 us at n=8; whole-loop 1.5x (no_lgd) to 4.5x (lgd) per restart.
+  possible_bias: None; kernel entries are bit-identical, only .mean() summation order differs (per-step grad diff <= 1.3e-6).
+  affected_tasks: [synthetic_all, MNIST, SD]
+  primary_metric: wall_s per restart; per-step gradient max-abs diff
+  exactness: REORDER
+  rejection_criterion: per-step gradient max-abs diff > 1e-5 (float32) or L2 distribution shift at perm_p < 0.05.
+
+- name: sys_batched_lgd_perturbations
+  mechanism: >
+    Evaluate the M=3 LGD perturbations as one CM call on 3n rows; the per-perturbation
+    RNG (manual_seed(key_seed('cond', r, t, j)) -> randn_like(x0), randn(n,d_y), 5x
+    randn_like) is reproduced by pre-drawing with a torch.Generator and feeding a
+    sampler that takes the noise (systems/runners.py::cm_sample_with_noise). M
+    separate MMDs afterwards, logsumexp unchanged.
+  expected_benefit: 1.4x on LGD cells (0.74 -> 0.54 s); no memory change (the 3 graphs were already resident).
+  possible_bias: None; bit-identical at n=8 (x_final diff 0.0 on all cells). Above ~32 rows per batch BLAS rounding may differ (REORDER).
+  affected_tasks: [synthetic_lgd, tfg.engine n_mc>1, MNIST num_x_t perturbations, SD variations]
+  primary_metric: wall_s per restart; torch.equal(x_final)
+  exactness: EXACT (n*M <= ~24 rows), REORDER above
+  rejection_criterion: any per-step gradient diff > 1e-6 at n=8, or no wall-time gain.
+
+- name: sys_generator_seeding
+  mechanism: >
+    Use torch.Generator(device='cpu').manual_seed(seed) + randn(..., generator=g) instead
+    of global torch.manual_seed per perturbation (which also reseeds CUDA/MPS/XPU/MTIA
+    generators; 99 us per call).
+  expected_benefit: ~0.1 ms x M per step (3-5% of a no-LGD step); prerequisite for batching.
+  possible_bias: None; the CPU generator stream is bit-identical (verified).
+  affected_tasks: [synthetic_all]
+  primary_metric: torch.equal(x_final)
+  exactness: EXACT
+  rejection_criterion: any difference in x_final.
+
+- name: sys_requires_grad_false
+  mechanism: p.requires_grad_(False) on the frozen CM and denoiser after load (_models.py:82,115); graph no longer saves Linear inputs for never-computed weight grads.
+  expected_benefit: ~0% wall on the synthetic MLPs (within noise); memory and a few % on MNIST/SD where saved activations are large.
+  possible_bias: None; autograd.grad(loss, x) already pruned the weight branches. x_final bit-identical.
+  affected_tasks: [synthetic_all, MNIST, SD(text encoders are NOT frozen, models.py:146-152)]
+  primary_metric: peak memory; torch.equal(x_final)
+  exactness: EXACT
+  rejection_criterion: any difference in x_final.
+
+- name: sys_lean_ddim_step
+  mechanism: Drop the per-call self.to(device), dtype lookup and x.to() from Diffusion.sample_ddim_step (Diffusion.py:335-351); cache t_batch and the TimeEmbedding sinusoid table; torch.full instead of torch.tensor([t]*B) in ConsistencyModeliCT.forward:196.
+  expected_benefit: 0.27 -> 0.18 ms per DDIM step (2-5% of a step); 0.2 ms per CM forward at B=3072 rows.
+  possible_bias: None.
+  affected_tasks: [synthetic_all]
+  primary_metric: wall_s; torch.equal(x_final)
+  exactness: EXACT
+  rejection_criterion: any difference in x_final.
+
+- name: sys_microbatched_mmd_gradient
+  mechanism: >
+    For fixed bandwidth, dMMD^2/dX decomposes over row chunks: grad_X = sum_c grad_{X_c}
+    [(2/n^2) sum_{i in c, j} k(x_i, sg(x_j)) - (2/(nm)) sum_{i in c, l} k(x_i, y_l)]; then one
+    VJP through the sampler with grad_outputs=g_X (systems/microbatch_mmd.py). Peak
+    kernel memory chunk x (n+m) instead of (n+m)^2.
+  expected_benefit: Enables n >> 1e3 or high-d embeddings (SD CLIP 768-d) without the quadratic slab; no speed gain at the current n <= 256.
+  possible_bias: None (exact identity; verified 3.4e-16 rel in float64 vs exact kernel, 3e-9 vs torch.cdist's mm path). Not valid when the bandwidth depends on X (RBF(bandwidth=None)).
+  affected_tasks: [synthetic_large_n, SD, MNIST]
+  primary_metric: max |g_chunked - g_full| / |g_full|
+  exactness: EXACT
+  rejection_criterion: relative discrepancy > 1e-12 in float64.
+
+- name: sys_torch_compile
+  mechanism: torch.compile(dynamic=True) on the two MLP forwards.
+  expected_benefit: none measured (0.84x steady state, +16 s compile); kernels are too small, autograd dominates.
+  possible_bias: inductor fuses reductions (REORDER).
+  affected_tasks: [synthetic_all]
+  primary_metric: wall_s
+  exactness: REORDER
+  rejection_criterion: REJECTED by measurement (no gain at this problem size).
+
+- name: sys_mps_device
+  mechanism: Run batched restarts on the Mac GPU (float32 only).
+  expected_benefit: none at this size (5x slower at B=1, 24 r/s at B=32 vs 70-90 on CPU); launch/sync-bound.
+  possible_bias: MPS float32 kernels round differently; no float64.
+  affected_tasks: [synthetic_all]
+  primary_metric: restarts_per_s
+  exactness: NUMERICS (device)
+  rejection_criterion: REJECTED by measurement.
+
+- name: sys_float64_throughout
+  mechanism: models.double() + default dtype float64 (what the campaign README calls "CPU float64").
+  expected_benefit: 0.5-0.9x speed; removes float32 chaos sensitivity as a *reference* for equivalence testing, not a production choice.
+  possible_bias: Changes every trajectory (|dx| 0.04-1.1 vs float32, mode flips) -- shows the float32 loop is not numerically converged per trajectory, only in distribution.
+  affected_tasks: [synthetic_all]
+  primary_metric: L2 distribution over restarts
+  exactness: NUMERICS
+  rejection_criterion: n/a (diagnostic).
+
+- name: sys_mnist_cache_cond_embed
+  mechanism: MNIST/src/cond_model.py:176,230-233 -- the conditioning CNN encoder is re-run on the identical cond at each of the 5 ladder steps; compute cond_emb once per sample() call and pass it in.
+  expected_benefit: 5 -> 1 encoder forwards+backwards per sample() call (~80% of the encoder cost, the dominant conv path at batch 1).
+  possible_bias: None.
+  affected_tasks: [MNIST]
+  primary_metric: wall_s per step; max|grad diff| per step
+  exactness: EXACT
+  rejection_criterion: per-step grad diff > 1e-6 same seed.
+
+- name: sys_mnist_batch_perturbations_and_seeds
+  mechanism: MNIST/run_mlgdf.py:304-393 -- num_x_t perturbations (and the 15 seeds) evaluated sequentially at batch 1 with retain_graph=True; batch them with per-sample generators; drop retain_graph; requires_grad_(False) on both models (run_mlgdf.py:685-690); no_grad around the final eval (373-388).
+  expected_benefit: launch-bound workload -> expected several-x; removes one retained CM graph per seed.
+  possible_bias: None with per-sample generators (EXACT) / REORDER for batched BLAS.
+  affected_tasks: [MNIST]
+  primary_metric: wall_s per seed; per-step grad allclose
+  exactness: EXACT/REORDER
+  rejection_criterion: per-step grad diff > 1e-5 same seed.
+
+- name: sys_sd_trim_visualize_and_eval
+  mechanism: SD run_mlgd_f.py:765 visualize_step every step (5 architect VAE decodes + 5 sprinter generations + 2 full-VAE dtype casts + savefig) and metrics.py:201-227 eval with CLIP moved GPU<->CPU; gate on an interval, reuse pixel_x0_norm, batch the 5 gens, keep CLIP resident, drop gc.collect()/empty_cache() (run_mlgd_f.py:780, generation.py:287).
+  expected_benefit: 25-35% wall-clock at N=6 (no effect on gradients).
+  possible_bias: None for the guidance path.
+  affected_tasks: [SD]
+  primary_metric: wall_s per outer step
+  exactness: EXACT
+  rejection_criterion: any change in per-step grad (should be 0).
+
+- name: sys_sd_single_batch_when_gs0
+  mechanism: generation.py:84-99 predict_noise_cfg always runs the architect UNet on cat([latents]*2) inside the graph although guidance_scale defaults to 0.0 (run_mlgd_f.py:79); run the uncond half only when gs==0 (or cond only when gs==1).
+  expected_benefit: halves architect UNet forward+checkpoint recompute+backward.
+  possible_bias: None (np_u + 0*(np_t-np_u) == np_u up to fp16 batch-kernel nondeterminism).
+  affected_tasks: [SD]
+  primary_metric: per-step wall; allclose(noise_pred)
+  exactness: EXACT
+  rejection_criterion: allclose(rtol 1e-3) fails.
+
+- name: sys_sd_unnest_checkpointing_and_batch_variations
+  mechanism: models.py:143-145 block-level gradient checkpointing inside the per-variation checkpoint (generation.py:281-283) makes each sprinter UNet/ControlNet block run 3x; variations run sequentially at variation_batch_size=1 (run_mlgd_f.py:697); sprinter prompt embeds re-encoded per call (generation.py:264-272) with unfrozen text encoders (models.py:146-152). Keep one checkpoint level, batch N variations with per-sample torch.Generator seeds, cache prompt embeds.
+  expected_benefit: 15-25% (checkpoint) + 1.5-2x on the sprinter+CLIP path (batching) + 2 text-encoder forwards x2 recompute x (N+15) per step removed.
+  possible_bias: None with per-sample generators; memory of one batched variation's recompute must fit (L4 22GB check).
+  affected_tasks: [SD]
+  primary_metric: per-step wall; per-step grad allclose(rtol 1e-3, fp16); delta-MMD over >= 3 seeds
+  exactness: EXACT (nondeterministic fp16 kernels aside)
+  rejection_criterion: grad cosine similarity < 0.999 vs sequential, or OOM on the target GPU.
+
+- name: sys_sd_mixed_precision_vae_clip
+  mechanism: fp16-fix VAE for the sprinter decode and bf16 autocast for the CLIP vision tower (the repo's CLIP-autocast bug was fp16; the guard at generation.py:277-279 is currently a no-op because run_dps_step_clip never enables autocast).
+  expected_benefit: ~2x on VAE decode + CLIP, large memory drop.
+  possible_bias: Changes gradients (NUMERICS); must be validated on delta-MMD and grad cosine.
+  affected_tasks: [SD]
+  primary_metric: delta-MMD over >= 3 seeds; per-step grad cosine vs fp32
+  exactness: NUMERICS
+  rejection_criterion: grad cosine < 0.99 or delta-MMD worse than fp32 beyond seed noise.

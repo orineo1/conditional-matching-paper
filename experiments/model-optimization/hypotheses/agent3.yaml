@@ -1,0 +1,97 @@
+# Agent 3 -- approximate / linear-time distributional objectives
+# Evidence: experiments/model-optimization/approx_loss/{THEORY.md,DIAGNOSTICS.md,REPORT.md,diagnostics.csv}
+# All cost statements are relative to the EXACT loss with the constant target-target block cached
+# (Agent 2 territory, `ReferenceCachedYY`), not to the repository's stacked (X;Y) call.
+
+- name: A3-pop-gmm-target
+  status: recommended_for_stage1
+  mechanism: >
+    Replace the empirical cross term mean_i mean_j K(x_i, y_j) against the m=250-sample target S_G by the
+    closed-form kernel mean embedding of the population GMM target (tfg.gmm_mmd.kernel_mean_embedding_multibandwidth),
+    and the constant YY term by E_{y,y'~G} K. Exact semi-population MMD^2(P_X, G); cost O(n^2 + n K) instead of
+    O(n^2 + n m). Deterministic, no features, no seeds. Same 5-bandwidth kernel and frozen bandwidth as the repo.
+  expected_benefit: >
+    Per-call loss cost 0.02-0.12x (d=1, K=2) and 0.2-0.55x (d=8,16, K<=11) of the exact-cached loss; removes the
+    O(1/sqrt m) target-sampling noise from the objective (the minimiser is x* exactly). Measured gradient cosine
+    to the empirical-target gradient 0.989-0.998; wall-clock gain is bounded by the loss share of a step
+    (conditional model dominates), so the primary benefit is a cleaner objective at lower cost, not a large speed-up.
+  possible_bias: >
+    Changes the objective from MMD^2(P_X, S_G) to MMD^2(P_X, G) (rel. difference 1-5% in value). Only applicable
+    when the target is given parametrically (synthetic 2D/5D/10D, dimy benchmark, MNIST angular GMM); not SD.
+    Must not be used for the EVALUATION metric (keep |x - x*| / L2).
+  affected_tasks: [synthetic_2D, synthetic_5D, synthetic_10D, dimy_scaling, mnist_angles]
+  primary_metric: penalised |x - x*| (synthetic) at equal conditional-model calls; secondary loss wall/step
+  compute_budget: exp2-style run, 50 restarts x n in {4,8,16,32}, 2D + dimy d in {1,8,16}; CPU minutes
+  rejection_criterion: >
+    Paired L2 vs exact-empirical baseline worse (perm p<0.05, mean_diff<0) at any n, or no measurable reduction
+    in loss wall share; also reject if Agent 1's profile shows the loss is <5% of step time (then it is a
+    cleanliness change only and goes to Agent 4's estimator track).
+
+- name: A3-subsample-target-fixed
+  status: optional_knob
+  mechanism: >
+    Exact XX term, cross term against a FIXED random subset of B<m targets (common random numbers across the
+    trajectory), YY constant from the full target. Equivalent to running the repository loss with a smaller target set.
+  expected_benefit: >
+    Cost 0.28-0.34x at B=64 (m=250); gradient cosine 0.96-0.98 (d=1..16, B=64), grad-norm error 4-13%.
+    Quantifies how much of m=250 the gradient actually uses.
+  possible_bias: >
+    O(1/sqrt B) target-sampling bias per trajectory (fixed subset) or added per-step variance (fresh subset).
+    At d=768, m=120 subsampling to 64 already degrades cosine to 0.74 -- do not use for SD.
+  affected_tasks: [synthetic_2D, dimy_scaling]
+  primary_metric: penalised |x - x*| vs B, at fixed n
+  compute_budget: one exp2-style sweep B in {32,64,125,250}, 50 restarts; CPU minutes
+  rejection_criterion: L2 degrades (perm p<0.05) at B<=125, or Agent 1 shows the loss share is negligible.
+
+- name: A3-rff-multibandwidth
+  status: rejected
+  mechanism: Random Fourier features, frozen frequencies shared across the 5 bandwidths, D features; ORF variant for d=768.
+  expected_benefit: none realised
+  possible_bias: >
+    +O(1/D) bias on MMD^2, gradient noise ~ d/D. Measured: at m=250 D=256 costs 1.2-2.2x the exact-cached loss
+    (NOT cheaper) with cos 0.96-0.999 (d=1) / 0.82-0.90 (d=8,16); the cheaper D=64 gives cos <=0.98 (d=1), 0.63-0.75
+    (d=8,16). At d=768, m=120: cos 0.23 (D=256), 0.43 (D=1024, already 17-20x the exact cost); needs D~2^16 for
+    cos>0.96. ORF does not change the verdict. Not applicable to the SD alpha=2 kernel (not positive definite).
+  affected_tasks: []
+  primary_metric: n/a
+  compute_budget: 0
+  rejection_criterion: already met (cost ratio >1 at every D with gradient cosine >0.95)
+
+- name: A3-nystrom-target-landmarks
+  status: rejected
+  mechanism: Nystrom features from L target landmarks, per bandwidth; exact MMD of the projected kernel.
+  expected_benefit: none realised
+  possible_bias: >
+    Downward bias = witness outside the landmark span; gradient collapses when X is far from S_G (exactly when
+    guidance matters). Measured d=768: cos 0.25 with 64 of 120 targets as landmarks. In d=1 it is accurate
+    (cos 0.99996 at L=16) but costs 0.8-0.9x at L=16 and 12x at L=64 (n L^2 projection term) -- no gain.
+  affected_tasks: []
+  primary_metric: n/a
+  compute_budget: 0
+  rejection_criterion: already met
+
+- name: A3-sliced-w2-fixed-projections
+  status: rejected_as_mmd_surrogate
+  mechanism: Sliced W2^2 with P fixed projections, quantile matching; in d=1 equals exact 1-D W2^2.
+  expected_benefit: cost 0.1-0.25x; but a different objective
+  possible_bias: >
+    Not an MMD approximation (gradient cosine to MMD 0.3-0.9 in d<=16, ~0.1 at d=768 with P=32). If ever used as
+    a guidance objective the final metric must stay independent (MNIST evaluates with SWD). Belongs to the
+    estimator/objective track (Agent 4) as an alternative objective, not to approximation.
+  affected_tasks: []
+  primary_metric: n/a
+  compute_budget: 0
+  rejection_criterion: already met for the approximation question
+
+- name: A3-fft-kme
+  status: rejected
+  mechanism: >
+    FFT convolution of a binned target histogram with the kernel to tabulate the kernel mean embedding (d=1 only).
+  expected_benefit: >
+    none -- the one-off table fill (G m = 5e5 kernel evaluations) is already ~0.2 ms by direct sum;
+    the per-call saving comes from the table (TabulatedKME1D, cos 0.999, 0.04-0.12x cost), not the FFT.
+  possible_bias: O(h^2) value bias, piecewise gradient; no grid exists for point clouds in CLIP-768.
+  affected_tasks: []
+  primary_metric: n/a
+  compute_budget: 0
+  rejection_criterion: already met; superseded by A3-pop-gmm-target wherever the target is parametric

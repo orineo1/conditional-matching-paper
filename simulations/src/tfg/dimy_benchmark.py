@@ -57,7 +57,12 @@ import hashlib
 import torch
 
 BASE_Y = [5.0, -5.0, 3.0, -1.0, -3.0, 4.0, -3.0, 2.0, 1.0, 5.0, -5.0]
-BASE_X = [-5.0, -5.0, 5.0, 5.0, 0.0, -2.0, -2.0, 1.0, -7.0, 7.0, 0.0]
+# Component X-locations. These MUST equal the X column of the canonical file
+# params/2D_cond_1D_gmm_params.pt -- the module's central claim is that d = 1
+# reproduces that benchmark exactly. Component 8 read -7.0 here against -8.0 in
+# the canonical file until 2026-08-23; tests/test_dimy_benchmark_d1.py now pins
+# the whole vector against the file so it cannot drift again.
+BASE_X = [-5.0, -5.0, 5.0, 5.0, 0.0, -2.0, -2.0, 1.0, -8.0, 7.0, 0.0]
 SIGMA_XX, SIGMA_XY, SIGMA_YY = 0.5, 0.195, 0.2
 COND_VAR = SIGMA_YY - SIGMA_XY ** 2 / SIGMA_XX      # 0.12395, the 2-D value
 X_STAR = -5.0

@@ -5,10 +5,15 @@ plain TFG Algorithm 1 and must match ``tfg.reference`` exactly; that is what
 ``tests/test_equivalence.py`` asserts.
 
 Components 2 (temporal gradient cache) and 3 (improvement-adaptive recurrence)
-have their configuration surface defined here so that the shape of the design
-space is fixed, but the engine raises ``NotImplementedError`` if they are
-enabled.  They are deliberately not implemented before their respective
-checkpoints.
+keep their ORIGINAL gated surface: ``enabled=True`` with the original
+``implementation="gated"`` still raises ``NotImplementedError`` (the design that
+surface described was never built).  The performance campaign (Agent 4,
+2026-08-23) added concrete, tested implementations behind
+``implementation="stale"`` (component 2) and ``implementation="v1"``
+(component 3); see the dataclass docstrings.
+
+Agent-4 additions are marked ``[A4]`` below.  They are all opt-in and every one
+of them leaves the default path byte-identical to the frozen reference.
 """
 
 from dataclasses import dataclass, field, asdict
@@ -16,29 +21,91 @@ from dataclasses import dataclass, field, asdict
 
 @dataclass
 class NScheduleConfig:
-    """Component 1: adaptive conditional sample count."""
+    """Component 1: adaptive conditional sample count.
+
+    ``type``
+        ``constant | time | noise`` (fixed schedules, see ``n_schedule.py``) or
+        ``adaptive`` [A4]: ``n_t`` is chosen per step from a state dict built by
+        the engine (gradient agreement between two independent half batches,
+        or loss improvement) -- see ``tfg/adaptive.py``.
+    ``eta_per_perturbation`` [A4]
+        Key the conditional draws ``("eta", t, j, i)`` instead of
+        ``("eta", t, i)`` so every spatial perturbation ``j`` uses independent
+        conditional noise.  This is what ``experiments/_guided.py`` does
+        (``torch.manual_seed(key_seed("cond", restart, t, j))``).  Off: the C5
+        convention (draws shared across all loss evaluations within a step).
+    ``eta_keying`` [A4]
+        ``per_step``: fresh conditional noise at every outer step (default).
+        ``frozen``: common random numbers -- the SAME conditional noise keys at
+        every step (``("eta", "frozen", i)``).  APPROXIMATE: the guidance
+        gradient is then a deterministic function of a single noise draw, so it
+        is a biased estimate of the population gradient across the trajectory.
+        Candidate 4 in the campaign; bias is measured, never assumed.
+    ``n_min, n_start, policy, agreement_threshold, improvement_threshold,
+      grow, budget_total`` [A4]
+        Parameters of the adaptive policy; see ``tfg/adaptive.py``.
+    """
     enabled: bool = False
-    type: str = "constant"       # constant | time | noise
+    type: str = "constant"       # constant | time | noise | adaptive
     n_max: int = 1
     kappa: float = 1.0
+    # --- [A4] ---
+    eta_per_perturbation: bool = False
+    eta_keying: str = "per_step"          # per_step | frozen
+    n_min: int = 1
+    n_start: int = 0                      # 0 -> start at n_max
+    policy: str = "agreement"             # agreement | improvement
+    agreement_threshold: float = 0.5
+    improvement_threshold: float = 0.0
+    grow: int = 2
+    budget_total: int = 0                 # 0 -> unlimited
 
 
 @dataclass
 class TemporalCacheConfig:
-    """Component 2: temporal reuse of guidance information. NOT YET IMPLEMENTED."""
+    """Component 2: temporal reuse of guidance information.
+
+    ``implementation="gated"`` (original surface): raises NotImplementedError.
+    ``implementation="stale"`` [A4]: the rho-branch gradient is recomputed only
+    every ``refresh_every`` outer steps and the last value is re-applied in
+    between (``lambda_value`` mixes fresh and stale when both exist).  This is
+    APPROXIMATE: a stale gradient is evaluated at a previous ``x_t``.  It saves
+    conditional calls on the skipped steps (no predictor evaluation at all).
+    Bias is measured in the campaign (candidate 6), never assumed.  Exact reuse
+    (identical inputs within a step) does not live here: it is a property of
+    the predictor/sampler wrapper (``tfg/distributional.py``).
+    """
     enabled: bool = False
     type: str = "gradient"       # gradient (kernel-statistics caching is design-only)
     lambda_mode: str = "fixed"   # fixed | adaptive
     lambda_value: float = 0.0
+    # --- [A4] ---
+    implementation: str = "gated"   # gated | stale
+    refresh_every: int = 1
 
 
 @dataclass
 class AdaptiveRecurrenceConfig:
-    """Component 3: improvement-adaptive N_recur. NOT YET IMPLEMENTED."""
+    """Component 3: improvement-adaptive N_recur.
+
+    ``implementation="gated"`` (original surface): raises NotImplementedError.
+    ``implementation="v1"`` [A4]: the recurrence loop runs ``r = 1..max_recurrences``
+    and stops early when the chosen metric says the extra recurrence is not
+    paying for itself:
+
+      ``clean_proxy``        |log f(r) - log f(r-1)| / max(|log f(r-1)|, 1)  < threshold
+      ``next_state_tweedie`` ||x_prev(r) - x_prev(r-1)|| / max(||x_prev(r-1)||,1) < threshold
+      ``grad_stability``     cos(grad_rho(r), grad_rho(r-1)) > 1 - threshold
+
+    ``TFGConfig.N_recur`` must be 1 when this is enabled (the loop bound is
+    ``max_recurrences``); validate() refuses the ambiguous combination.
+    """
     enabled: bool = False
     max_recurrences: int = 1
     threshold: float = 1e-2
-    metric: str = "next_state_tweedie"   # clean_proxy | next_state_tweedie
+    metric: str = "next_state_tweedie"   # clean_proxy | next_state_tweedie | grad_stability
+    # --- [A4] ---
+    implementation: str = "gated"        # gated | v1
 
 
 @dataclass
@@ -51,7 +118,31 @@ class TemporalConfig:
                existing ``/ sqrt(alpha_t)`` on line 9 then reproduces upstream's
                ``x_prev += guidance / alpha_t ** 0.5`` exactly, so
                ``inv_sqrt_alpha`` must stay False on the Adam object itself.
+               ``beta1 = 0`` is the normalisation-only rule of Experiment 5A.
     ``lambda`` deployable adaptive temporal mixing (retained, not evaluated).
+
+    [A4] ``grad_norm`` is an INDEPENDENT pre-processing switch applied to the
+    raw rho-branch gradient before the temporal operator:
+      ``none``           leave it;
+      ``clip``           rescale to norm ``grad_clip`` when larger (absolute clipping);
+      ``unit``           g / (||g|| + grad_eps)   (direction only; rho sets the step);
+      ``clip_rel``       [round 2] scale-free: threshold = ``grad_clip`` x a running
+                         statistic of the PAST raw per-step gradient norms
+                         (``clip_ref``: ``median`` of all past norms, or ``ema``
+                         with factor ``clip_ema``); no clipping on the first step;
+      ``clip_quantile``  [round 2] threshold = the ``grad_clip``-quantile (in
+                         (0,1)) of all past raw norms; no clipping on the first step.
+    [round 2] ``step_clip`` is a trust region on the APPLIED step ``Delta_t``.
+    Order of operations in the engine:  grad_rho -> grad_norm pre-processing ->
+    temporal operator (none/adam/lambda) -> ``Delta_t = rho_t * grad_used`` ->
+    **step_clip rescales Delta_t** -> line 9 adds ``Delta_t / sqrt(alpha_t)``
+    (the ``/sqrt(alpha_t)`` of C4a is unchanged and is applied AFTER the clip):
+      ``none``  off;
+      ``noise`` ||Delta_t|| <= step_tau * sqrt(1 - alphabar_t)   (noise-level relative;
+                ``step_tau=1`` is the promoted ``trust_noise1`` rule);
+      ``ddim``  ||Delta_t|| <= step_tau * ||x_ddim - x_t||       (relative to the DDIM move).
+    The clip is a pure rescaling of the direction when the norm exceeds the
+    bound, never a change of direction; it does not touch the mu branch.
     """
     mode: str = "none"                # none | adam | lambda
     adam_rho: float = 1.0             # upstream guidance_strength; rho_t also applies
@@ -60,11 +151,35 @@ class TemporalConfig:
     delta: float = 1e-8
     lam_max: float = 0.95
     lam_smooth: float = 0.0
+    # --- [A4] ---
+    grad_norm: str = "none"           # none | clip | unit | clip_rel | clip_quantile
+    grad_clip: float = 1.0
+    grad_eps: float = 1e-12
+    clip_ref: str = "median"          # median | ema   (clip_rel only)
+    clip_ema: float = 0.9
+    step_clip: str = "none"           # none | noise | ddim
+    step_tau: float = 1.0
 
 
 @dataclass
 class TFGConfig:
-    """Core TFG hyper-parameters plus the extension switches."""
+    """Core TFG hyper-parameters plus the extension switches.
+
+    [A4] legacy-compatibility switches (all default to the Algorithm 1 value):
+
+    ``init``
+        ``randn``: ``x_T ~ N(0, I)`` from the tape (line 2).
+        ``zeros``: ``x_T = 0``, the repository's ``Optimization.optimize_LGD``
+        and ``experiments/_guided.py`` convention.
+    ``guidance_scaling``
+        ``tfg``: line 9 adds ``Delta_t / sqrt(alpha_t)`` (C4a).
+        ``raw``: line 9 adds ``Delta_t`` with no ``1/sqrt(alpha_t)`` -- the
+        ``x_{t-1} = DDIM(x_t) - g`` convention of ``optimize_LGD``/``_guided``.
+    ``smoothing``
+        ``tfg``: perturbation scale ``gamma_bar * sqrt(1 - alphabar_t)`` (line 4).
+        ``lgd_beta``: scale ``beta_t / sqrt(1 + beta_t^2)`` -- the repository's
+        LGD ``r_t`` (``_guided.py``), independent of ``gamma_bar``.
+    """
 
     # --- core TFG (H_TFG of Definition 3.1) ---
     T: int = 100
@@ -76,6 +191,11 @@ class TFGConfig:
     rho_structure: str = "constant"   # constant | increase | decrease
     mu_structure: str = "constant"
     n_mc: int = 1                     # Monte-Carlo draws for the gamma_bar smoothing
+
+    # --- [A4] legacy-compatibility switches ---
+    init: str = "randn"               # randn | zeros
+    guidance_scaling: str = "tfg"     # tfg | raw
+    smoothing: str = "tfg"            # tfg | lgd_beta
 
     # --- temporal guidance treatment ---
     temporal: TemporalConfig = field(default_factory=TemporalConfig)
@@ -93,23 +213,84 @@ class TFGConfig:
             raise ValueError("N_iter must be >= 0")
         if self.n_mc < 1:
             raise ValueError("n_mc must be >= 1")
+        if self.init not in ("randn", "zeros"):
+            raise ValueError(f"unknown init {self.init!r}")
+        if self.guidance_scaling not in ("tfg", "raw"):
+            raise ValueError(f"unknown guidance_scaling {self.guidance_scaling!r}")
+        if self.smoothing not in ("tfg", "lgd_beta"):
+            raise ValueError(f"unknown smoothing {self.smoothing!r}")
         if self.temporal.mode not in ("none", "adam", "lambda"):
             raise ValueError(f"unknown temporal mode {self.temporal.mode!r}")
-        if self.temporal_cache.enabled:
-            raise NotImplementedError(
-                "temporal_cache is not implemented yet; it is gated on Checkpoint 2"
-            )
-        if self.adaptive_recurrence.enabled:
-            raise NotImplementedError(
-                "adaptive_recurrence is not implemented yet; it is gated on Checkpoint 3"
-            )
+        tm = self.temporal
+        if tm.grad_norm not in ("none", "clip", "unit", "clip_rel", "clip_quantile"):
+            raise ValueError(f"unknown grad_norm {tm.grad_norm!r}")
+        if tm.grad_norm in ("clip", "clip_rel") and tm.grad_clip <= 0:
+            raise ValueError("grad_clip must be positive")
+        if tm.grad_norm == "clip_quantile" and not (0.0 < tm.grad_clip < 1.0):
+            raise ValueError("clip_quantile needs grad_clip (the quantile) in (0,1)")
+        if tm.clip_ref not in ("median", "ema"):
+            raise ValueError(f"unknown clip_ref {tm.clip_ref!r}")
+        if not (0.0 <= tm.clip_ema < 1.0):
+            raise ValueError("clip_ema must lie in [0,1)")
+        if tm.step_clip not in ("none", "noise", "ddim"):
+            raise ValueError(f"unknown step_clip {tm.step_clip!r}")
+        if tm.step_clip != "none" and tm.step_tau <= 0:
+            raise ValueError("step_tau must be positive")
+        ns = self.n_schedule
+        if ns.eta_keying not in ("per_step", "frozen"):
+            raise ValueError(f"unknown eta_keying {ns.eta_keying!r}")
+        if ns.type == "adaptive":
+            if not ns.enabled:
+                raise ValueError("n_schedule.type='adaptive' requires n_schedule.enabled")
+            if ns.policy not in ("agreement", "improvement"):
+                raise ValueError(f"unknown adaptive policy {ns.policy!r}")
+            if ns.n_min < 1 or ns.n_min > ns.n_max:
+                raise ValueError("need 1 <= n_min <= n_max")
+            if ns.grow < 2:
+                raise ValueError("grow must be >= 2")
+            if ns.policy == "agreement" and ns.n_max < 2:
+                raise ValueError("agreement policy needs n_max >= 2 (two half batches)")
+        tc = self.temporal_cache
+        if tc.enabled:
+            if tc.implementation == "gated":
+                raise NotImplementedError(
+                    "temporal_cache is not implemented yet; it is gated on Checkpoint 2 "
+                    "(set implementation='stale' for the campaign's stale-gradient rule)"
+                )
+            if tc.implementation != "stale":
+                raise ValueError(f"unknown temporal_cache implementation {tc.implementation!r}")
+            if tc.refresh_every < 1:
+                raise ValueError("refresh_every must be >= 1")
+            if not (0.0 <= tc.lambda_value <= 1.0):
+                raise ValueError("lambda_value must lie in [0, 1]")
+        ar = self.adaptive_recurrence
+        if ar.enabled:
+            if ar.implementation == "gated":
+                raise NotImplementedError(
+                    "adaptive_recurrence is not implemented yet; it is gated on Checkpoint 3 "
+                    "(set implementation='v1' for the campaign's early-stopping rule)"
+                )
+            if ar.implementation != "v1":
+                raise ValueError(f"unknown adaptive_recurrence implementation {ar.implementation!r}")
+            if ar.metric not in ("clean_proxy", "next_state_tweedie", "grad_stability"):
+                raise ValueError(f"unknown adaptive_recurrence metric {ar.metric!r}")
+            if ar.max_recurrences < 1:
+                raise ValueError("max_recurrences must be >= 1")
+            if self.N_recur != 1:
+                raise ValueError("adaptive_recurrence sets the recurrence bound; leave N_recur=1")
+            if ar.threshold < 0:
+                raise ValueError("threshold must be >= 0")
         return self
 
     def all_extensions_disabled(self):
-        return not (self.distributional_tfg_enabled
-                    or self.n_schedule.enabled
-                    or self.temporal_cache.enabled
-                    or self.adaptive_recurrence.enabled)
+        legacy_default = (self.init == "randn" and self.guidance_scaling == "tfg"
+                          and self.smoothing == "tfg"
+                          and self.temporal.grad_norm == "none"
+                          and self.temporal.step_clip == "none")
+        return legacy_default and not (self.distributional_tfg_enabled
+                                       or self.n_schedule.enabled
+                                       or self.temporal_cache.enabled
+                                       or self.adaptive_recurrence.enabled)
 
     def resolved(self):
         """Plain dict of the fully resolved configuration, for run records."""

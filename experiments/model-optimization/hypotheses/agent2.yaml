@@ -1,0 +1,84 @@
+# Agent 2 -- exact (mathematically equivalent) MMD accelerations.
+# Code: experiments/model-optimization/exact_loss/fast_mmd.py ; tests: test_fast_mmd.py
+# Reference: simulations/src/LossFunctions.py (RBF 5 bandwidths, mul_factor 2, biased V-stat).
+agent: 2
+scope: exact_loss
+candidates:
+  - name: fixed_target_cache          # MMDFixedTarget(Y, bw, dist="cdist")
+    mechanism: >
+      Cache the target Y, ||y||^2, the Y-Y squared distances and the scalar YY
+      kernel mean once (Y = S_G is constant across all diffusion steps and restarts);
+      per call evaluate only the XX (n x n) and XY (n x m) kernel blocks instead of
+      the stacked (n+m) x (n+m) matrix whose YY block (m x m = 62,500 of 66,564
+      entries for n=8, m=250) the reference recomputes, including through autograd.
+    expected_benefit: >
+      Work drops from 5*(n+m)^2 to 5*(n^2 + n*m) exps: ~30x fewer kernel
+      evaluations at n=8, m=250; ~4x at n=100, m=250. Measured 3-14x wall-time
+      speedup at n<=8, m=250 (CPU float64), see bench_summary.md.
+    possible_bias: none, exact (same value and dL/dX to ~1e-15 relative in float64;
+      adaptive-bandwidth rule reproduced on the stacked statistic incl. gradient)
+    affected_tasks: [synthetic Exp2-7 (_guided.py), SD pipeline compute_mmd, any TFG/CDM loop with a fixed target]
+    primary_metric: forward+backward wall time of one MMD evaluation; fraction of step time
+    rejection_criterion: any loss/gradient mismatch > 1e-12 (float64) vs reference, or
+      < 1.2x speedup in the n<=32, m=250 regime
+  - name: fixed_target_mm             # dist="mm"
+    mechanism: >
+      Squared distances as ||x||^2 + ||y||^2 - 2 x y^T (clamp >= 0) with cached
+      ||y||^2, instead of torch.cdist(.)^2 (sqrt then square, with its own backward
+      kernel). torch.cdist already switches to the matmul formula for > 25 rows,
+      so the reference at m=250 is matmul-based anyway.
+    expected_benefit: small constant factor (avoids sqrt/square round trip and the
+      cdist backward); mostly matters at d=768
+    possible_bias: none, exact (clamp only acts on rounding-negative entries whose true
+      value is 0; gradient there is 0 in both formulas)
+    affected_tasks: [same as above]
+    primary_metric: wall time
+    rejection_criterion: mismatch > 1e-12 in float64 or no speedup over fixed_target_cache
+  - name: powchain_kernel             # kernel_eval="powchain"
+    mechanism: >
+      With multipliers 2^(k-2) the 5 RBF kernels are integer powers of one base:
+      E = exp(-D/(4 bw)), K = E + E^2 + E^4 + E^8 + E^16. One exp + 4 squarings
+      replaces 5 exps over the block; backward is through mul instead of exp.
+    expected_benefit: ~2x less transcendental work in the kernel stage; measured
+      1.2-1.6x on top of fixed_target_mm for d<=10, negligible at d=768 where the
+      matmul dominates.
+    possible_bias: none, exact (few-ulp reordering; identical underflow behaviour)
+    affected_tasks: [synthetic Exp2-7, any repo-kernel MMD with integer mul_factor and alpha=1]
+    primary_metric: wall time
+    rejection_criterion: mismatch > 1e-12 vs reference or slower than "exp" evaluation
+  - name: chunked_fused_xy            # chunk=k, custom autograd.Function
+    mechanism: >
+      Blockwise XY kernel sum over Y with an autograd.Function that computes the
+      value, dS/dX and dS/d(scales) inside the forward and stores only (n, d) + (K,);
+      no (5, n, m) tensor is kept for backward. Adaptive bandwidth supported via a
+      closed-form sum of XY squared distances.
+    expected_benefit: peak memory O(n d + chunk n) instead of O(5 n m); speed neutral
+      to slightly slower (Python loop over chunks). Only relevant for very large m
+      (>> 2000) or on memory-limited GPUs.
+    possible_bias: none, exact to first order (gradcheck passes); not differentiable
+      twice (create_graph through it gives no second derivative)
+    affected_tasks: [large-target settings only]
+    primary_metric: peak memory; wall time
+    rejection_criterion: mismatch > 1e-12 or > 1.5x slower than fixed_target_mm at m<=2000
+  - name: batched_sets                # MMDFixedTarget.batched(Xb)
+    mechanism: >
+      Evaluate B independent sample sets (B, n, d) against the same Y in one
+      batched call (bmm / broadcast), returning (B,) losses -- for LGD/TFG's
+      M perturbations and for independent restarts evaluated together.
+    expected_benefit: amortises Python/dispatch overhead; ~B x fewer kernel launches.
+      Measured 2-3x vs B reference calls for small n. Requires the caller to
+      concatenate the M sampler outputs before the loss (the loss itself is tiny;
+      the real win would come from batching the sampler too, which is Agent 4/5 scope).
+    possible_bias: none, exact (each element equals the single-set loss)
+    affected_tasks: [_guided.py with spatial M>1, restart loops]
+    primary_metric: wall time per B losses
+    rejection_criterion: any element differs from the single-set loss by > 1e-12
+  - name: torch_compile_powchain
+    mechanism: torch.compile(dynamic=False) of the best eager variant (fixed_mm_powchain)
+    expected_benefit: fuse the elementwise kernel stage; reported as compile overhead
+      vs steady state separately in bench_summary.md
+    possible_bias: none, exact (same graph), but recompiles per shape (n_t varies per step)
+    affected_tasks: [synthetic loop if n_t is constant]
+    primary_metric: steady-state wall time; first-call (compile) time
+    rejection_criterion: compile time not amortised within one experiment, or steady-state
+      speedup < 1.2x over eager

@@ -1,0 +1,73 @@
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                                   Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg       CPU Mem  Self CPU Mem    # of Calls  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                              aten::mul         8.51%      24.072ms        10.18%      28.810ms       3.464us     178.49 MB     178.35 MB          8318  
+                                              aten::div         7.89%      22.319ms         8.07%      22.843ms      14.376us     300.92 MB     300.92 MB          1589  
+                                              aten::exp         7.11%      20.118ms         7.11%      20.118ms      29.031us     125.82 MB     125.82 MB           693  
+                                            aten::addmm         6.31%      17.846ms         8.11%      22.953ms       5.040us      12.25 MB      12.25 MB          4554  
+                                              aten::sum         5.99%      16.950ms         7.82%      22.136ms      22.360us      50.67 MB      50.67 MB           990  
+                                              aten::neg         5.14%      14.538ms         5.14%      14.538ms      18.356us     251.38 MB     251.38 MB           792  
+                                            aten::fill_         5.02%      14.212ms         5.02%      14.212ms       7.552us           0 B           0 B          1882  
+                                            aten::copy_         4.90%      13.872ms         4.90%      13.872ms       1.086us           0 B           0 B         12775  
+                                               aten::mm         3.85%      10.891ms         3.98%      11.266ms       2.474us      35.42 MB      35.42 MB          4554  
+    autograd::engine::evaluate_function: AddmmBackward0         2.59%       7.330ms         8.78%      24.848ms       5.837us      -4.38 MB     -14.51 MB          4257  
+                                              aten::add         2.28%       6.450ms         3.00%       8.502ms       1.827us       4.24 MB       4.23 MB          4654  
+                                                aten::t         2.18%       6.168ms         3.55%      10.038ms       1.127us           0 B           0 B          8910  
+                                             aten::add_         2.07%       5.852ms         2.07%       5.852ms       2.570us           0 B           0 B          2277  
+                                              aten::pow         1.80%       5.083ms         2.73%       7.740ms       4.877us      50.50 MB      50.50 MB          1587  
+                                         AddmmBackward0         1.53%       4.341ms         5.93%      16.788ms       3.944us      10.08 MB           0 B          4257  
+                                               aten::eq         1.31%       3.700ms         1.38%       3.901ms      19.700us       6.28 MB       6.28 MB           198  
+                                       aten::as_strided         1.24%       3.508ms         1.24%       3.508ms       0.173us           0 B           0 B         20300  
+                                     aten::masked_fill_         1.09%       3.078ms         1.09%       3.078ms      31.087us           0 B           0 B            99  
+                                    aten::empty_strided         1.05%       2.975ms         1.05%       2.975ms       0.380us     171.74 KB     171.74 KB          7825  
+                                            aten::sqrt_         0.99%       2.809ms         0.99%       2.809ms      28.376us           0 B           0 B            99  
+                                         aten::_to_copy         0.99%       2.789ms         2.95%       8.351ms       1.204us     154.72 KB           0 B          6933  
+      autograd::engine::evaluate_function: MulBackward0         0.95%       2.689ms         2.20%       6.218ms       3.489us      35.19 KB    -686.43 KB          1782  
+                                       aten::clamp_min_         0.94%       2.672ms         0.94%       2.672ms      26.993us           0 B           0 B            99  
+                                        aten::transpose         0.91%       2.563ms         1.43%       4.043ms       0.444us           0 B           0 B          9108  
+      autograd::engine::evaluate_function: AddBackward0         0.87%       2.454ms         1.08%       3.052ms       1.142us     -49.50 KB     -49.50 KB          2673  
+                                            aten::empty         0.80%       2.264ms         0.80%       2.264ms       0.401us     102.14 MB     102.14 MB          5647  
+    autograd::engine::evaluate_function: SliceBackward0         0.79%       2.238ms         8.64%      24.458ms      41.175us     773.44 KB    -100.58 MB           594  
+                                              aten::sub         0.79%       2.226ms         1.29%       3.655ms       2.302us     220.88 KB     217.01 KB          1588  
+                                           aten::linear         0.70%       1.985ms        11.01%      31.156ms       6.841us      12.25 MB           0 B          4554  
+autograd::engine::evaluate_function: EuclideanDistBa...         0.66%       1.859ms         6.98%      19.759ms     199.585us     -50.28 MB     -50.47 MB            99  
+                                           PowBackward0         0.64%       1.812ms         3.72%      10.538ms     106.445us      25.14 MB     -50.28 MB            99  
+                                        aten::unsqueeze         0.64%       1.811ms         0.77%       2.191ms       0.922us           0 B           0 B          2376  
+                                               aten::to         0.64%       1.799ms         3.59%      10.150ms       0.770us     154.72 KB           0 B         13174  
+                               aten::threshold_backward         0.63%       1.789ms         0.63%       1.789ms       1.204us       5.80 MB       5.80 MB          1485  
+                                           aten::expand         0.63%       1.785ms         0.97%       2.739ms       0.512us           0 B           0 B          5346  
+                                              aten::cat         0.59%       1.684ms         0.64%       1.812ms       1.828us       2.63 MB       2.63 MB           991  
+                                aten::native_layer_norm         0.57%       1.616ms         0.94%       2.654ms       4.467us     301.64 KB           0 B           594  
+     autograd::engine::evaluate_function: ReluBackward0         0.57%       1.602ms         1.56%       4.405ms       2.967us      -5.80 MB     -11.60 MB          1485  
+                                        aten::clamp_min         0.55%       1.567ms         0.55%       1.567ms       1.055us       5.80 MB       5.80 MB          1485  
+                                 EuclideanDistBackward0         0.54%       1.528ms         6.29%      17.806ms     179.861us     199.55 KB     -32.01 MB            99  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+Self CPU time total: 283.010ms
+
+
+== sorted by self CPU memory ==
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                                   Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg       CPU Mem  Self CPU Mem    # of Calls  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                              aten::div         7.89%      22.319ms         8.07%      22.843ms      14.376us     300.92 MB     300.92 MB          1589  
+                                              aten::neg         5.14%      14.538ms         5.14%      14.538ms      18.356us     251.38 MB     251.38 MB           792  
+                                              aten::mul         8.51%      24.072ms        10.18%      28.810ms       3.464us     178.49 MB     178.35 MB          8318  
+                                              aten::exp         7.11%      20.118ms         7.11%      20.118ms      29.031us     125.82 MB     125.82 MB           693  
+                                            aten::empty         0.80%       2.264ms         0.80%       2.264ms       0.401us     102.14 MB     102.14 MB          5647  
+                                              aten::sum         5.99%      16.950ms         7.82%      22.136ms      22.360us      50.67 MB      50.67 MB           990  
+                                              aten::pow         1.80%       5.083ms         2.73%       7.740ms       4.877us      50.50 MB      50.50 MB          1587  
+                                               aten::mm         3.85%      10.891ms         3.98%      11.266ms       2.474us      35.42 MB      35.42 MB          4554  
+                                            aten::addmm         6.31%      17.846ms         8.11%      22.953ms       5.040us      12.25 MB      12.25 MB          4554  
+                                               aten::eq         1.31%       3.700ms         1.38%       3.901ms      19.700us       6.28 MB       6.28 MB           198  
+                                        aten::clamp_min         0.55%       1.567ms         0.55%       1.567ms       1.055us       5.80 MB       5.80 MB          1485  
+                               aten::threshold_backward         0.63%       1.789ms         0.63%       1.789ms       1.204us       5.80 MB       5.80 MB          1485  
+                                              aten::add         2.28%       6.450ms         3.00%       8.502ms       1.827us       4.24 MB       4.23 MB          4654  
+                                              aten::cat         0.59%       1.684ms         0.64%       1.812ms       1.828us       2.63 MB       2.63 MB           991  
+                                              aten::cos         0.35%     996.329us         0.35%     996.329us       1.675us     996.98 KB     996.98 KB           595  
+                                              aten::sin         0.33%     935.202us         0.33%     935.202us       1.574us     996.19 KB     996.19 KB           594  
+                                          aten::sigmoid         0.42%       1.195ms         0.42%       1.195ms       1.724us     346.50 KB     346.50 KB           693  
+                                 aten::sigmoid_backward         0.24%     687.134us         0.24%     687.134us       0.992us     346.50 KB     346.50 KB           693  
+                                          aten::resize_         0.11%     323.163us         0.11%     323.163us       0.465us     262.25 KB     262.25 KB           695  
+                                              aten::sub         0.79%       2.226ms         1.29%       3.655ms       2.302us     220.88 KB     217.01 KB          1588  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+Self CPU time total: 283.010ms

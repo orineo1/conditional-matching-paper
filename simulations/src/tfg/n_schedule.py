@@ -20,14 +20,14 @@ accounting was correspondingly off.
 ``constant`` returns ``n_max`` at every step and therefore reproduces the
 current fixed-``n_cond`` behaviour exactly.
 
-Not implemented, by instruction: uncertainty-adaptive ``n_t``.  The hook is
-:func:`n_at` accepting an optional ``state`` argument, which such a policy
-would consume; it is ignored today.
+Uncertainty-adaptive ``n_t`` (``kind="adaptive"``) consumes the optional
+``state`` argument of :func:`n_at`; the policy lives in ``tfg/adaptive.py``.
+With no state it degenerates to ``constant``.
 """
 
 import torch
 
-VALID_TYPES = ("constant", "time", "noise")
+VALID_TYPES = ("constant", "time", "noise", "adaptive")
 
 
 def progress(t, schedule, kind):
@@ -56,8 +56,10 @@ def progress(t, schedule, kind):
 def n_at(t, schedule, n_max, kappa=1.0, kind="constant", state=None):
     """Integer conditional sample count at step ``t``, clamped to ``[1, n_max]``.
 
-    ``state`` is the extension point for a future uncertainty-adaptive policy
-    and is ignored.
+    ``state`` is consumed ONLY by ``kind="adaptive"`` (see ``tfg/adaptive.py``);
+    every other kind ignores it.  ``adaptive`` without a state (or without an
+    ``n_prev``/budget) falls back to ``n_max``, so a state-less adaptive
+    schedule is the constant one.
     """
     if kind not in VALID_TYPES:
         raise ValueError(f"n_schedule type must be one of {VALID_TYPES}, got {kind!r}")
@@ -67,6 +69,11 @@ def n_at(t, schedule, n_max, kappa=1.0, kind="constant", state=None):
 
     if kind == "constant":
         return n_max
+    if kind == "adaptive":
+        if state is None:
+            return n_max
+        from tfg.adaptive import adaptive_n
+        return adaptive_n(n_max, state)
 
     if kappa <= 0:
         raise ValueError("kappa must be positive")
@@ -84,15 +91,23 @@ def schedule_table(schedule, n_max, kappa=1.0, kind="constant"):
     return [n_at(t, schedule, n_max, kappa, kind) for t in range(schedule.T, 0, -1)]
 
 
-def conditional_seed_keys(t, n_t, tag="eta"):
+def conditional_seed_keys(t, n_t, tag="eta", j=None, frozen=False):
     """Tape keys for this outer step's conditional-generator draws.
 
     Keyed by ``(tag, t, i)`` with no recurrence index and no loss-evaluation
     index, which is what makes the same ``eta`` values shared across every loss
     evaluation and every recurrence within outer step ``t``, while the next
     outer step draws fresh ones.
+
+    [A4] ``j`` (perturbation index) adds a per-perturbation component,
+    ``(tag, t, j, i)``; ``frozen=True`` drops ``t`` entirely
+    (``(tag, "frozen", i)`` / ``(tag, "frozen", j, i)``): common random numbers
+    across the whole trajectory (approximate, see config docstring).
     """
-    return [(tag, int(t), int(i)) for i in range(int(n_t))]
+    head = (tag, "frozen") if frozen else (tag, int(t))
+    if j is not None:
+        head = head + (int(j),)
+    return [head + (int(i),) for i in range(int(n_t))]
 
 
 def is_nondecreasing_toward_data(schedule, n_max, kappa, kind):

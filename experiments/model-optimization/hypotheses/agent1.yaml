@@ -1,0 +1,106 @@
+# Agent 1 (baseline / profiler) -- optimisation opportunities ranked by measured or
+# statically visible cost share. Fractions refer to profiling/baseline_profile.md.
+agent: agent1_baseline_profiler
+commit: 6af2081
+hypotheses:
+  - name: cache_target_target_kernel_and_split_blocks
+    mechanism: >
+      MMDLoss stacks (X;Y) and computes cdist/exp on the full (n+m)^2 x 5 matrix every
+      evaluation, then slices. Precompute K_YY.mean() once per run (S_G and bandwidth are
+      frozen and detached) and compute only K_XX (n x n) and K_XY (n x m). Removes
+      79-94% of kernel entries from BOTH forward and backward; autograd no longer
+      differentiates through EuclideanDist/Exp on the m x m block.
+    expected_benefit: >
+      Micro-benchmark (2D, m=250): MMD fwd+bwd 1.22 ms -> 0.18 ms at n=8, 1.51 -> 0.40 ms at
+      n=32; ~45-50% of no-LGD wall per step (~1.9-2.2 ms/step), ~55% of LGD wall. Identical
+      conditional_calls.
+    possible_bias: >
+      None in exact arithmetic; float32 summation order differs (observed |delta| ~7e-7 on MMD
+      ~0.1-0.3). Trajectories may diverge bit-wise, so equivalence must be shown at the
+      metric level (paired L2 over restarts) as well as per-step gradient tolerance.
+    affected_tasks: [synthetic_2D, synthetic_5D, synthetic_10D, SD (K_yy block of compute_mmd), MNIST n/a (SWD)]
+    primary_metric: wall_s per run and per-step gradient max-abs error vs baseline; exact L2 paired
+    rejection_criterion: >
+      per-step gradient max-abs error > 1e-5 (relative 1e-4) on 2D n=8 restarts 0..4, or paired
+      exact-L2 difference 95% CI excludes 0 over 100 restarts, or wall saving < 20%.
+
+  - name: batch_lgd_perturbations_into_one_sampler_call
+    mechanism: >
+      _guided.run runs M_t = 3 perturbations as three separate model_cond.sample calls of n,
+      three kernels and three graph branches. Stack the 3 conditions into one (3n) sampler call
+      (the CM forward is per-row independent), compute three n x m / n x n blocks from one
+      batched forward, keep the -logsumexp aggregation unchanged (no pooling into one MMD).
+    expected_benefit: >
+      CM forward is per-call-overhead bound (n=8 -> n=32 costs +10%), so 3 calls -> 1 call
+      removes ~2/3 of the cond_sample bucket (20% of LGD wall) and 2/3 of the kernel/backward
+      graph nodes; LGD from ~2.7x to ~1.4x the no-LGD wall at equal conditional_calls.
+    possible_bias: >
+      RNG stream changes (one torch.randn of 3n vs three seeded draws) unless the per-j seeds
+      are reproduced by drawing separately and concatenating; the estimator is otherwise
+      identical. Verify by keeping per-j draws and only batching the network forward.
+    affected_tasks: [synthetic_* (lgd arms), MNIST (num_x_t = 3, same pattern)]
+    primary_metric: wall_s at fixed conditional_calls; per-step gradient equality when draws are preserved
+    rejection_criterion: gradient differs (> 1e-5) with preserved draws, or wall saving < 25% on lgd cells
+
+  - name: freeze_parameters_and_trim_autograd_graph
+    mechanism: >
+      Both models keep requires_grad=True on all parameters; torch.autograd.grad(loss, x) never
+      needs weight grads but the graph saves inputs for them and builds AccumulateGrad nodes on
+      every Linear (4554 addmm per run). Set requires_grad_(False) on model parameters (and
+      consider torch.inference-free functional forward), remove sample_ddim_step's per-call
+      self.to(device)/dtype query, cache the time embedding for the 100 (resp. 5) t values.
+    expected_benefit: >
+      Backward bucket is 42-46% and 'other' 8-11% of wall; expected 10-20% wall reduction
+      (graph construction + backward node count), zero change to numerics.
+    possible_bias: none (bit-identical expected)
+    affected_tasks: [synthetic_*, MNIST (UNet/CM params), SD (already frozen)]
+    primary_metric: wall_s; bit-identical x_hat
+    rejection_criterion: x_hat not bit-identical on 2D restarts 0..4, or wall saving < 5%
+
+  - name: reduce_per_step_framework_overhead (fuse kernel ops / compile)
+    mechanism: >
+      Wall is flat in n and in dim(X): ~100 small aten ops per step dominate. Fuse the kernel
+      (div/neg/exp/sum over 5 bandwidths) into one expression or torch.compile the
+      kernel+MMD function and the CM ladder; avoid global torch.manual_seed per step by using
+      a torch.Generator.
+    expected_benefit: 15-30% wall on no-LGD cells (op count, allocation: div/neg/mul/exp allocate ~850 MB cumulative per run)
+    possible_bias: torch.compile may change float32 reduction order (same tolerance regime as hypothesis 1)
+    affected_tasks: [synthetic_*]
+    primary_metric: wall_s, per-step gradient tolerance
+    rejection_criterion: gradient max-abs error > 1e-5 or wall saving < 10%
+
+  - name: sd_remove_non_guidance_sprinter_work
+    mechanism: >
+      In run_mlgd_f.py every guided step also runs visualize_step (5 sprinter pipeline calls, 4
+      VAE decodes, PCA), a second architect UNet pass for the unguided control trajectory,
+      sprinter.vae fp16<->fp32 casts, CLIP CPU<->GPU moves around eval, and per-call prompt
+      re-encoding with variation_batch_size=1. Make visualisation/eval opt-in or every k steps,
+      batch the 6 variations where memory allows, cache prompt embeddings, keep VAE dtype fixed,
+      cache K_yy.
+    expected_benefit: >
+      Roughly 5 of 11 sprinter forward passes per step are diagnostics (~45% of sprinter
+      forwards, ~30% of step wall excluding backward); plus one UNet CFG pass. Expected 30-45%
+      wall per step with identical guided trajectory.
+    possible_bias: none for the guided trajectory if RNG consumption by diagnostic calls is reproduced (diagnostic sprinter calls consume CUDA RNG state, so bit-identity needs a separate generator)
+    affected_tasks: [SD]
+    primary_metric: wall_s per guided step; guided MMD trajectory identical when generators are separated
+    rejection_criterion: guided trajectory changes beyond fp16 noise when diagnostics are disabled with RNG isolation, or saving < 20%
+
+  - name: mnist_cache_image_encoder_and_fix_target_set
+    mechanism: >
+      CircularAngleConsistencyModel.forward re-runs the conv image encoder on the same batch-1
+      condition at each of the 5 ladder levels (15x per step) and the loop resamples the 1500
+      target angles and 50 SWD projections every evaluation; autograd.grad uses
+      retain_graph=True. Encode the condition once per sampler call, draw the target set once
+      per run (as the synthetic loop does), drop retain_graph.
+    expected_benefit: >
+      Removes 12 of 15 encoder passes per step (the encoder is the only conv net in f_phi) and
+      the retained graph memory; fixed targets/projections reduce gradient variance at zero
+      cost (a change of estimator, to be evaluated as such).
+    possible_bias: >
+      Fixed target set / projections changes the estimator (lower variance, possible bias
+      toward the particular draw) -- must be evaluated on the angle-distribution metric, not
+      assumed equivalent; encoder caching is exact.
+    affected_tasks: [MNIST]
+    primary_metric: wall_s and peak GPU memory per seed; final SWD and digit-angle histogram
+    rejection_criterion: final-SWD paired difference worse at p < 0.05 over 15 seeds, or wall saving < 15%

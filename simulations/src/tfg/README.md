@@ -72,6 +72,42 @@ line 9's `/√α_t` then reproduces upstream's `x_prev += guidance/α_t**0.5`
 exactly. `inv_sqrt_alpha` is forced off on the Adam object so the factor is not
 applied twice. Defaults are the official ones: `β₁=0.9`, `β₂=0.995`, `δ=1e-8`.
 
+### Step-size control — `TemporalConfig.grad_norm`, `step_clip` (opt-in, off by default)
+
+Added by the 2026-08 performance campaign (Agent 4). Two independent switches,
+both pure rescalings of the ρ-branch update (direction unchanged, μ branch
+untouched), in this exact order inside the engine:
+
+```
+g        = ∇_{x_t} log f̃(x_{0|t})                         # grad_rho_raw
+g'       = GradNorm(g)             # temporal.grad_norm: none | clip | unit | clip_rel | clip_quantile
+Δ_t      = ρ_t · Temporal(g')      # temporal.mode: none | adam | lambda
+Δ_t      = StepClip(Δ_t)           # temporal.step_clip: none | noise | ddim   <-- trust region
+x_{t−1}  = DDIM(x_t, x_{0|t}) + Δ_t/√α_t + √ᾱ_{t−1}·Δ_0      # line 9 unchanged
+```
+
+| field | meaning |
+|---|---|
+| `grad_norm="clip"`, `grad_clip=c` | rescale `g` to norm `c` when larger (absolute clipping) |
+| `grad_norm="unit"` | `g / (‖g‖ + grad_eps)` (direction only; ρ sets the step) |
+| `grad_norm="clip_rel"`, `clip_ref ∈ {median, ema}`, `clip_ema`, `grad_clip=c` | clip to `c ×` the running median / EMA of the PAST raw norms (causal, scale-free; first step unclipped) |
+| `grad_norm="clip_quantile"`, `grad_clip=q` | clip to the `q`-quantile of the past raw norms |
+| `step_clip="noise"`, `step_tau=τ` | **trust region** `‖Δ_t‖ ≤ τ·√(1−ᾱ_t)`: the step may never exceed τ times the current noise level; bound anneals toward the data end. **`τ = 1` (“trust_noise1”) is the promoted rule** of the campaign (verified held-out: 2D +0.40/+0.25/+0.09/+0.02 at n = 4/8/16/32, 10D +0.05/+0.12/+0.08/+0.02, 5D never negative; `experiments/model-optimization/VERIFICATION.md`) |
+| `step_clip="ddim"`, `step_tau=τ` | `‖Δ_t‖ ≤ τ·‖x_ddim − x_t‖` (relative to the DDIM move; not promoted — scale-dependent) |
+
+Semantics of `step_clip="noise"`: `Δ_t ← Δ_t · min(1, τ·√(1−ᾱ_t) / (‖Δ_t‖ + grad_eps))`,
+applied **after** the temporal operator and the ρ_t scaling and **before** line 9's
+`/√α_t` (so the applied move is at most `τ·√(1−ᾱ_t)/√α_t`). With Adam the clip acts
+on the Adam-normalised, ρ-scaled step. Both switches flip `all_extensions_disabled()`.
+
+Distributional-loss transforms live outside the engine, in
+`tfg/distributional.py::DistributionalLoss(transform=...)`: `mmd2` (raw biased
+V-statistic, default), `sqrt_abs_eps` (the SD code's `√(|MMD²|+ε)`, gradient up
+to `1/(2√ε)` near the optimum) and `sqrt_floor` (`√(MMD²+c) − √c`, `c = floor_frac·k(0)·(1/n+1/m)`,
+bounded gradient, same asymptote; **conditional pass**: helps in 2D/5D, regresses
+at 10D n ≥ 32). `backend="fast"` selects the exact cached-target MMD
+(`tfg/fast_mmd.py`, value and gradient equal to `LossFunctions.MMDLoss` to 1e-12).
+
 ### Sample count — `NScheduleConfig`
 
 `n_t = 1 + ⌊(n_max−1)·p_t^κ⌋`, with `p_t` normalised over the **executed** steps
@@ -88,7 +124,15 @@ loss evaluations within a step, fresh at the next step.
 
 `TemporalCacheConfig`, `AdaptiveRecurrenceConfig`, and `target_hierarchy.py`
 (the `K_t` curriculum) are available as options. `validate()` raises if the
-first two are enabled. No experiment currently reports them.
+first two are enabled with their original `implementation="gated"`; the
+campaign's `implementation="stale"` (approximate stale-gradient reuse) and
+`implementation="v1"` (early-stopped recurrence) are implemented and tested but
+were **rejected** by screening (`experiments/model-optimization/estimator/REPORT.md`),
+as were the adaptive `n_t` policies (`NScheduleConfig.type="adaptive"`), CRN
+(`eta_keying="frozen"`) and antithetic sampling. Legacy-compatibility switches
+`TFGConfig.init="zeros"`, `guidance_scaling="raw"`, `smoothing="lgd_beta"` and
+`NScheduleConfig.eta_per_perturbation` reproduce `experiments/_guided.py` bit-for-bit
+(`tests/test_engine_matches_guided.py`).
 
 ---
 
@@ -103,6 +147,9 @@ first two are enabled. No experiment currently reports them.
 | `schedule.py` | cosine ᾱ schedule (float64) and ρ/μ structures |
 | `n_schedule.py` | adaptive `n_t` |
 | `noise_tape.py` | semantically-keyed RNG |
+| `adaptive.py` | adaptive `n_t` policies and recurrence early-stop rule (opt-in) |
+| `distributional.py` | repository-formula schedule, noise-injectable CM sampler (tape/legacy/antithetic/cache), `DistributionalLoss` (bandwidth policies, transforms, backends) |
+| `fast_mmd.py` | exact cached-target MMD (`MMDFixedTarget`), opt-in backend of `DistributionalLoss` |
 | `trace.py` | passive intermediate-state recorder |
 | `gmm_l2.py` | exact closed-form GMM L2 — **evaluation only** |
 | `gmm_mmd.py` | exact population MMD² (multi-bandwidth) |

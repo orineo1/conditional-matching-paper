@@ -16,7 +16,7 @@ import gc
 import numpy as np
 import torch
 
-from metrics import compute_mmd
+from metrics import compute_mmd, compute_witness_scores
 
 
 def generate_and_store(pipe, prompt, sobel_cond_pil, num_samples, batch_size=2):
@@ -234,6 +234,11 @@ def run_dps_step_clip(
     prev_variation_clip=None,
     reuse_frac=0.0,
     backsel_k=None,
+    backsel_rule="uniform",
+    backsel_generator=None,
+    witness_floor=0.1,
+    witness_bandwidth_scale=1.0,
+    witness_kernel_alpha=1.0,
 ):
     """
     CLIP-space MMD/SWD DPS step — core of the MLGD-F algorithm.
@@ -262,6 +267,25 @@ def run_dps_step_clip(
                                equivalent to a uniform-random subsample of an implicit N-pool.
                                Lets `num_variations` grow for loss fidelity without growing
                                backward-pass cost.
+        backsel_rule:          'uniform' (default) — first n_grad fresh draws are
+                               differentiable, no extra cost.
+                               'witness' — score all n_new candidates first (cheap,
+                               no_grad, one extra forward pass), then backprop only
+                               through the n_grad with largest |MMD witness score|
+                               (see metrics.compute_witness_scores); the rest reuse
+                               their already-computed detached embeddings. Lower-
+                               variance gradient for the same k, at the cost of one
+                               extra no_grad forward per non-selected sample.
+        backsel_generator:     optional torch.Generator for reproducible witness
+                               sampling.
+        witness_floor:         mixes the witness-score distribution with `witness_floor`
+                               mass of uniform, so low-|score| samples still have a
+                               nonzero chance of being selected (avoids collapsing
+                               onto a handful of outliers every step).
+        witness_bandwidth_scale, witness_kernel_alpha:
+                               RBF kernel params for the witness score (independent of
+                               loss_fn's own kernel settings; only used when
+                               backsel_rule='witness').
 
     Returns:
         (grad, loss_scaled, zeta_i, loss_norm, vl_clip_flat, new_variation_clip)
@@ -297,28 +321,65 @@ def run_dps_step_clip(
         with torch.amp.autocast("cuda", enabled=False):
             return encode_images_clip(var_pixels.float(), clip_model, clip_processor)
 
+    def checkpointed_forward(positions):
+        """Differentiable forward for len(positions) fresh slots (checkpointed)."""
+        out = []
+        for start in range(0, len(positions), variation_batch_size):
+            bs = len(positions[start:start + variation_batch_size])
+            ctrl_batch = pixel_x0_norm[0].unsqueeze(0).repeat(bs, 1, 1, 1)
+            out.append(torch.utils.checkpoint.checkpoint(
+                sprinter_vae_clip_forward, ctrl_batch, use_reentrant=False
+            ))
+        return out
+
     variation_clip_list = []
 
-    # Differentiable slots: checkpointed forward, gradient flows back to latents_step.
-    for start_idx in range(0, n_grad, variation_batch_size):
-        end_idx = min(start_idx + variation_batch_size, n_grad)
-        bs = end_idx - start_idx
-        ctrl_batch = pixel_x0_norm[0].unsqueeze(0).repeat(bs, 1, 1, 1)
-        var_clip = torch.utils.checkpoint.checkpoint(
-            sprinter_vae_clip_forward, ctrl_batch, use_reentrant=False
-        )
-        variation_clip_list.append(var_clip)
-
-    # Selected-out slots: plain no_grad forward — cheaper (no checkpoint recompute,
-    # no autograd graph), still included in the loss for full-N statistics.
-    n_nograd = n_new - n_grad
-    if n_nograd > 0:
+    if backsel_rule == "witness" and 0 < n_grad < n_new:
+        # Score all n_new candidates first (cheap, no_grad, one extra forward pass
+        # vs. 'uniform'), then backprop only through the n_grad with largest |witness
+        # score| — the rest reuse their already-computed detached embeddings, no
+        # further forward calls needed for them.
         with torch.no_grad():
-            for start_idx in range(0, n_nograd, variation_batch_size):
-                end_idx = min(start_idx + variation_batch_size, n_nograd)
+            proxy_list = []
+            for start_idx in range(0, n_new, variation_batch_size):
+                end_idx = min(start_idx + variation_batch_size, n_new)
                 bs = end_idx - start_idx
                 ctrl_batch = pixel_x0_norm[0].unsqueeze(0).repeat(bs, 1, 1, 1)
-                variation_clip_list.append(sprinter_vae_clip_forward(ctrl_batch))
+                proxy_list.append(sprinter_vae_clip_forward(ctrl_batch))
+            proxy_embs = torch.cat(proxy_list, dim=0)
+
+        scores, _ = compute_witness_scores(
+            proxy_embs, all_clip_embeddings,
+            bandwidth_scale=witness_bandwidth_scale, kernel_alpha=witness_kernel_alpha,
+        )
+        probs = scores.abs().double()
+        probs = (1.0 - witness_floor) * probs / probs.sum().clamp_min(1e-12) + witness_floor / n_new
+        probs = probs / probs.sum()
+        # multinomial + a CPU generator require CPU probs; sampled indices are just
+        # used for host-side list/bool-mask bookkeeping below, so this is free.
+        grad_idx = torch.multinomial(
+            probs.cpu(), n_grad, replacement=False, generator=backsel_generator
+        )
+        grad_mask = torch.zeros(n_new, dtype=torch.bool, device=proxy_embs.device)
+        grad_mask[grad_idx.to(proxy_embs.device)] = True
+
+        variation_clip_list.extend(checkpointed_forward(grad_idx.tolist()))
+        variation_clip_list.append(proxy_embs[~grad_mask].detach())
+        n_nograd = n_new - n_grad
+    else:
+        # Differentiable slots: checkpointed forward, gradient flows to latents_step.
+        variation_clip_list.extend(checkpointed_forward(list(range(n_grad))))
+
+        # Selected-out slots: plain no_grad forward — cheaper (no checkpoint
+        # recompute, no autograd graph), still included in the loss for full-N stats.
+        n_nograd = n_new - n_grad
+        if n_nograd > 0:
+            with torch.no_grad():
+                for start_idx in range(0, n_nograd, variation_batch_size):
+                    end_idx = min(start_idx + variation_batch_size, n_nograd)
+                    bs = end_idx - start_idx
+                    ctrl_batch = pixel_x0_norm[0].unsqueeze(0).repeat(bs, 1, 1, 1)
+                    variation_clip_list.append(sprinter_vae_clip_forward(ctrl_batch))
 
     new_variation_clip = torch.cat(variation_clip_list, dim=0) if variation_clip_list else None
     # Snapshot for the next step's reuse buffer immediately, before variation_clip_embs

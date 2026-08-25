@@ -39,12 +39,19 @@ cd "$REPO"
 OUTPUT_DIR="output/mlgd_f_age_${SLURM_JOB_ID}"
 mkdir -p "$OUTPUT_DIR"
 
-# Backprop-subsampling (--backsel_k): with e.g. num_variations=100 and backsel_k=20,
-# the loss still sees 100 fresh Sprinter samples/step but gradient only flows through
-# a random 20 of them each step — cuts backward-pass cost ~5x for the same loss
-# fidelity. Leave --backsel_k unset (or >= num_variations) to backprop through all of
-# them, i.e. the original behavior. Uncomment the line below to enable it:
-# BACKSEL_ARGS="--backsel_k 20"
+# Backprop-subsampling (--backsel_k / --backsel_rule): with e.g. num_variations=100
+# and backsel_k=20, the loss still sees 100 fresh Sprinter samples/step but gradient
+# only flows through 20 of them each step — cuts backward-pass cost ~5x for the same
+# loss fidelity. Leave --backsel_k unset (or >= num_variations) to backprop through
+# all of them (original behavior). Two selection rules:
+#   uniform (default) — the 20 are picked with no extra cost.
+#   witness           — scores all 100 first (one cheap extra no_grad forward pass),
+#                        then backprops through the 20 with the largest |MMD witness
+#                        score| (samples in the region of biggest mismatch to target)
+#                        for a lower-variance gradient at the same k.
+# Uncomment one of the lines below to enable it:
+# BACKSEL_ARGS="--backsel_k 20 --backsel_rule uniform"
+# BACKSEL_ARGS="--backsel_k 20 --backsel_rule witness --witness_floor 0.1"
 BACKSEL_ARGS=""
 
 # ── 5. Run ────────────────────────────────────────────────────────────────────

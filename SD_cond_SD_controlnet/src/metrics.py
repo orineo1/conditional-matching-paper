@@ -3,13 +3,70 @@ metrics.py — Loss functions and distribution evaluation for MLGD-F.
 
 Functions:
     compute_mmd               Unbiased MMD with generalised RBF kernel.
-    compute_swd               Sliced Wasserstein Distance (adaptive projections).
+    compute_swd                Sliced Wasserstein Distance (adaptive projections).
+    compute_witness_scores    Per-sample MMD witness function (for importance backsel).
     evaluate_distribution_mmd Decode latent -> scribble -> photos -> CLIP -> MMD.
 """
 
 import numpy as np
 import torch
 import torchvision.transforms.functional as TF
+
+
+def rbf_kernel(a, b, bw, alpha):
+    """Generalised RBF kernel: exp(-(||a-b||^2 / 2bw^2)^alpha)."""
+    a_sq = (a ** 2).sum(dim=1, keepdim=True)
+    b_sq = (b ** 2).sum(dim=1, keepdim=True)
+    dist_sq = a_sq + b_sq.T - 2 * torch.mm(a, b.T)
+    return torch.exp(-(dist_sq / (2 * bw ** 2)) ** alpha)
+
+
+def estimate_bandwidth(x, y, bandwidth_scale=1.0):
+    """Median-heuristic RBF bandwidth between x and y (detached, no_grad)."""
+    dev = x.device
+    ss = min(1000, x.shape[0], y.shape[0])
+    with torch.no_grad():
+        x_sq = (x[:ss].detach() ** 2).sum(dim=1, keepdim=True)
+        y_sq = (y[:ss].detach() ** 2).sum(dim=1, keepdim=True)
+        dists = x_sq + y_sq.T - 2 * torch.mm(x[:ss].detach(), y[:ss].detach().T)
+        dists = dists[dists > 0]
+        bandwidth = (
+            torch.sqrt(torch.median(dists) / 2)
+            if len(dists) > 0
+            else torch.tensor(1.0, device=dev)
+        )
+    return bandwidth.detach() * bandwidth_scale
+
+
+def compute_witness_scores(x, y, bandwidth=None, bandwidth_scale=1.0, kernel_alpha=1.0):
+    """
+    Per-sample MMD witness function w(x_l) = mean_i k(x_l, x_i) - mean_j k(x_l, y_j).
+
+    Positive and large where x has "too much mass" relative to y — i.e. the samples
+    whose removal/change would most reduce the MMD. |w| is the natural importance
+    score for subsampling which x's to backprop through (see backsel_rule="witness"
+    in generation.run_dps_step_clip): cheap (no_grad, row-means of kernel matrices
+    already used by compute_mmd), and doesn't require gradients through the network
+    that produced x.
+
+    Args:
+        x:         [n, d] candidate samples (detached; no_grad here regardless).
+        y:         [m, d] target samples (detached).
+        bandwidth: kernel bandwidth; estimated via median heuristic if None.
+
+    Returns:
+        (scores, bandwidth) — scores: [n] tensor of w(x_l); bandwidth: the (possibly
+        estimated) bandwidth used, so callers can reuse it for the actual loss.
+    """
+    with torch.no_grad():
+        x = x.float().detach()
+        y = y.float().detach()
+        if bandwidth is None:
+            bandwidth = estimate_bandwidth(x, y, bandwidth_scale)
+        K_xx = rbf_kernel(x, x, bandwidth, kernel_alpha)
+        K_xy = rbf_kernel(x, y, bandwidth, kernel_alpha)
+        scores = K_xx.mean(dim=1) - K_xy.mean(dim=1)
+    return scores, bandwidth
 
 
 def compute_mmd(x, y, bandwidth=None, bandwidth_scale=1.0, kernel_alpha=1.0):
@@ -43,25 +100,8 @@ def compute_mmd(x, y, bandwidth=None, bandwidth_scale=1.0, kernel_alpha=1.0):
 
     n, m = x.shape[0], y.shape[0]
 
-    def rbf_kernel(a, b, bw, alpha):
-        a_sq = (a ** 2).sum(dim=1, keepdim=True)
-        b_sq = (b ** 2).sum(dim=1, keepdim=True)
-        dist_sq = a_sq + b_sq.T - 2 * torch.mm(a, b.T)
-        return torch.exp(-(dist_sq / (2 * bw ** 2)) ** alpha)
-
     if bandwidth is None:
-        ss = min(1000, n, m)
-        with torch.no_grad():
-            x_sq = (x[:ss].detach() ** 2).sum(dim=1, keepdim=True)
-            y_sq = (y[:ss] ** 2).sum(dim=1, keepdim=True)
-            dists = x_sq + y_sq.T - 2 * torch.mm(x[:ss].detach(), y[:ss].T)
-            dists = dists[dists > 0]
-            bandwidth = (
-                torch.sqrt(torch.median(dists) / 2)
-                if len(dists) > 0
-                else torch.tensor(1.0, device=dev)
-            )
-        bandwidth = bandwidth.detach() * bandwidth_scale
+        bandwidth = estimate_bandwidth(x.detach(), y, bandwidth_scale)
 
     K_xx = rbf_kernel(x, x, bandwidth, kernel_alpha)
     K_yy = rbf_kernel(y, y, bandwidth, kernel_alpha)

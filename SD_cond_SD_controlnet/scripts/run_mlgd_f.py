@@ -103,6 +103,16 @@ def parse_args():
     p.add_argument("--backsel_k", type=int, default=None,
                    help="Of the freshly-generated variations, how many to backprop "
                         "through each step (None = all)")
+    p.add_argument("--backsel_rule", type=str, default="uniform",
+                   choices=["uniform", "witness"],
+                   help="How to choose the backsel_k differentiated variations: "
+                        "'uniform' (default, no extra cost) or 'witness' "
+                        "(MMD witness-function importance sampling — scores all "
+                        "fresh variations cheaply first, then backprops through "
+                        "the highest-|score| subset for a lower-variance gradient)")
+    p.add_argument("--witness_floor", type=float, default=0.1,
+                   help="Uniform-mixing floor for witness sampling probabilities "
+                        "(0 = pure importance sampling, 1 = uniform)")
 
     # Prompts
     p.add_argument("--prompt",          type=str, default="")
@@ -517,6 +527,8 @@ def main():
             "num_variations":               args.num_variations,
             "reuse_frac":                   args.reuse_frac,
             "backsel_k":                    args.backsel_k,
+            "backsel_rule":                 args.backsel_rule,
+            "witness_floor":                args.witness_floor,
             "base_zeta":                    args.base_zeta,
             "guidance_scale":               args.guidance_scale,
             "controlnet_scale":             args.controlnet_scale,
@@ -602,6 +614,7 @@ def main():
     step_gradients = []
     step_vis_data  = []
     prev_variation_clip = None   # one-step-old CLIP embeddings, used when args.reuse_frac > 0
+    backsel_generator = torch.Generator().manual_seed(args.seed) if args.seed is not None else None
     target_clip_np = all_clip_embeddings.cpu().numpy()
     softmax_man_prompt   = target_groups[-1][1]   # last group (most masculine)
     softmax_woman_prompt = target_groups[0][1]    # first group (most feminine)
@@ -720,6 +733,11 @@ def main():
             prev_variation_clip=prev_variation_clip,
             reuse_frac=args.reuse_frac,
             backsel_k=args.backsel_k,
+            backsel_rule=args.backsel_rule,
+            backsel_generator=backsel_generator,
+            witness_floor=args.witness_floor,
+            witness_bandwidth_scale=args.bandwidth_scale,
+            witness_kernel_alpha=args.kernel_alpha,
         )
 
         grad_norm = grad.norm().item()

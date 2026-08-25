@@ -269,13 +269,24 @@ def run_dps_step_clip(
                                backward-pass cost.
         backsel_rule:          'uniform' (default) — first n_grad fresh draws are
                                differentiable, no extra cost.
-                               'witness' — score all n_new candidates first (cheap,
-                               no_grad, one extra forward pass), then backprop only
-                               through the n_grad with largest |MMD witness score|
-                               (see metrics.compute_witness_scores); the rest reuse
-                               their already-computed detached embeddings. Lower-
-                               variance gradient for the same k, at the cost of one
-                               extra no_grad forward per non-selected sample.
+                               'witness' — generate all n_new candidates through
+                               checkpoint (their forward cost is ~identical to
+                               no_grad — checkpoint doesn't store activations
+                               either way), score them for real with the MMD
+                               witness function (see metrics.compute_witness_scores),
+                               then keep only the n_grad highest-|score| rows
+                               attached and .detach() the rest individually before
+                               concatenating. Detaching a row structurally removes
+                               its checkpoint node from the graph, so it's never
+                               recomputed or backpropped — total cost is the same
+                               n_new + n_grad forward-equivalents as if you'd
+                               written two separate loops, but because it's the
+                               *same* checkpoint node that's kept (not a fresh
+                               regeneration), checkpoint's RNG-state preservation
+                               reproduces the exact sample that was scored when it
+                               recomputes for backward, giving a lower-variance
+                               gradient for the same k with no extra Sprinter calls
+                               versus doing it "the naive way".
         backsel_generator:     optional torch.Generator for reproducible witness
                                sampling.
         witness_floor:         mixes the witness-score distribution with `witness_floor`
@@ -321,54 +332,59 @@ def run_dps_step_clip(
         with torch.amp.autocast("cuda", enabled=False):
             return encode_images_clip(var_pixels.float(), clip_model, clip_processor)
 
-    def checkpointed_forward(positions):
-        """Differentiable forward for len(positions) fresh slots (checkpointed)."""
-        out = []
-        for start in range(0, len(positions), variation_batch_size):
-            bs = len(positions[start:start + variation_batch_size])
+    def checkpointed_forward(count):
+        """
+        Differentiable forward for `count` fresh slots, checkpointed, one row-tensor
+        per slot. Cost of *this* call is ~identical to a no_grad forward — checkpoint
+        doesn't store activations either way; the recompute-and-backward cost of a
+        row only actually happens later, at backward time, and only for rows that
+        are still attached to the loss graph then (see the 'witness' branch below).
+        """
+        rows = []
+        for start in range(0, count, variation_batch_size):
+            bs = min(variation_batch_size, count - start)
             ctrl_batch = pixel_x0_norm[0].unsqueeze(0).repeat(bs, 1, 1, 1)
-            out.append(torch.utils.checkpoint.checkpoint(
+            chunk = torch.utils.checkpoint.checkpoint(
                 sprinter_vae_clip_forward, ctrl_batch, use_reentrant=False
-            ))
-        return out
+            )
+            rows.extend(chunk[j:j + 1] for j in range(bs))
+        return rows
 
     variation_clip_list = []
 
     if backsel_rule == "witness" and 0 < n_grad < n_new:
-        # Score all n_new candidates first (cheap, no_grad, one extra forward pass
-        # vs. 'uniform'), then backprop only through the n_grad with largest |witness
-        # score| — the rest reuse their already-computed detached embeddings, no
-        # further forward calls needed for them.
+        # Generate every candidate ONCE via checkpoint (same forward cost as
+        # no_grad). Score them for real — their actual realized values, not a
+        # proxy — pick which n_grad to keep differentiable, and detach the rest
+        # *individually*, before concatenating. Detaching a specific row's tensor
+        # structurally removes that row's checkpoint node from the backward graph,
+        # so autograd.grad() below recomputes+backprops only through the kept
+        # n_grad rows (checkpoint's RNG-state preservation reproduces them
+        # bit-identically — this differentiates through the literal sample that
+        # was scored, not a fresh independent redraw at the same slot).
+        all_rows = checkpointed_forward(n_new)
+        all_embs = torch.cat(all_rows, dim=0)
+
         with torch.no_grad():
-            proxy_list = []
-            for start_idx in range(0, n_new, variation_batch_size):
-                end_idx = min(start_idx + variation_batch_size, n_new)
-                bs = end_idx - start_idx
-                ctrl_batch = pixel_x0_norm[0].unsqueeze(0).repeat(bs, 1, 1, 1)
-                proxy_list.append(sprinter_vae_clip_forward(ctrl_batch))
-            proxy_embs = torch.cat(proxy_list, dim=0)
+            scores, _ = compute_witness_scores(
+                all_embs.detach(), all_clip_embeddings,
+                bandwidth_scale=witness_bandwidth_scale, kernel_alpha=witness_kernel_alpha,
+            )
+            probs = scores.abs().double()
+            probs = (1.0 - witness_floor) * probs / probs.sum().clamp_min(1e-12) + witness_floor / n_new
+            probs = probs / probs.sum()
+            # multinomial + a CPU generator require CPU probs.
+            grad_idx = set(torch.multinomial(
+                probs.cpu(), n_grad, replacement=False, generator=backsel_generator
+            ).tolist())
 
-        scores, _ = compute_witness_scores(
-            proxy_embs, all_clip_embeddings,
-            bandwidth_scale=witness_bandwidth_scale, kernel_alpha=witness_kernel_alpha,
+        variation_clip_list.extend(
+            row if i in grad_idx else row.detach() for i, row in enumerate(all_rows)
         )
-        probs = scores.abs().double()
-        probs = (1.0 - witness_floor) * probs / probs.sum().clamp_min(1e-12) + witness_floor / n_new
-        probs = probs / probs.sum()
-        # multinomial + a CPU generator require CPU probs; sampled indices are just
-        # used for host-side list/bool-mask bookkeeping below, so this is free.
-        grad_idx = torch.multinomial(
-            probs.cpu(), n_grad, replacement=False, generator=backsel_generator
-        )
-        grad_mask = torch.zeros(n_new, dtype=torch.bool, device=proxy_embs.device)
-        grad_mask[grad_idx.to(proxy_embs.device)] = True
-
-        variation_clip_list.extend(checkpointed_forward(grad_idx.tolist()))
-        variation_clip_list.append(proxy_embs[~grad_mask].detach())
         n_nograd = n_new - n_grad
     else:
         # Differentiable slots: checkpointed forward, gradient flows to latents_step.
-        variation_clip_list.extend(checkpointed_forward(list(range(n_grad))))
+        variation_clip_list.extend(checkpointed_forward(n_grad))
 
         # Selected-out slots: plain no_grad forward — cheaper (no checkpoint
         # recompute, no autograd graph), still included in the loss for full-N stats.

@@ -1,0 +1,64 @@
+# Agent S -- Stable Diffusion engineering: move trust_noise and backsel into the
+# real SD pipeline (SD_cond_SD_controlnet/scripts/run_mlgd_f.py). Pre-registered
+# 2026-08-24 BEFORE any cluster run. Design + definitions: sd/PIPELINE.md.
+agent: S
+area: SD pipeline -- exact speedups, latent trust region, back-selected backprop
+baseline:
+  script: SD_cond_SD_controlnet/scripts/run_mlgd_f.py, arm `baseline` of sd/submit_sd_dev.sh
+  task: 50/50 gender targets (50 man + 50 woman, HED scribble of a generated man),
+        SDXL-base architect, prompt "", DDIM 100 steps from 50, base_zeta 5, N=32
+        variations, sprinter SDXL-Turbo+ControlNet-Scribble 2 steps, CLIP ViT-L/14 MMD
+        (sqrt, unbiased, median bandwidth), seed 1, --seeded_rng --profile, final eval
+        2000 fresh sprinter photos (batch 8).
+  metric: final_mlgd_f_mmd (lower better) and mmd_delta = regular - mlgd_f (higher better);
+          cost = profile.json mean per-step wall time, max_memory_allocated_mb,
+          n_forward / n_differentiated sprinter samples per step.
+candidates:
+- id: S-1
+  name: novis (+ arch_single_batch)
+  exactness: EXACT for the guidance path (vis is out of graph; single-batch UNet at
+             gs=0 equals the CFG blend up to fp16 batch-dim round-off)
+  prediction: >
+    Same per-step MMD trajectory and same final MMD as baseline up to GPU
+    nondeterminism (|diff| within the 2000-sample eval noise, ~0.005); wall time
+    -15..-30% at N=32 (vis is 5 sprinter calls + 4 VAE decodes vs 32 in-graph
+    variations, so its share is smaller than at the audit's N=6); architect share
+    halves.
+- id: S-2
+  name: trust_noise TAU (latent RMS trust region)
+  definition: ||correction||_2 <= TAU*sqrt(1-abar_{t_prev})*sqrt(16384), TAU=1.0 first
+  prediction: >
+    Unknown regime: whether the cap binds at all at base_zeta=5 depends on the
+    correction norms, which the baseline arm logs (trust_cap_tau1). If it never binds
+    the arm is identical to novis (null, no cost). If it binds on a heavy tail of
+    steps, expect the synthetic mechanism (fewer overshoots) to give a better or
+    equal final MMD at zero extra cost; regression would indicate the cap is too tight
+    (then TAU should be raised to the ~p90 of corr_norm_raw/cap_tau1).
+  rejection: final MMD significantly worse than novis across >= 3 seeds at the TAU
+             where the cap binds on 10-50% of steps.
+- id: S-3
+  name: backsel k=8 of N=32, kcenter / uniform
+  exactness: uniform unbiased (Horvitz-Thompson), kcenter biased (Jacobian
+             substitution), both exact at k=N; regeneration bit-identity logged
+             (regen_max_abs_err)
+  prediction: >
+    Per-step wall time: differentiated variations 32 -> 8, forwards 32 -> 40;
+    with the audit's 5:1 in-graph vs no-grad accounting the sprinter share drops to
+    (32 + 5*8)/(5*32) = 0.45 of baseline, i.e. ~-40..-50% per-step wall time at N=32.
+    Peak memory: roughly unchanged (variation graphs were already serialised by
+    the per-variation checkpoint). Quality: kcenter >= uniform; uniform adds
+    selection variance sqrt(N/k - 1) = 1.7x relative gradient noise -> expect a
+    small degradation of the MMD trajectory unless the trust region absorbs it
+    (trust_backsel arm). A regen_max_abs_err > 1e-3 would falsify the exact-replay
+    assumption and block any quality claim.
+  rejection: final MMD significantly worse than novis in >= 2 of 3 seeds for BOTH
+             rules, or per-step wall time not below 0.7x novis.
+- id: S-4
+  name: trust_backsel (kcenter k=8 + trust TAU)
+  prediction: best cost/quality point if S-2 binds and S-3 is cheap; otherwise equal
+              to whichever component is active.
+protocol:
+  smoke: sd/submit_sd_smoke.sh (catfish, 5 steps, N=8, eval 64) -- flags run, JSON produced.
+  dev: sd/submit_sd_dev.sh ARM (salmon), seed 1 for all arms; seeds 2,3 later for the
+       arms that survive; quality compared on final_mlgd_f_mmd with the eval noise
+       floor estimated from the two 2000-sample evals; cost compared on profile.json.

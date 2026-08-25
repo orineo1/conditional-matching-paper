@@ -200,10 +200,28 @@ def main():
     ap.add_argument("--target-size", type=int, default=250)
     ap.add_argument("--calib-c", type=float, default=0.05,
                     help="global guidance-magnitude constant; zeta_d = C/median|g|_d")
+    ap.add_argument("--zeta-map", default=None,
+                    help='JSON dict d -> zeta from Experiment 5B, e.g. '
+                         '\'{"2":0.967,"4":0.779,"8":6.839}\'. When given, the '
+                         'magnitude rule is bypassed and only these d are run. '
+                         'This is the ONLY protocol under which the sweep is '
+                         'interpretable: the baseline must be a working '
+                         'optimiser at every d before comparing it to Adam.')
+    ap.add_argument("--x-init", default="randn")
+    ap.add_argument("--step-clip", default="noise",
+                    choices=["none", "noise", "ddim"])
+    ap.add_argument("--step-tau", type=float, default=1.0)
     ap.add_argument("--tag", default="")
     a = ap.parse_args()
 
     rows, n_star = [], {}
+    zeta_map = None
+    if a.zeta_map:
+        import json as _json
+        zeta_map = {int(k): float(v) for k, v in _json.loads(a.zeta_map).items()}
+        a.d_grid = sorted(zeta_map)
+        print(f"calibrated zeta from Exp 5B: {zeta_map}")
+
     for d in a.d_grid:
         params = as_params(d)
         gen = torch.Generator().manual_seed(987654)
@@ -218,9 +236,13 @@ def main():
         # so the applied update has the same magnitude at every dimension. C is
         # a single global constant fixed at d = 1 (--calib-c); nothing is tuned
         # per method, and the calibration never sees a final L2.
-        scale = probe_gradient_scale(params, mu, S_G, bw)
-        zeta = a.calib_c / max(scale, 1e-30)
-        print(f"d={d}  bandwidth={bw:.4f}  median|g|={scale:.3e}  zeta={zeta:.3e}")
+        if zeta_map is not None:
+            zeta, scale = zeta_map[d], float("nan")
+        else:
+            scale = probe_gradient_scale(params, mu, S_G, bw)
+            zeta = a.calib_c / max(scale, 1e-30)
+        print(f"d={d}  bandwidth={bw:.4f}  median|g|={scale:.3e}  zeta={zeta:.4g}"
+              f"  x_init={a.x_init}  step_clip={a.step_clip}")
         n_star[d] = None
         for n in a.n_grid:
             cells = {}
@@ -228,7 +250,9 @@ def main():
                 runs = []
                 for r in range(a.restarts):
                     x, info = run(params, mu, S_G, bw, n, temporal, r,
-                                  a.adam_rho, zeta=zeta)
+                                  a.adam_rho, zeta=zeta,
+                                  x_init=(a.x_init if a.x_init == 'randn' else float(a.x_init)),
+                                  step_clip=a.step_clip, step_tau=a.step_tau)
                     runs.append(evaluate(x, params, info))
                 cells[temporal] = [min(q["L2"], 2.0) if not q["diverged"] else 2.0
                                    for q in runs]

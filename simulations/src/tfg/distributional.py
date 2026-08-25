@@ -182,6 +182,38 @@ class LegacyTape:
         return getattr(self.base, name)
 
 
+LEGACY_XT_SEED = 0x5EED0000
+
+
+def legacy_x_init(restart, shape, dtype=torch.float32):
+    """``experiments/_guided.py`` ``x_init="randn"``: ``x_T ~ N(0, I)`` from a
+    private generator seeded ``0x5EED0000 ^ restart`` (protocol correction of
+    2026-08-24)."""
+    g = torch.Generator().manual_seed(LEGACY_XT_SEED ^ int(restart))
+    return torch.randn(*shape, generator=g).to(dtype)
+
+
+class RandnInitTape:
+    """Tape facade serving the engine's ``("x_T",)`` request with
+    :func:`legacy_x_init` (so engine and ``_guided`` runs start from the SAME
+    ``x_T``) and everything else from the wrapped tape (a ``NoiseTape`` or a
+    ``LegacyTape``)."""
+
+    def __init__(self, base_tape, restart):
+        self.base = base_tape
+        self.restart = int(restart)
+        self.seed = base_tape.seed
+
+    def randn(self, key, shape, device=None, dtype=None):
+        if isinstance(key, tuple) and key and key[0] == "x_T":
+            x = legacy_x_init(self.restart, shape, dtype or torch.float32)
+            return x.to(device=device or "cpu")
+        return self.base.randn(key, shape, device=device, dtype=dtype)
+
+    def __getattr__(self, name):
+        return getattr(self.base, name)
+
+
 class CMSampler:
     """Noise-injectable conditional sampler; see module docstring."""
 

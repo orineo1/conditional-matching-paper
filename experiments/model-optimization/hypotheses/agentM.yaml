@@ -1,0 +1,297 @@
+# Agent M -- sample-replay MMD (observation momentum). Pre-registered
+# 2026-08-24, BEFORE any smoke or screening run of the replay candidates.
+# Idea attributed to Ori (upstream reuse_frac mechanism, see
+# replay/ORI_IMPLEMENTATION.md); generalisation and derivations in
+# replay/THEORY.md.  Primary metric: failure-penalised mean exact GMM L2
+# (_common.penalised_score, PENALTY=2.0), paired over restarts 0..39
+# (offset 0; >= 1000 reserved for the verifier), bootstrap 95% CI + paired
+# permutation p.  "Survive" = a significant (p <= 0.05) win in at least one
+# (dim, n) cell of its arm AND no cell significantly worse -- for the
+# batch-mode (calls-saving) candidates the comparison is at EQUAL MMD batch
+# and 25-48% FEWER conditional calls, so a null result is itself a Pareto win.
+agent: M
+area: sample replay in the guidance MMD (fresh + detached past-step samples)
+baseline:
+  engine: GeneralizedTFG via estimator/engine_runner.py, legacy switches,
+          rng=tape, float32, fixed bandwidth, transform=mmd2, loss backend
+          reference; arms no_lgd/none, settings 2D/5D/10D, n in {4, 8, 32}.
+  comparators_in_every_setting: [baseline, trust_noise1]
+mechanism_summary: >
+  At step t the MMD batch is [fresh rows (differentiable, n_f conditional
+  calls); detached rows replayed from the last D steps with geometric weights
+  lambda^k].  batch mode: total batch = n, fresh calls cut to
+  replay_counts(n, lambda, D)[0].  augment (_aug) mode: fresh = n, batch
+  grows.  subsample mode: tape-keyed random rows, plain V-statistic.
+  weighted (w) mode: all cached rows, weighted V-statistic.  The gradient is
+  always evaluated at the CURRENT x through the fresh rows only (contrast
+  with the failed stale-gradient reuse, which froze the derivative itself).
+candidates:
+- id: M-1
+  name: replay30 (Ori's variant, reuse_frac=0.3)
+  spec: depth 1, replay 30% of batch n; fresh calls 0.75n (n=4:3), 0.75n (8:6), 0.72n (32:23)
+  prediction: >
+    2D n=8: within noise of baseline (|diff| < 0.08, p > 0.05) at 25% fewer
+    calls -- a Pareto win; no cell significantly worse.  5D/10D small n:
+    slight positive (variance reduction where SNR is lowest), diff +0.0..+0.05.
+  rejection: significantly worse than baseline in any cell.
+- id: M-2
+  name: replay50
+  spec: depth 1, replay 50%; fresh calls halve (n=8 -> 4 calls/step)
+  prediction: >
+    The aggressive calls-saving arm.  2D n=8: score between baseline(n=4)=
+    0.585 and baseline(n=8)=0.381, and BETTER than baseline at n=4 (equal
+    calls): diff vs base(n=4) > +0.1.  Risk: one-step-old buffer at 50%
+    weight lags early; if 2D n=32 degrades significantly, M-2 fails there.
+- id: M-3
+  name: replay_geo0.3d3 / replay_geo0.5d3 / replay_geo0.7d5
+  spec: geometric decay, batch n, fresh 77%/52%/34% of n resp.
+  prediction: >
+    Deeper+lighter beats depth-1 at equal replay mass (older rows enter with
+    smaller weight, smoother mixture): geo0.5d3 >= replay50 in every dim
+    (both have ~50% fresh).  geo0.7d5 (34% fresh, ~3x calls saving) is the
+    first to break: expect significant 2D n>=8 losses from lag bias
+    (THEORY.md sec 4); if it does NOT break, the Pareto gain is large.
+- id: M-4
+  name: _aug arms (replay30_aug, replay_geo0.5d3_aug)
+  spec: fresh = n (equal calls to baseline), batch grows to ~1.3n / ~1.9n
+  prediction: >
+    The pure variance-reduction reading: if replay helps via ESS, _aug beats
+    baseline at small n where SNR<1 (2D/5D/10D n in {4,8}: diff > 0,
+    significant somewhere); if the campaign's "binding constraint is the step
+    rule, not the per-step sample budget" holds for replay too (as it did for
+    antithetic/CRN/adaptive-n), _aug is null everywhere and the mechanism's
+    only value is the calls saving of batch mode.  This is the diagnostic arm.
+- id: M-5
+  name: weighted mode (replay_w30, replay_wgeo0.5d3)
+  spec: same fresh counts as the subsample twins; all cached rows, weighted V-stat
+  prediction: >
+    Slightly better than the subsample twins (no subsampling noise, full
+    cache ESS): diff(weighted - subsample twin) >= 0, small (< 0.05).  If
+    subsampling noise were the dominant cost, weighted would separate; we
+    predict it does not (the conditional noise dominates).
+- id: M-6
+  name: _trust combinations (replay30_trust, replay_geo0.5d3_trust, replay30_aug_trust, replay_geo0.7d5_trust)
+  spec: candidate + step_clip=noise, step_tau=1 (the promoted champion)
+  prediction: >
+    trust_noise1 caps the per-step move and hence the replay lag, so the
+    combination is >= max(each alone) at small n; specifically
+    replay_geo0.5d3_trust at 2D n=8 within noise of trust_noise1 alone
+    (0.181) at ~half the conditional calls -- the headline Pareto claim if it
+    holds.  Rejection: significantly worse than trust_noise1 alone anywhere.
+- id: M-7
+  name: failure-mode prediction (falsifiable mechanism claim)
+  prediction: >
+    Any losses appear FIRST in 2D at large n (least noise-limited, largest
+    per-step trajectory motion in distribution space) and grow with replay
+    mass (replay50, geo0.7d5), and are REDUCED by _trust; stale-gradient-like
+    catastrophic divergence does NOT appear (diverged counts comparable to
+    baseline), because the gradient is always fresh at the current x.
+notes:
+  approximate: true   # the objective is a trajectory-smoothed MMD, bias measured not assumed
+  smoke_protocol: 2D n=8, 10 restarts, one cell per mechanism (replay30,
+    replay_w30, replay_geo0.5d3, replay30_aug, + baseline), sanity only
+    (finite, plausible, calls accounting correct); no promotion claims from
+    smoke numbers.
+  screening: replay/cells.py + replay/submit_replay.sh, 2D/5D/10D x n {4,8,32},
+    no_lgd/none, restarts 0..39, cluster glacier.
+# --- appended 2026-08-24, AFTER the round-3 verifier FAILED
+# replay_geo0.7d5_trust on held-out seeds (VERIFICATION.md section 8: the
+# R=40 non-inferiority n.s. results moved against the candidate at R=100,
+# offset 2000) and BEFORE any M-8 cell is run (smoke included). ---
+- id: M-8
+  name: recycling-vs-nothing at equal fresh cost (the clean test of Ori's idea)
+  question: >
+    Two-sided.  At the SAME fresh conditional-call budget f per step, does
+    adding 30% recycled (one-step-old, detached) samples to the MMD batch
+    help, do nothing, or hurt, relative to just using the f fresh samples
+    alone?  This isolates the recycled rows' marginal contribution; the
+    screening never ran it (batch-mode arms changed f and batch together).
+  design: >
+    settings 2D/5D/10D x fresh budgets f in {7, 14, 28}.  Arm A = baseline
+    at n=f (batch f, fresh f).  Arm B = replay30 at n = f/0.7, i.e. batch
+    10/20/40 -> replay_counts(B, 3/7, 1) = [7,3]/[14,6]/[28,12]: fresh counts
+    EXACTLY 7/14/28 (verified before registration).  Arms A_trust / B_trust =
+    the same two with step_clip=noise, step_tau=1.  4 arms x 9 cells = 36
+    runs, 100 paired restarts at offset 3000 (fresh, never used anywhere).
+    Paired same-restart comparisons: B - A and B_trust - A_trust (primary,
+    two-sided permutation p + bootstrap 95% CI); equal fresh calls within
+    each pair is asserted from cm_samples (f * 99 both arms).
+  predictions: >
+    Registered two-sided, informed by round-3 verification (replayed rows
+    bias the guidance objective in 5D/10D; 2D gains came partly from the
+    implicit step shrink, which trust makes redundant): 2D no-trust: recycling
+    helps or null (the screening's 2D _aug gains suggest extra batch rows
+    help there); 2D with trust: null; 5D/10D: null or HURTS (bias with no
+    offsetting benefit), more negative without trust than with.  We do NOT
+    predict a significant benefit anywhere with trust on.
+  decision_rule: >
+    Per cell: "helps"/"hurts" iff two-sided p <= 0.05 with the corresponding
+    sign at R=100; otherwise null.  Overall verdict on Ori's mechanism:
+    "helps" requires p <= 0.05 benefit in >= 2 settings within an arm type
+    and no significant harm in any; "hurts" symmetric; else "does nothing"
+    (in which case its only defensible use remains a calls saver, already
+    rejected by the round-3 verifier at the tested operating points).
+  compute: cells_m8.py + submit_m8.sh, 9 array tasks (one per setting x f,
+    the 4 arms run in one process for same-node pairing), glacier CPU.
+# --- appended 2026-08-24, BEFORE any M-9 cell is run (smoke included), and
+# BEFORE implementing/running the fill knob it requires. ---
+- id: M-9
+  name: replay as direction information at TINY fresh budgets (f in {1,2,4})
+  hypothesis: >
+    Two-sided.  trust_noise1 caps the step MAGNITUDE but cannot repair a bad
+    DIRECTION estimated from 1-4 fresh samples; recycled samples might supply
+    the missing information at equal fresh cost.  M-8 tests f >= 7; the
+    effect could exist only below that.  Counter-hypothesis (from the M-8 /
+    round-3 verifier record): recycled rows only add the lag bias, so B <= A.
+  design: >
+    settings 2D/5D/10D x f in {1, 2, 4}; ALL arms with trust_noise1
+    (step_clip=noise, tau=1); 100 paired restarts at offset 4000 (fresh,
+    never used); same-node grouping per setting x f (arms share a process).
+      A  fresh-only n=f                                  (trust_noise1@f)
+      B  fresh f topped up to MMD batch 8 with recycled rows, geometric
+         decay 0.7, depth 5 (new opt-in ReplayConfig.fill=True: replay
+         supplies batch_total - n_t rows split ~ decay^k, largest remainder,
+         clamped by cache availability; fresh count stays f)
+      C  proportional-recycle control: replay30_trust at batch {2, 3, 6} ->
+         replay_counts = [1,1] / [2,1] / [4,2] (fresh exactly f; separates
+         "any recycling" from "topped-up batch").  NOTE at f=1 the closest
+         expressible mass is 50% (1 fresh + 1 recycled), not 30%.
+      D  fresh-only n=8 (trust_noise1@8) -- quality-ceiling REFERENCE at 8x
+         (f=1) to 2x (f=4) the fresh cost; shared per setting, excluded from
+         the decision rule.
+    Fresh-call parity A==B==C = f*99 per restart, asserted at run time.
+  registered_caveats: >
+    (i) STRUCTURAL CAP at f=1: each past step buffers only f=1 fresh row, so
+    depth 5 tops up to at most 5 recycled rows -> B's realised batch is 6,
+    not 8 (and ramps 1..6 over the first 5 steps).  Planned fill counts
+    (before clamping) at f=1/2/4: (2,2,1,1,1)/(2,1,1,1,1)/(1,1,1,1,0);
+    realised at f=1: (1,1,1,1,1).  (ii) f=1 MMD degeneracy: with one fresh
+    row the XX block of a fresh-only batch is the constant k(0) (no
+    gradient); the guidance gradient is pure target attraction.  Well-defined
+    (fixed bandwidth, no adaptive collapse), but arm A at f=1 has no
+    repulsion term while arm B does (recycled rows re-introduce XX cross
+    terms) -- this is part of what "replay supplies information" means and
+    will be reported, not hidden.  (iii) offset 4000 reserved for M-9.
+  predictions: >
+    Registered two-sided.  If the direction-information mechanism is real,
+    B - A > 0 at f in {1,2} in at least 2 settings, with the effect shrinking
+    at f=4 and absent in M-8's f>=7; C sits between A and B in the same
+    cells (dose response).  If the lag-bias mechanism dominates (the M-8
+    outcome extrapolates down), B - A <= 0 everywhere and C ~= A.  We assign
+    no prior preference between these.
+  decision_rule: >
+    Same as M-8: per cell two-sided permutation p <= 0.05 at R=100; "helps"/
+    "hurts" overall needs >= 2 settings same-sign significant within the
+    B-vs-A comparison and no significant opposite cell; C-vs-A is secondary
+    (mechanism attribution); D is descriptive only.
+  compute: cells_m9.py + submit_m9.sh, 9 array tasks (setting x f), glacier.
+# --- appended 2026-08-24, BEFORE any M-10 cell or smoke run. ---
+- id: M-10
+  name: progressive temporally-weighted replay -- buffer POLICY comparison
+  question: >
+    Two-sided.  M-9 fixed the policy (geometric decay 0.7, depth 5) and
+    varied f; M-10 fixes the mechanism (few fresh + frozen recent rows, full
+    buffer in the MMD, gradient through fresh only, + trust_noise1) and
+    varies the BUFFER POLICY at equal fresh cost.  The new question, judged
+    against the M-9 record (2D f<=2 helps ***, 5D f=2 helps *, 10D f=1 hurts
+    ***, else null): does a longer / smarter memory change the 5D/10D
+    picture, or is the M-9 geometric result policy-insensitive?
+  policies: >
+    (a) geo: explicit geometric, decay 0.7 depth 5, top-up to batch 8 --
+    EXISTS (M-9 arm B, runs_m9/*_B.json); reused, not rerun.  (b) fifo<B>:
+    uniform inclusion of the last B-f recycled rows, oldest evicted --
+    plans [f | f,f,..] e.g. fifo8 f=2 = 2+(2,2,2), fifo16 f=2 = 2+(2x7).
+    (c) cohort<B>: capped-cohort thinning, cohort k keeps
+    min(f, ceil(B/2^k)) rows until the B-f budget is spent -- an implicit
+    smooth decay with a longer tail: cohort8 f=2 = 2+(2,2,1,1), cohort16
+    f=2 = 2+(2,2,2,1x8) (depth 11), cohort16 f=4 = 4+(4,4,2,1,1).
+    DEGENERACY registered up front: cohort8 at f=4 has the same plan as
+    fifo8 at f=4 (4+(4)) and would be bit-identical -- it is skipped and
+    fifo8_f4 reused for both labels.
+  design: >
+    settings 2D/5D/10D x f in {2, 4}; candidates replay_{fifo8, fifo16,
+    cohort8, cohort16}_trust at n=f (21 NEW cells after the degeneracy skip);
+    comparators trust_noise1@f (M-9 arm A), geo top-up (M-9 arm B) and
+    trust_noise1@8 ceiling (M-9 D) all REUSED from runs_m9.  DEVIATION from
+    the requested offset-0/R=40 screening, stated openly: reusing the M-9
+    cells for PAIRED comparisons forces the same seeds, so the new cells run
+    at offset 4000, R=100 (also immune to the round-3 winner's-curse flag:
+    full confirmation sample size directly).  Offset 4000 remains dedicated
+    to this replay track; fresh-call parity (f*99) asserted at run time.
+  predictions: >
+    Registered two-sided.  From THEORY.md's lag-bias account: uniform FIFO
+    weights old rows MORE than geometric (no decay), so if lag bias drove the
+    M-9 10D f=1 harm, fifo16 (oldest memory, uniform) is the WORST arm in
+    10D and cohort sits between fifo and geo; if instead batch SIZE drove
+    the 2D gains, fifo16/cohort16 (batch 16) beat all batch-8 arms in 2D at
+    f=2.  We do not predict any policy turning 5D/10D f=4 into a significant
+    win; if one does, that is the M-10 discovery and goes to a held-out
+    verifier before any claim.
+  decision_rule: >
+    Primary per cell: candidate vs trust_noise1@f (equal fresh cost), paired
+    two-sided permutation p <= 0.05 at R=100.  Secondary: candidate vs the
+    M-9 geo arm (policy effect proper).  "Policy matters" verdict needs a
+    significant candidate-vs-geo difference, same sign, in >= 2 settings;
+    any candidate claimed as a winner needs >= 2 settings significant vs
+    trust@f and none significantly worse, then a held-out verifier pass
+    (offset never used) before promotion -- per the round-4 rule.
+  combinations: >
+    Agent B's backsel_* candidates are NOT in engine_runner at registration
+    time; the two pre-agreed combination candidates (backsel_is_k2 + best
+    M-10 policy, with and without batch 16) will be appended as M-10b ONLY
+    after backsel lands, registered before running, per the
+    separate-then-together instruction.
+  compute: cells_m10.py + submit_m10.sh, 6 array tasks (setting x f), glacier.
+# --- appended 2026-08-24, BEFORE any M-11 cell or smoke run. ---
+- id: M-11
+  name: M-10 winners re-tested under the CORRECTED protocol
+  context: >
+    Round-4 held-out verdict on M-10 (VERIFICATION.md section 9, LEGACY
+    protocol x_T=0, zeta=1): fifo16/cohort16 + trust at equal fresh cost gave
+    a replicated 10D gain (+0.10/+0.08 at f=2, +0.07/+0.08 at f=4, p<=0.004),
+    2D did not replicate, 5D null -> 10D-only, not promotable.  An external
+    audit then established the whole campaign ran the legacy protocol; the
+    corrected protocol is x_init=randn (x_T ~ N(0,I)), per-setting calibrated
+    zeta*_trust = 16 / 8 / 4 for 2D / 5D / 10D (protocol/zeta_star.json,
+    l2min rule), step_clip=noise tau=1.
+  question: >
+    Two-sided.  Does the equal-fresh-cost replay gain (fifo16 / cohort16 vs
+    fresh-only, all + trust) survive when the baseline step is properly
+    scaled and x_T is random?  The legacy 10D baseline ran at zeta=1 where
+    zeta*_trust is 4 -- part of the 10D gain may have been replay
+    compensating an under-sized step (replay's f/B rescale and the larger
+    batch change the effective step; THEORY.md section 2); at zeta=4 that
+    compensation is no longer needed and the gain may shrink or vanish.
+    Conversely 2D now runs at zeta=16 (vs 1), a regime never tested with
+    replay.
+  design: >
+    settings 2D/5D/10D x f in {2, 4}; ALL arms x_init=randn, zeta =
+    zeta*_trust of the setting, step_clip=noise, tau=1 (passed as protocol
+    args to engine_runner.cell; replay candidates are used WITHOUT the
+    _trust suffix so the protocol is the single source of the trust setting
+    -- identical config fields either way).
+      A  baseline (fresh-only)          n = f       fresh f
+      B  replay_fifo16                  n = f       fresh f, batch 16 uniform FIFO
+      C  replay_cohort16                n = f       fresh f, batch 16 capped cohorts
+      D  baseline                       n = 8       ceiling reference (shared
+                                                    per setting, descriptive)
+    100 paired restarts at offset 8000 (fresh; never used).  Same-process
+    groups per setting x f (6 array tasks); fresh parity A == B == C = f*99
+    asserted at run time; zeta recorded in each cell's protocol block.
+  predictions: >
+    Registered two-sided, no preferred direction.  Scenarios: (i) 10D gain
+    persists (p<=0.05, both policies, both f) -> the mechanism is not a
+    step-size artefact, candidate for a 1-scale note; (ii) 10D gain shrinks
+    to null -> the legacy gain was zeta compensation, record as such;
+    (iii) 2D at zeta=16: unknown -- a large calibrated step plus lagged
+    rows could hurt (lag bias amplified by the step) or help (batch 16
+    smooths a noisy large step); (iv) 5D: null expected as before.  No
+    promotion claim is possible from M-11 alone under the 2-scale rule
+    unless >= 2 settings are significant same-sign; any such outcome goes
+    to a further fresh offset before being called.
+  decision_rule: >
+    Per cell paired two-sided permutation p <= 0.05 at R=100 vs arm A;
+    "survives" per setting requires both policies significant same-sign at
+    >= 1 f and none significantly opposite; overall promotable only with
+    >= 2 settings surviving.
+  compute: cells_m11.py + submit_m11.sh, 6 array tasks, glacier, offset 8000.

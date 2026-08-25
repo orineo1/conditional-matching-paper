@@ -86,7 +86,7 @@ def main():
     ap.add_argument("--tag", default="")
     a = ap.parse_args()
 
-    rows, zeta_star = [], {}
+    rows, zeta_star, fallbacks = [], {}, set()
     for d in a.d_grid:
         params = as_params(d)
         gen = torch.Generator().manual_seed(987654)
@@ -134,8 +134,11 @@ def main():
             if ok and found is None:
                 found = zeta
                 break
+        fell_back = False
         if found is None and best is not None and best[0] > 0.0:
             found = best[1]
+            fell_back = True
+            fallbacks.add(d)
             print(f"  floor {a.success_floor:.0%} not met; taking the "
                   f"basin-rate maximiser: zeta={best[1]:.4g} (x{best[2]}), "
                   f"reached={best[0]:.0%}")
@@ -147,15 +150,26 @@ def main():
 
     print("\nzeta_d*:")
     for d, z in zeta_star.items():
-        print(f"  d={d:<3} {'FAILED' if z is None else f'{z:.6g}'}")
-    gate = zeta_star.get(1) is not None
+        mark = ("FAILED" if z is None
+                else f"{z:.6g}" + ("   (FALLBACK -- not calibrated)"
+                                   if d in fallbacks else ""))
+        print(f"  d={d:<3} {mark}")
+    print(f"usable d: {sorted(usable)}")
+    # A fallback zeta is NOT a calibrated one. d = 1 at a 38% basin rate is not
+    # a working anchor, and reporting it as calibrated would hide exactly the
+    # failure this gate exists to catch.
+    usable = {d: z for d, z in zeta_star.items()
+              if z is not None and d not in fallbacks}
+    gate = 1 in usable
     print(f"\nd=1 anchor calibrated: {gate}. "
           f"{'Run Exp 3 comparison at this zeta before trusting the sweep.' if gate else 'GATE FAILED -- do not run the downstream sweep.'}")
 
     save(f"exp5b_zeta_calibration{a.tag}",
          {"config": vars(a), "rows": rows,
           "zeta_star": {str(k): v for k, v in zeta_star.items()},
-          "d1_gate": gate})
+          "d1_gate": gate,
+          "fallbacks": sorted(fallbacks),
+          "usable_d": sorted(usable)})
 
 
 if __name__ == "__main__":

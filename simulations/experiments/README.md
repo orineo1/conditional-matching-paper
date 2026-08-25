@@ -30,13 +30,15 @@ call the combination **Adam-CDM**, not AdamDPS.
 |---|---|---|---|---|---|---|---|
 | 1 | `exp1_delta_target_equivalence.py` | Is the engine a strict generalization of ordinary TFG? | engine (point objective, delta target) vs frozen Algorithm 1 reference, all traced intermediates | max abs error over every intermediate | **supported** | `python experiments/exp1_delta_target_equivalence.py` | `results/tfg/exp1_delta_target_equivalence.json` |
 | 2 | `exp2_lgd_vs_adam.py` | Can momentum replace LGD's 3x spatial cost? | 2x2: {no LGD, LGD} x {none, Adam} | exact GMM L2, success, paired CI + permutation p, conditional calls, runtime | **run, negative** | `python experiments/exp2_lgd_vs_adam.py --n 8 --restarts 100` | `results/tfg/exp2_lgd_vs_adam_n{n}.json` |
-| 3 | `exp3_sample_scaling.py` | Where does Adam stop helping? | no-LGD x {none, Adam} across n | `Delta(n)`, its 95% CI, `n*` | **run, `n* = 8`** | `python experiments/exp3_sample_scaling.py --restarts 100` | `results/tfg/exp3_sample_scaling_{setting}.json` |
+| 3 | `exp3_sample_scaling.py` | Where does Adam stop helping? | no-LGD x {none, Adam} across n | `Delta(n)`, its 95% CI, `n*` | **RETRACTED -- see the protocol correction** | `python experiments/exp3_sample_scaling.py --restarts 100` | `results/tfg/exp3_sample_scaling_{setting}.json` |
 | 4 | `exp4_nt_schedules.py` | Does an uneven `n_t` schedule beat a uniform one at equal budget? | constant vs time- vs noise-increasing, x {none, Adam}, plus a budget-matched constant | exact GMM L2, `sum_t n_t`, paired CI | **planned** | `python experiments/exp4_nt_schedules.py --n-max 16 --restarts 100` | `results/tfg/exp4_nt_schedules_nmax{n}.json` |
 | 5 | `exp5_dimy_scaling.py` | Does momentum help more as **dim(Y)** grows? | no-LGD x {none, Adam} across `d` and `n` | `Delta(d,n)`, `n*(d)` | **run, INVALID for its stated question** | `python experiments/exp5_dimy_scaling.py --restarts 50` | `results/tfg/exp5_dimy_scaling_*.json` |
 | 5A | `exp5a_plateau_mechanism.py` | Which part of Adam crosses the plateau? | none vs full Adam vs normalisation-only (`beta1 = 0`) | escape rate, near-optimum rate, exact GMM L2 | **run, supported** | `python experiments/exp5a_plateau_mechanism.py --d 8 --restarts 40` | `results/tfg/exp5a_plateau_mechanism_d{d}*.json` |
 | 5B | `exp5b_zeta_calibration.py` | What guidance strength makes the *baseline* a working optimiser at each dim(Y)? | zeta sweep per `d`, no-momentum arm only | reached-`x*` rate at large `n`, `zeta_d*` | **run; gate FAILED, and it corrects Exp 5** | `python experiments/exp5b_zeta_calibration.py --restarts 16` | `results/tfg/exp5b_zeta_calibration.json` |
 | 6 | `exp6_mpgd.py` | Does MPGD-style guidance help, and does momentum help on top of it? | 2x2: {`x_t`, `x0` (MPGD)} x {none, Adam} | exact GMM L2, success, paired CI | **run, negative** | `python experiments/exp6_mpgd.py --n 8 --restarts 100` | `results/tfg/exp6_mpgd_*.json` |
 | 7 | `exp7_adam_hyperparams.py` | Are the inherited Adam constants right for an MMD loss? | `beta1` x `beta2` x `n`, vs no-momentum | exact GMM L2, paired CI vs none | **run, null** | `python experiments/exp7_adam_hyperparams.py --restarts 40` | `results/tfg/exp7_adam_hyperparams_2D.json` |
+| 9 | `exp9_momentum_tuning.py` | Is momentum useful once normalisation is removed and it is tuned in the regime it is for? | joint `beta1` x `zeta` grid at small `n` vs calibrated baseline | exact GMM L2, success, paired CI | **run, negative** | `python experiments/exp9_momentum_tuning.py --n 4 8 --restarts 40` | `results/tfg/exp9_momentum_tuning_2D*.json` |
+| 10 | `exp10_guidance_noise.py` | Does our benchmark reproduce AdamDPS Figure 1 when guidance noise is injected? | none vs Adam across injected `c * \|\|grad\|\|` noise | crossover coefficient, paired CI | **run, no crossover; trend in their direction** | `python experiments/exp10_guidance_noise.py --n 8 --restarts 60` | `results/tfg/exp10_guidance_noise_*.json` |
 | 8 | `exp8_trust_region.py` | Does a noise-level trust region on the guidance step (`\|\|Delta_t\|\| <= sqrt(1-alphabar_t)`, `trust_noise1`) improve the no-LGD estimator at equal cost, and transfer across 2D/5D/10D? | **through the engine** (`GeneralizedTFG`, `step_clip="noise"`): baseline vs `trust_noise1` at `n in {4,8,16,32}`, paired; LGD and larger-n baselines for the Pareto frontier | exact GMM L2, paired CI + permutation p, conditional draws, wall time | **run (held-out, cluster), supported in 2D and 10D, null in 5D** | `python experiments/exp8_trust_region.py --setting 2D --restarts 100 --offset 1000 --lgd` | `results/tfg/exp8_trust_region_{setting}.json` |
 
 Experiment 1 is cheap (seconds). Experiments 2-7 train or load models on first
@@ -71,6 +73,35 @@ All numbers below are 100 paired restarts on the paper's canonical 2D
 parameters, MAIN model seed 20240401, Adam `rho = 0.4`. Score is the
 failure-penalised mean exact GMM L2 (lower is better).
 
+### PROTOCOL CORRECTION (2026-08-24) -- read before any momentum claim
+
+Three defects in the guided loop invalidated every momentum comparison made
+before this date. All three inflated momentum's apparent benefit.
+
+1. **The trajectory started at a deterministic `x_T = 0`.** Reverse diffusion
+   starts from `x_T ~ N(0, I)`. With `x_T` pinned, all restarts share one basin
+   of a multimodal objective, so a "success rate" measured nothing about the
+   optimiser. Fixed: `x_init="randn"`.
+2. **The guidance step scale `zeta` was never calibrated.** The baseline ran at
+   an effective `zeta = 1` where its basin-of-attraction rate is maximised at
+   `zeta = 8`. An 8x under-scaled baseline is exactly the condition under which
+   Adam's normalisation -- which rescales the step to a fixed magnitude --
+   appears to be a momentum benefit when it is really a step-size correction.
+3. **The step could diverge**, so `zeta` could not simply be raised. Fixed with
+   the Experiment 8 noise-level trust region (`step_clip="noise"`), which
+   removes divergence entirely and makes calibration possible.
+
+**Both arms must be calibrated separately.** Adam normalises its update to
+`~rho`, so the baseline's `zeta` is not a valid scale for it. Applying one
+`zeta` to both arms mis-scales one of them: `zeta = 1` mis-scales the baseline
+(the original error, favouring Adam) and `zeta = 8` mis-scales Adam (an error we
+made while correcting it, and caught, favouring the baseline). Calibrated
+separately on basin-of-attraction rate at `n = 128`: **`zeta_none = 8`
+(88% reached), `zeta_adam = 0.125` (58%)**.
+
+Results below are labelled **[old protocol]** or **[calibrated]**. Only the
+calibrated ones should be cited.
+
 ### Supported
 
 **Engine correctness.** With the point objective and a delta target the engine
@@ -88,8 +119,22 @@ tensor shapes up to 3-D.
 **Benchmark.** Under the canonical parameters the target is realisable:
 `x_opt = -5.0000328`, `L2^2 = 2.29e-08`.
 
-**Momentum helps when conditional samples are scarce** (Experiment 3, no-LGD,
-`Delta = S_none - S_Adam`, positive means Adam better):
+**Momentum does NOT help** (Experiment 3, **[calibrated]**: 2D, no-LGD,
+`x_T ~ N(0,1)`, trust region on, `zeta_none = 8`, `zeta_adam = 0.125`, 100 paired
+restarts). `Delta = S_none - S_Adam`, positive means Adam better:
+
+| n | none | Adam | Delta | 95% CI | p | success none/Adam |
+|---|---|---|---|---|---|---|
+| 4 | **0.2892** | 0.5160 | -0.2268 | [-0.311, -0.140] | **<0.0001** | 59% / 32% |
+| 8 | **0.1736** | 0.4946 | -0.3210 | [-0.397, -0.242] | **<0.0001** | 81% / 36% |
+| 16 | **0.1613** | 0.4323 | -0.2710 | [-0.349, -0.191] | **<0.0001** | 86% / 47% |
+| 32 | **0.1812** | 0.4398 | -0.2585 | [-0.332, -0.183] | **<0.0001** | 82% / 47% |
+
+Adam is worse at **every** n, and `n* = None`. The sign is reversed from the old
+protocol, not merely weakened.
+
+**Superseded [old protocol]** -- `x_T = 0`, uncalibrated `zeta`, no trust
+region. Retained only to document what the defects produced:
 
 | n | none | Adam | Delta | 95% CI | p |
 |---|---|---|---|---|---|
@@ -98,9 +143,9 @@ tensor shapes up to 3-D.
 | 16 | 0.2277 | 0.2262 | +0.0014 | [-0.034, +0.037] | 0.938 |
 | 32 | **0.2521** | 0.2764 | -0.0243 | [-0.049, -0.001] | 0.056 |
 
-`n* = 8`: the largest n whose 95% lower confidence bound on `Delta` is still
-positive. The benefit decays monotonically and reverses by `n = 32`. Success
-rate at `n = 4` rises with Adam; at `n = 32` it falls.
+This reported `n* = 8`. It is **retracted**: the apparent benefit was Adam's
+normalisation compensating for an 8x under-scaled baseline step, and it vanishes
+and reverses once the baseline is calibrated.
 
 ### Not supported
 
@@ -179,6 +224,54 @@ differentiates through the denoiser back to `x_t`; the `x0` (MPGD) arm treats
 Skipping the backpropagation through the denoiser also discards the sensitivity
 of `x_{0|t}` to `x_t`, which is what carries the guidance signal in this setup.
 At the same conditional cost, MPGD is the wrong trade here.
+
+### Experiment 9 -- momentum alone does not help either
+
+Experiment 3 [calibrated] showed full Adam losing, and Experiment 5A identified
+normalisation as the damaging half. That is an argument against normalisation,
+not against momentum, so accumulation **without** division was run as its own
+rule: `m = beta1*m + (1-beta1)*g`, debiased, magnitude preserved, no `sqrt(v)`.
+
+Two corrections were needed first, both of which had made momentum look worse
+than it is:
+
+* It had been calibrated at `n = 128`. Momentum's mechanism is variance
+  reduction, so it must be tuned where the gradient is noisy -- small `n`.
+* `beta1` and `zeta` are coupled, so a joint grid is required, not a slice.
+
+And one outright bug: the momentum buffer was seeded with `m = g` instead of
+`m = 0`. Debiasing by `(1 - beta1**1)` then returns `g/(1 - beta1)`, inflating the
+first step **2x at `beta1 = 0.5` and 20x at `beta1 = 0.95`** -- so every `beta1`
+silently ran a different effective step size, and the inflation grew with
+`beta1`, which is exactly what made large `beta1` look catastrophic. Fixed to
+match `AdamGuidance`, which initialises `m` to zeros.
+
+Joint sweep, `beta1 x zeta`, tuning block at offset 1000, 40 restarts:
+
+| beta1 (at zeta = 2) | n = 4 | n = 8 |
+|---|---|---|
+| **0.0** | **0.174** | **0.131** |
+| 0.3 | 0.268 | 0.196 |
+| 0.5 | 0.387 | 0.266 |
+| 0.7 | 0.516 | 0.354 |
+| 0.9 | 0.655 | 0.570 |
+| 0.95 | 0.772 | 0.631 |
+
+**The best cell at both `n` is `beta1 = 0`** -- no momentum -- and degradation is
+monotone in `beta1` at every `zeta` across a 16x range. So it is not only
+normalisation: accumulation hurts too.
+
+**Internal correctness check.** The `beta1 = 0, zeta = 8` cell returns
+`Delta = 0.0000, p = 1.0000` against the baseline: the momentum path reduces to
+the plain path exactly. The comparison is verified from inside the experiment,
+which the pre-fix runs could not have produced.
+
+Side observation, not the point of the experiment: `zeta = 2` beats the
+calibrated `zeta = 8` at both `n` (0.174 vs 0.257, 0.131 vs 0.165; p = 0.13,
+0.34). `zeta = 8` was calibrated at `n = 128` and is probably too large for small
+`n`. This does not affect the momentum conclusion -- `beta1 = 0` wins in every
+`zeta` column -- but the baseline deserves per-`n` calibration before the
+Experiment 3 numbers are treated as final.
 
 ### Experiment 7 -- the inherited Adam constants are not a live variable
 
@@ -362,6 +455,187 @@ irreducible objective floor (`L2^2 = 9.9e-5` at its optimum, `x_opt = -4.9984`);
 the canonical file's target is realisable (`2.3e-08`, `x_opt = -5.0000328`).
 **The canonical numbers in this README supersede the earlier ones.**
 
+### Experiment 5 re-run [calibrated] -- no dim(Y) effect either
+
+With the corrected protocol, `zeta_d` from Experiment 5B, `d in {2, 4, 8}` (the
+dimensions where the baseline is a working optimiser), 50 restarts:
+
+| d | n=4 | n=8 | n=16 | n=32 |
+|---|---|---|---|---|
+| 2 | -0.045 | -0.036 | -0.013 | -0.008 |
+| 4 | -0.020 | -0.017 | +0.002 | +0.007 |
+| 8 | -0.035 | -0.035 | +0.035 | -0.038 |
+
+`Delta = S_none - S_Adam`. **Every cell is null** (`p >= 0.06`) and the point
+estimates lean negative. `n*(d) = None` at every `d`. The hypothesis that
+momentum's useful regime widens with dim(Y) is **not supported**.
+
+`d = 1` and `d = 16` are excluded: the baseline reaches `x*` on only 38% and 4%
+of restarts respectively at any `zeta`, so neither is a working optimiser and
+neither can support a comparison. The usable band is a 4x range in dim(Y).
+
+### What the AdamDPS paper itself says -- and why it predicts our result
+
+Read against arXiv:2603.16797v2 (ICLR 2026), our negative results are less
+surprising than they first look. Three points from that paper.
+
+**1. Their synthetic study had to inject noise to produce the benefit.** Their
+Section 4 uses a 2-D GMM in which the likelihood score is closed-form. They write
+that the setting is "free of these noise sources", and that they "simulate them
+by adding to the guidance term Gaussian noise of magnitude
+`zeta * ||grad_x log p(y|x_0|t)||`". Figure 1 plots KL against that coefficient
+and reports AdamDPS "achieving lower KL divergence with the target distribution
+**as zeta increases**".
+
+So the paper's claim is explicitly conditional: adaptive moments buy robustness
+**to gradient noise**. Where guidance is not noise-limited, their own figure
+predicts little benefit. Our benchmark's binding difficulty is basin selection on
+a multimodal objective, which is a different failure mode entirely.
+
+**2. Their `beta1`/`beta2` ablation does not contain our arm.** They compare the
+default against `beta1 = 0` and `beta2 = 0` and conclude both moments matter. But
+`beta2 = 0` gives `v = g^2`, hence `g_hat = m_hat/(|g| + delta)` -- a sign-like
+update, which is *maximal* normalisation, not its absence. **No configuration in
+that paper preserves gradient magnitude while accumulating**, which is precisely
+the rule Experiment 9 tests. Their ablation therefore does not contradict our
+result; it does not cover it.
+
+**3. Their baselines are properly tuned.** All methods are tuned with 150-trial
+Bayesian Optimization on a held-out validation split. The mis-scaled-baseline
+defect documented in the PROTOCOL CORRECTION above is a flaw in *our* pipeline,
+not theirs, and their image-domain results stand independently of anything here.
+(Their Algorithm 3 also starts at `x_tn ~ N(0, I)`, confirming the stochastic
+initialisation we had to fix.)
+
+**The remaining tension, and the test for it.** If noise were the whole story,
+Adam should close the gap at our *noisiest* setting, small `n`. It does not.
+That suggests finite-sample MMD noise differs in kind from their additive
+perturbation: theirs is magnitude-proportional and direction-preserving in
+expectation, whereas resampling the conditional set can swing the gradient
+*direction* between basins, and momentum then averages incompatible directions.
+Experiment 10 runs their exact protocol on our benchmark to decide this, with
+the interpretation fixed in advance -- see its docstring.
+
+### Experiment 10 -- AdamDPS's own protocol, run on our benchmark
+
+Their Figure 1 protocol exactly: perturb the guidance gradient by
+`c * ||grad|| * eps`, sweep `c`, compare arms at their separately calibrated
+step sizes. Paired -- both arms see the same noise realisation at every
+`(restart, t)`. `n = 8`, 60 restarts. `Delta = S_none - S_Adam`, so **positive
+would mean Adam better**:
+
+| c | none | Adam | Delta | 95% CI | p | verdict |
+|---|---|---|---|---|---|---|
+| 0.0 | **0.1819** | 0.4775 | -0.2956 | [-0.400, -0.188] | <0.0001 | Adam worse |
+| 0.1 | **0.1473** | 0.4785 | -0.3312 | [-0.432, -0.222] | <0.0001 | Adam worse |
+| 0.2 | **0.1632** | 0.4867 | -0.3234 | [-0.411, -0.234] | <0.0001 | Adam worse |
+| 0.4 | **0.2145** | 0.4962 | -0.2817 | [-0.381, -0.179] | <0.0001 | Adam worse |
+| 0.8 | **0.2491** | 0.5261 | -0.2770 | [-0.371, -0.181] | <0.0001 | Adam worse |
+| 1.6 | **0.4306** | 0.5951 | -0.1645 | [-0.266, -0.059] | 0.0031 | Adam worse |
+| 3.2 | 0.6147 | 0.6765 | -0.0618 | [-0.161, +0.041] | 0.237 | null |
+
+**No crossover.** Adam never overtakes plain guidance at any injected noise level
+up to `c = 3.2`, so our benchmark does **not** reproduce AdamDPS Figure 1.
+
+**But the trend runs in their direction.** The deficit shrinks monotonically from
+`-0.33` at `c = 0.1` to `-0.06` at `c = 3.2`, where it becomes null: as the
+gradient gets noisier, Adam catches up. Adam's own score degrades far more slowly
+across the sweep (0.478 -> 0.677, a 42% rise) than the baseline's
+(0.147 -> 0.615, a 4.2x rise), which is exactly the robustness-to-noise the paper
+claims. The mechanism they describe is real and visible here; it is simply not
+large enough on this benchmark to overcome what Adam gives up, because
+normalisation discards gradient magnitude and magnitude is the signal that
+selects the correct basin.
+
+So the honest reading is **regime, not contradiction**: their claim is about
+noise robustness and survives; our benchmark is dominated by basin selection, a
+failure mode their setting does not have, and there Adam's normalisation is a
+liability. Extrapolating the trend, a crossover would require noise well beyond
+`c = 3.2`, by which point both methods are failing outright (success 23% / 12%).
+
+**Caveat on this experiment's own code.** The verdict flag was initially written
+as `ci95[1] < 0`, which labels *Adam significantly worse* as "ADAM WINS" and
+inverts every row. Fixed; the table above is the corrected reading. The
+underlying paired statistics were never affected.
+
+### Why the dim(Y) question cannot be answered on this benchmark
+
+Motivation for this section: the efficiency case for momentum is that fewer
+conditional samples means a noisier MMD gradient, and that the noise should get
+worse in higher dim(Y) -- so if the toy shows no benefit, perhaps the toy simply
+is not noisy enough. That is a testable claim, and it was tested rather than
+argued.
+
+**Step 1 -- how noisy is small n, really?** Relative gradient noise
+`c_emp = E||g_n - g_bar|| / ||g_bar||` on the 2D setting with the trained
+conditional model:
+
+| t | n=4 | n=8 | n=16 | n=32 | n=128 |
+|---|---|---|---|---|---|
+| 90 | 1.10 | 0.69 | 0.33 | 0.33 | 0.14 |
+| 50 | 2.73 | 1.08 | 0.58 | 0.49 | 0.25 |
+| 10 | 3.63 | 1.37 | 1.02 | 0.88 | 0.32 |
+
+So `n = 4` sits at `c ~ 1-3.6`, squarely inside the range Experiment 10 swept --
+and Adam was still significantly worse at `c = 1.6` and merely null at `c = 3.2`.
+The small-n regime is not one we failed to reach.
+
+**A separate observation from the same numbers.** Real `n = 8` (`c ~ 1`) leaves
+the baseline scoring 0.17, whereas *injected* noise at `c = 1.6` leaves it at
+0.43 -- 2.5x more damage at comparable nominal noise. Independent zero-mean
+errors appear to **self-average along the 99-step trajectory**: the sampler is
+already performing the temporal averaging an EMA would do, so momentum adds lag
+without removing variance that was not already cancelling. That is a hypothesis
+consistent with the data, not something these runs establish directly.
+
+**Step 2 -- does higher dim(Y) create the missing noise?** No, and the reason is
+structural. `as_params` builds dimension `d` by permuting the SAME 11
+Y-locations across coordinates with per-coordinate conditional variance pinned at
+0.12395, so extra coordinates are **repeated measurements of one scalar signal**
+and the estimate gets more stable. With the kernel bandwidth frozen so the median
+heuristic cannot be the cause:
+
+| d | 1 | 2 | 4 | 8* | 16 | 32 | 64 |
+|---|---|---|---|---|---|---|---|
+| c (n=8) | 0.63 | 0.13 | 0.85 | 4.20 | 1.02 | 0.25 | 0.63 |
+
+`*` `x = -2` is the `d = 8` plateau, so the mean gradient is ~0 and the ratio is
+inflated; it is not a real noise level. Strip it and there is no dimensional
+trend -- the opposite of the curse of dimensionality the question assumes.
+
+**Step 3 -- force the issue with nuisance dimensions.** `build_nuisance` /
+`as_params_nuisance` (new, `tests/test_dimy_nuisance.py`) keep the informative
+subspace one-dimensional and append `m` coordinates that are conditionally
+independent of `X`, so the matched distribution lives in `R^(1+m)` while the
+signal does not grow. This is the construction where dimension should cost you.
+It does not:
+
+| m | bandwidth | \|mean g\| | std g | c |
+|---|---|---|---|---|
+| 0 | 50.9 | 2.74e-2 | 2.13e-2 | 0.78 |
+| 8 | 53.9 | 2.26e-2 | 1.16e-2 | 0.51 |
+| 32 | 63.6 | 1.39e-2 | 7.38e-3 | 0.53 |
+
+Signal and noise shrink **together**, so the ratio is flat or improves. Appending
+independent Gaussian coordinates attenuates the RBF kernel by a factor common to
+all pairs in expectation, scaling the MMD's mean and its fluctuation alike; the
+median bandwidth then grows and compensates further.
+
+**Conclusion.** A Gaussian toy with a median-heuristic RBF kernel cannot
+manufacture the low-SNR regime that motivates adaptive moments, by either
+dimensional route. The noise AdamDPS addresses in practice comes from
+backpropagating through a large network and from an imperfect conditional model
+-- not from MMD finite-sample statistics. **The dim(Y) question is therefore not
+answerable here, and no further tuning of this benchmark will change that.**
+Deciding it requires the real setting: Stable Diffusion with CLIP embeddings, a
+real conditional generator, and real gradient noise.
+
+**Efficiency corollary, worth testing on its own.** At `n = 8` the relative noise
+is ~0.6-1.0 and the baseline already scores 0.17, which suggests the conditional
+sample count is larger than it needs to be. `n = 2` and `n = 1` have not been
+run; if they hold up, that is a direct efficiency win independent of the momentum
+question.
+
 ### Planned
 
 - Experiment 4 has not been run.
@@ -379,8 +653,12 @@ the canonical file's target is realisable (`2.3e-08`, `x_opt = -5.0000328`).
   is about sampling noise rather than plateau escape. The current
   `zeta_d = C / median|g|_d` rule equalises update magnitude but does not achieve
   this.
-- A clean accumulation-only arm for Experiment 5A (raw momentum, no division at
-  all), to close out the normalisation-vs-accumulation decomposition.
+- A clean accumulation-only arm for Experiment 5A: **done**, see Experiment 9.
+- **`n = 2` and `n = 1` on the calibrated baseline** -- the efficiency corollary
+  above.
+- **Stable Diffusion + CLIP.** The dimensional question is not decidable on this
+  benchmark for the structural reasons documented above; it needs the real
+  guidance pipeline.
 - **Give Experiment 5B an escape mechanism before re-running the dim(Y) sweep.**
   The `d = 1` gate fails on a genuine local minimum, not a benchmark defect, and
   larger `zeta` diverges rather than escapes. The two candidates are the

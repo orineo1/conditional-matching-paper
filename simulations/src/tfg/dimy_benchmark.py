@@ -47,9 +47,33 @@ that coincide in one coordinate generally differ in another. pi_0 is the
 identity, so d = 1 reproduces the original 2-D benchmark exactly.
 
 The permutations are generated from a fixed seed and hashed into the run record.
-A nuisance-dimension construction (append pure-noise coordinates carrying no
-signal) is provided separately as ``build_nuisance`` and reported apart -- it is
-NOT the primary construction.
+WHY A SECOND CONSTRUCTION IS NEEDED (added 2026-08-24)
+-----------------------------------------------------
+The construction above deliberately holds the per-coordinate conditional
+variance fixed and reuses the SAME 11 Y-locations in every coordinate. That
+isolates dim(Y) from every confound, but it has a consequence that invalidates
+it for the question it was built for: extra coordinates are **repeated
+measurements of one scalar signal**, so the MMD estimate gets MORE stable as d
+grows, not less. Measured relative gradient noise on this construction, with the
+kernel bandwidth frozen so the median heuristic cannot be the cause:
+
+    d        1     2     4     8*    16    32    64
+    c(n=8)  0.63  0.13  0.85  4.20  1.02  0.25  0.63
+    (* x = -2 is the d = 8 plateau, so the mean gradient is ~0 and the ratio
+       is inflated; it is not a real noise level.)
+
+No dimensional trend. This is the OPPOSITE of the curse of dimensionality that
+motivates the question -- where probability mass spreads out and n samples cover
+the space exponentially worse. So ``as_params`` structurally CANNOT test whether
+guidance benefits from momentum at higher dim(Y): it will return nulls at every
+d, and that is a property of the benchmark, not of the guidance rule.
+
+``build_nuisance`` is the construction that can. It appends coordinates that
+carry NO signal about X -- pure noise, conditionally independent of the design
+variable -- so the informative subspace stays 1-D while the matched distribution
+lives in R^(1+m). The n samples must then cover a space whose volume grows with
+m while the signal does not, which is what makes an MMD estimate harder in high
+dimension. Reported apart from the primary construction.
 """
 
 import hashlib
@@ -123,6 +147,62 @@ def build(d, seed=20260821, dtype=torch.float64):
             "perm_sha256": hashlib.sha256(
                 torch.stack(perms).numpy().tobytes()).hexdigest(),
             "seed": seed}
+
+
+def build_nuisance(m, seed=20260821, dtype=torch.float64, nuisance_var=None):
+    """dim(Y) = 1 + m, where only coordinate 0 carries signal about X.
+
+    Coordinate 0 is exactly the validated 2-D benchmark's Y. The m appended
+    coordinates are conditionally independent of X with the same marginal scale,
+    so they add volume without adding information: the MMD must be estimated over
+    a (1 + m)-dimensional space from the same n samples, while the part that
+    determines the optimum stays one-dimensional. ``m = 0`` reproduces
+    ``build(1)`` exactly.
+
+    Contrast with ``build``, where every coordinate carries the same signal and
+    extra dimensions therefore REDUCE estimator noise. See the module docstring.
+    """
+    K = len(BASE_Y)
+    d = 1 + int(m)
+    var = float(SIGMA_YY if nuisance_var is None else nuisance_var)
+    means = torch.zeros(K, 1 + d, dtype=dtype)
+    for k in range(K):
+        means[k, 0] = BASE_X[k]
+        means[k, 1] = BASE_Y[k]          # the one informative coordinate
+        # coordinates 2.. are left at 0 for every component: no component
+        # structure, hence no information about which component (or which x).
+
+    cov = torch.zeros(1 + d, 1 + d, dtype=dtype)
+    cov[0, 0] = SIGMA_XX
+    cov[0, 1] = SIGMA_XY                 # X couples ONLY to coordinate 0 of Y
+    cov[1, 0] = SIGMA_XY
+    cov[1, 1] = SIGMA_YY
+    for j in range(2, 1 + d):
+        cov[j, j] = var                  # independent of X and of each other
+    alpha = torch.full((K,), 1.0 / K, dtype=dtype)
+    return {"means": means, "cov": cov, "alpha": alpha, "d": d,
+            "x_star": torch.tensor([X_STAR], dtype=dtype),
+            "perm_sha256": "nuisance", "n_nuisance": int(m), "seed": seed}
+
+
+def as_params_nuisance(m, seed=20260821, dtype=torch.float64,
+                       threshold=FILTER_THRESHOLD, nuisance_var=None):
+    """``as_params`` for the nuisance construction."""
+    b = build_nuisance(m, seed=seed, dtype=dtype, nuisance_var=nuisance_var)
+    K, d = b["means"].shape[0], b["d"]
+    cm, cc, w = conditional(b, b["x_star"])
+    keep = w >= threshold
+    return {
+        "mu_list": [b["means"][k] for k in range(K)],
+        "Sigma_list": [b["cov"] for _ in range(K)],
+        "alpha": b["alpha"],
+        "target_means": cm[keep].detach().reshape(-1, d),
+        "target_variances": [cc.detach() for _ in range(int(keep.sum()))],
+        "target_weights": (w[keep] / w[keep].sum()).detach(),
+        "x_star": b["x_star"],
+        "source": f"dimy_benchmark.nuisance(m={m}, seed={seed})",
+        "dim_y": d, "n_nuisance": int(m), "perm_sha256": "nuisance",
+    }
 
 
 def conditional(bench, x):

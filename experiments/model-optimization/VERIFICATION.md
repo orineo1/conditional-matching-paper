@@ -1,5 +1,17 @@
 # VERIFICATION -- independent verification and red-team report (Agent 6)
 
+## CURRENT STATUS (2026-08-24, after round 5 + offset-7000 confirmation)
+
+| status | configuration | evidence |
+|---|---|---|
+| **PASS under the corrected protocol** (x_T ~ N(0,I), per-arm calibrated zeta) | **trust_noise1** (`temporal.step_clip="noise", step_tau=1`, no momentum, no LGD) at zeta 16 / 8 / 4 (2D / 5D / 10D; zeta 8 equally good in 2D) | two independent 100-restart paired runs (offsets 6000, 7000) vs no-trust at ITS best zeta (2 / 0.25 / 1): pooled R=200 diff 2D +0.56/+0.36/+0.21/+0.08 (n=4/8/16/32, all p<0.001), 10D +0.10/+0.12/+0.06/+0.04 (p<0.001/<0.001/0.013/0.07), 5D +0.03/+0.05/+0.06/+0.05 (p=0.10/0.018/0.001/0.016); 0 divergences in 2800 trust runs; never significantly worse in 24 cells -- section 10 |
+| Legacy-protocol PASS only (x_T = 0, zeta = 1); NOT re-tested under the corrected protocol, no promotion claim | sqrt_floor, sqrtfloor_clip0.5 (2D+5D conditional); replay_fifo16_trust / replay_cohort16_trust (10D-only, equal fresh cost) | sections 5, 9 |
+| Rejected (held-out FAIL or not replicated) | clip0.5, relclip1 (=qclip0.5), relclip2, relclip_ema2 (2D-only / 10D regressions); replay_geo0.7d5_trust (calls-saving claim did not replicate); precond_* (clean reject); adaptive n, stale-k, recur2, crn, antithetic, bandwidth policies, norm_only, unit (screening) | sections 5, 8, 9; PHASE1.md |
+| Exact-speed | fast_mmd cached target block: EXACT (promote as drop-in); batched LGD / generator seeding: EXACT; batched restarts: statistical equivalence only, ~10x throughput | section 4 |
+
+Everything below section 10 is the historical record; sections 1-9 carry the
+**[legacy protocol]** label.
+
 Campaign `experiments/model-optimization/` (brief FABLE_CDM_PERFORMANCE_ORCHESTRATION),
 commit `6af2081` + working tree of branch `tfg-generalization-v2`, 2026-08-23.
 Verifier files: `verification/PHASE1.md` (code/invariant review, local checks),
@@ -246,3 +258,332 @@ n=32) but small relative to the baseline 0.41-0.53 and with success rate stuck a
   (conditional); the absolute-clip family and `relclip1/relclip2` are 2D-only and
   regress or are mixed at 10D; `relclip_ema2` is safe but 2D-only. Adam-arm and LGD-arm
   interactions were not part of the held-out set.
+
+---
+
+# 8. Round 3 (2026-08-24): sample-replay MMD -- `replay_geo0.7d5_trust`
+
+## 8.1 Protocol
+
+Claim under test (replay/REPORT.md section 4, screening R=40 offset 0):
+`replay_geo0.7d5_trust` (ReplayConfig subsample, decay 0.7, depth 5,
+batch_total=n, composed with trust_noise1) achieves MATCHED quality at ~3-4x
+fewer fresh conditional calls on 2D/5D/10D, plus a same-calls win at 2D n=32
+(+0.037, p=0.005); implementer's evidence: 12/12 call-matched pairings n.s.
+
+Phase-1 red-team (verification/PHASE1.md round-3 addendum) -- mechanism CLEAN:
+no target leak (replay rows are detached past conditional samples); tape keys
+`("replay", t, j, k)` disjoint from eta/delta/renoise (verified by logging all
+tape requests); calls accounting honest (`cm_samples` = generator draws only:
+99/297/1089 fresh at n=4/8/32, MMD batch ramps to n after a depth-5 warm-up);
+bit-identity claims confirmed by own runs (replay off == baseline exact;
+`replay_geo0.3d3` == `replay30` torch.equal at n=4,8, differs at n=32);
+screening cells all offset 0/R=40, comparator cells score-identical to the
+round-2 estimator runs. Precond round: spot-checked the 2D exact-zero controls
+(precond_sign/diag/cov bit-identical to baseline at d_x=1) -- clean reject
+stands, no further verification.
+
+Held-out: **OFFSET 2000** (fully fresh; offset 1000 was not reused because
+trust_noise1 was promoted partly on those seeds -- a non-inferiority
+comparison against a seed-selected champion would be biased in the candidate's
+favour), 100 paired restarts, 24 cells = 3 array tasks (one per setting, all 8
+cells per setting in ONE process on one node): trust_noise1 and
+replay_geo0.7d5_trust at n in {4,8,32}, baseline at n in {8,32}. Job 45936496,
+no errors. Analysis `verification/analyze_r3.py` ->
+`verification/heldout_r3_tables.md`. Decision standard (pre-registered in the
+Phase-1 addendum): non-inferiority judged on the 95% CI of the paired L2 diff
+(lower bound above ~-0.05 = "matched"), not on p > 0.05.
+
+## 8.2 Results (paired diff = comparator - candidate, + = replay better; R=100)
+
+Cell scores (fresh calls): 2D trust 0.178/0.161/0.216 at 396/792/3168, replay
+0.300/0.170/0.194 at 99/297/1089, baseline 0.334/0.231 at 792/3168.
+5D trust 0.510/0.515/0.427, replay 0.598/0.517/0.447, baseline 0.553/0.444.
+10D trust 0.612/0.516/0.443, replay 0.656/0.622/0.524, baseline 0.673/0.469.
+
+| comparison (cand calls vs comp calls) | 2D | 5D | 10D |
+|---|---|---|---|
+| same-n n=4 (99 vs 396, the "4x" claim) | **-0.122*** [-0.182,-0.062] | **-0.088*** [-0.151,-0.026] | -0.045 [-0.099,+0.011] |
+| same-n n=8 (297 vs 792) | -0.009 [-0.050,+0.030] | -0.003 [-0.053,+0.047] | **-0.105*** [-0.146,-0.063] |
+| same-n n=32 (1089 vs 3168) | +0.022 [-0.009,+0.050] p=0.154 | **-0.020*** [-0.040,-0.004] | **-0.080*** [-0.111,-0.051] |
+| replay@n8 vs trust@n4 (297 vs 396, 1.3x fewer) | +0.008 [-0.038,+0.052] | -0.008 [-0.059,+0.043] | -0.010 [-0.055,+0.036] |
+| replay@n32 vs trust@n8 (1089 vs 792, MORE calls) | -0.034 [-0.069,-0.000] p=0.054 | +0.068* | -0.008 [-0.044,+0.029] |
+| replay@n32 vs plain baseline@n32 (1089 vs 3168) | **+0.037*** [+0.004,+0.067] | -0.004 [-0.026,+0.018] | **-0.054*** [-0.093,-0.016] |
+
+(* = p <= 0.05; full tables with wins, mmd2_eval CIs in heldout_r3_tables.md.)
+Secondary metric `mmd2_eval`: significantly WORSE for replay in 5D at every n
+(p <= 0.007) and in 10D at every n (-0.06..-0.23, p < 0.001); never
+significantly better except in the vs-plain-baseline@n8 pairings.
+
+## 8.3 Verdict: **FAIL -- do not promote** (the promoted claim did not replicate)
+
+| element of the claim | held-out outcome |
+|---|---|
+| "matched at ~4x fewer calls" (replay@n4 99 vs trust@n4 396) | **FAIL**: significantly worse in 2D (-0.122) and 5D (-0.088); 10D CI reaches -0.099 -- nowhere does the CI support "matched" |
+| "matched at ~3x fewer calls, same n" (replay@n32 vs trust@n32) | **FAIL in 5D/10D** (-0.020*, -0.080*); 2D OK (+0.022 n.s.) |
+| same-calls win at 2D n=32 vs champion (+0.037 p=0.005 in screening) | **NOT REPLICATED**: +0.022, p=0.154 (same-n vs trust; the +0.037* that does replicate is vs the PLAIN baseline, which trust@n8 already beats with 1/4 of the calls) |
+| "12/12 call-matched pairings n.s." | the n.s. pairings were R=40 non-inferiority by absence of significance; at R=100 two of the honest-savings pairings become significant losses and one ("1089 vs 792") gives the candidate MORE calls and still trends worse in 2D (-0.034, p=0.054) |
+| what SURVIVES | a ~1.33x saving (replay@n8, 297 calls, matches trust@n4, 396 calls, in all three settings: CIs within [-0.06,+0.05]); and 2D-only: replay@n32 beats the plain baseline at 1/3 calls |
+
+Per setting: 2D **FAIL** (4x leg fails, n=32 win not replicated; frontier points
+dominated by trust's own n=4/n=8 points), 5D **FAIL** (same-n inferior at n=32,
+4x leg fails, mmd2_eval worse everywhere), 10D **FAIL** (inferior at nearly
+every pairing incl. vs plain baseline at n=32). A 1.33x call saving in a
+regime trust_noise1 already serves does not justify adding a buffer mechanism;
+the "promote conditionally" recommendation of replay/REPORT.md is REVERSED.
+`trust_noise1` alone remains the promoted configuration; the round-2 verdict
+table is unchanged.
+
+## 8.4 Round-3 red flags
+
+1. **Winner's curse on non-inferiority screening.** The promotion rested on
+   n.s. p-values at R=40 -- absence of evidence -- and every borderline
+   pairing moved against the candidate at R=100 on fresh seeds (2D n=4:
+   -0.062 n.s. -> -0.122***; 2D n=32 win +0.037** -> +0.022 n.s.; 5D n=32
+   -0.06 -> -0.020*). Future non-inferiority claims must be pre-registered
+   with a margin and judged on CIs at the confirmation sample size.
+2. One of the implementer's "call-matched" pairings (replay@n32 1089 vs
+   trust@n8 792) gives the CANDIDATE 37% more calls; it is a dominance check,
+   not a savings claim, and indeed trust@n8 dominates replay@n32 in 2D and 10D.
+3. `mmd2_eval` (the objective itself) is consistently worse for replay in
+   5D/10D -- the replayed rows bias the guidance signal exactly as THEORY.md's
+   trajectory-smoothing reading predicts; the trust region caps but does not
+   remove the lag.
+4. Mechanism-level caveats (benign, for the record): depth-5 warm-up ramp
+   (first ~5 steps run smaller MMD batches); `replay50` never ran (validate
+   rejects lambda=1); cross-n pairings share only the first min(n_t) eta draws
+   per step.
+
+---
+
+# 9. Round 4 (2026-08-24) [legacy protocol]: progressive FIFO / cohort replay (M-10)
+
+**PROTOCOL CAVEAT (applies to every number in sections 1-9).** An external audit
+established that the whole campaign so far ran the LEGACY protocol
+(`init="zeros"`: x_T = 0, and zeta = 1 / `guidance_scaling="raw"`). All
+verdicts in this file, including this section, are therefore labelled
+**[legacy protocol]**. A corrected-protocol re-test (round 5: x_T ~ N(0, I),
+calibrated zeta) is REQUIRED before ANY candidate -- trust_noise1 included --
+is promoted, regardless of the outcome below.
+
+## 9.1 Protocol
+Claim (replay/m10_tables.md, hypotheses M-10): `replay_fifo16_trust` (f fresh
+rows + up to 14 recycled rows from the last 7 steps, gradient through the
+fresh rows only, + trust_noise1) beats fresh-only `trust_noise1@f` at EQUAL
+fresh cost: 2D f=2 +0.089 (p=0.007), 10D f=2 +0.084 (p=0.0005) and f=4 +0.082
+(p=0.0007), 5D null; `replay_cohort16_trust` similar but weaker. The M-10
+estimate is a selection among 10 policy x f arms on the M-9 seeds (offset
+4000), with the comparators reused from a different SLURM job (same-node
+pairing unverifiable from the artefacts -- PHASE1.md round-4 addendum).
+Phase-1 red-team: plans, calls accounting (cm_samples = f x 99 exactly, MMD
+batch ramps to 16), tape keys (fresh draws identical to trust@f, first step
+bit-identical), detached buffer, cohort8@f4 == fifo8@f4 degeneracy, and the
+M-10 statistics were all reproduced/confirmed.
+Held-out: OFFSET 5000 (never used), R=100, 21 cells in 3 array tasks (one per
+setting, all 7 cells in ONE process/node): trust_noise1@{2,4,8},
+replay_fifo16_trust@{2,4}, replay_cohort16_trust@{2,4}. Job 45938379, no
+errors. Analysis `verification/analyze_r4.py` -> `heldout_r4_tables.md`.
+
+## 9.2 Results (paired diff = trust@f - candidate@f, + = candidate better; R=100)
+
+| setting | f | fifo16 vs trust@f [CI] p | cohort16 vs trust@f [CI] p | M-10 estimate (fifo16 / cohort16) | fifo16 vs trust@8 (792 calls) |
+|---|---|---|---|---|---|
+| 2D | 2 | +0.038 [-0.030,+0.104] p=0.28 | +0.020 [-0.043,+0.084] p=0.54 | +0.089** / +0.066* | -0.048 (p=0.08) |
+| 2D | 4 | -0.009 [-0.058,+0.040] p=0.73 | +0.007 [-0.046,+0.059] p=0.79 | -0.032 / -0.005 | -0.022 n.s. |
+| 5D | 2 | -0.017 [-0.064,+0.029] p=0.48 | +0.026 [-0.022,+0.073] p=0.28 | +0.020 / +0.035 | -0.043 n.s. |
+| 5D | 4 | +0.014 [-0.031,+0.060] p=0.54 | -0.002 [-0.050,+0.045] p=0.93 | -0.009 / -0.012 | -0.007 n.s. |
+| 10D | 2 | **+0.103** [+0.055,+0.150] p<0.001 | **+0.080** [+0.036,+0.123] p<0.001 | +0.084*** / +0.050* | +0.008 n.s. (matches trust@8 at 1/4 calls) |
+| 10D | 4 | **+0.074** [+0.025,+0.122] p=0.004 | **+0.083** [+0.039,+0.127] p<0.001 | +0.082*** / +0.080*** | **+0.044** (p=0.031); cohort16 +0.053 (p=0.007) |
+
+Secondary `mmd2_eval` agrees in 10D (fifo16 f=2 +0.199***, cohort16 f=4
++0.064*) and is null elsewhere (5D fifo16 f=4 +0.027*** on mmd2_eval with a
+null L2). Divergences 0 everywhere. Call-halving check (candidate@2, 198
+calls, vs trust@4, 396): n.s. in every setting (10D fifo16 +0.038 [-0.013,
++0.089]); the 10D win is at equal fresh cost, not a call reduction beyond
+what trust_noise1@f already gives.
+
+## 9.3 Verdict [legacy protocol]
+
+| candidate | 2D | 5D | 10D | overall |
+|---|---|---|---|---|
+| replay_fifo16_trust | **NOT REPLICATED** (M-10 +0.089** -> +0.038 n.s.; f=4 null) | null (as screened) | **PASS** (f=2 +0.103***, f=4 +0.074**; fifo16@2 matches trust@8 at 1/4 the calls; fifo16@4 beats trust@8) | **FAIL for promotion** under the >= 2-scale rule: a real, replicated 10D-only equal-cost gain |
+| replay_cohort16_trust | null | null | **PASS** (f=2 +0.080***, f=4 +0.083***) | same: 10D-only |
+
+The 10D effect is genuine (fresh seeds, same-process pairing, both policies,
+both f, CIs well clear of zero, objective agrees) -- it is the first
+recycling mechanism whose 10D benefit survives held-out confirmation, and it
+is consistent with the round-2 finding that 10D at n <= 8 is the regime where
+the guidance gradient is most noise-dominated (a 16-row MMD batch at 2-4 fresh
+calls per step is what helps there). But the 2D claim shrank to null on fresh
+seeds (the usual post-selection shrinkage, red flag 1 of section 8.4) and 5D
+is null, so the candidate does not meet the campaign's promotion rule; it can
+be recorded as a 10D-specific, equal-cost improvement pending round 5. No
+promotion of anything until the corrected-protocol re-test.
+
+## 9.4 Round-4 red flags
+1. **Legacy protocol** (x_T = 0, zeta = 1) for the entire campaign: every
+   verdict in this file is provisional until the round-5 corrected-protocol
+   re-test; effects that depend on the zero start (e.g. the small-n 2D
+   divergence tail that clipping/trust fix) may change size or sign.
+2. Comparator reuse across SLURM jobs in M-10 (unverifiable same-node
+   pairing); the held-out design re-ran every comparator in-process.
+3. Post-selection shrinkage again: the 2D f=2 +0.089** became +0.038 n.s.;
+   only the 10D effects, which were the largest and appeared for both
+   policies and both f, replicated.
+4. The 10D gain is an equal-fresh-cost quality gain, NOT a call saving:
+   candidate@2 vs trust@4 is n.s. in all settings.
+
+---
+
+# 10. Round 5 (2026-08-24): corrected protocol -- trust_noise1 vs calibrated no-trust
+
+## 10.1 What was tested
+H-R5 (hypotheses/agent4.yaml): under the corrected protocol -- `x_T ~ N(0,I)`
+(generator `0x5EED0000 ^ restart`, i.e. the same x_T for every arm of a
+restart; verified in `RandnInitTape` / `_guided.py:103`) and a PER-ARM
+calibrated guidance scale zeta -- does the noise-level trust region
+(trust_noise1) still beat the no-trust estimator at equal conditional cost?
+Arms: A = trust @ zeta*_trust (16 / 8 / 4 for 2D / 5D / 10D), B = no trust @
+zeta*_notrust (2 / 0.25 / 1), C = no trust @ zeta*_trust. Single pre-specified
+primary comparison A vs B, R=100 paired restarts at the fresh offset 6000, 36
+cells (`protocol/cells_r5.py`, job a4r5; `r5_tables.md`). Calibration:
+`protocol/calibrate_zeta.py`, engine path, n=128, 40 restarts at offset 5000,
+grid {0.25..32} (`zeta_star.json/.md`).
+
+## 10.2 Red-team of the calibration and protocol
+* **Criterion amendment -- legitimate, with one open sensitivity.** The
+  pre-registered exp5b "basin" rule (reached = ||x-x*|| < 0.5, a dim(x)=1
+  construct) returned reached = 0% at every zeta in 5D (d_x=4) and 10D
+  (d_x=9), so its fallback picked zeta = 0.25 for BOTH arms there -- a
+  meaningless answer. The amendment (zeta* = argmin of the failure-penalised
+  exact L2 over divergence-free zetas at n=128) was (i) written down before
+  any round-5 cell ran, (ii) applied symmetrically to both arms and all
+  settings, (iii) chosen on the paper's own metric, and (iv) changes the
+  selection only where the basin rule had failed (5D/10D trust: fallback
+  0.25 -> 8 / 4; notrust: identical under both rules in every setting) plus
+  2D trust (8 -> 16, where the n=128 scores 0.2188 vs 0.2114 are within the
+  40-restart noise floor; reach 75% vs 67.5%). I judge this a legitimate
+  amendment, not a forking path: the alternative rule is inapplicable, and
+  the calibration seeds (offset 5000) are disjoint from the test seeds
+  (offset 6000). Residual risk: 2D A ran at zeta 16 while the basin rule
+  says 8; the existing runs cannot test that (only zeta 16 exists at the
+  compared n) -- the confirmatory re-run adds a 2D `A8` arm.
+* **Calibration "divergence-free" does not transfer to small n.** Zeta was
+  chosen divergence-free at n=128, but B diverges at 2D n=4/8/16 (9/2/1 of
+  100) and 10D at every n (5/5/3/4), while A never diverges (0/1200). The
+  penalised score charges each divergence 2.0, so part of A-B is
+  divergence-driven. Restricted to restarts where neither arm diverged
+  (own computation from the JSONs):
+  2D n=4/8/16/32: +0.485/+0.335/+0.211/+0.087 (all p < 0.001, p=0.008 at
+  n=32) -- robust; 10D n=4/8/16/32: +0.062 (p=0.019) / +0.052 (p=0.054) /
+  +0.049 (p=0.047) / +0.004 (n.s.) vs the penalised +0.128/+0.116/+0.093/
+  +0.059 -- roughly half of the 10D effect is B's divergences. Divergence
+  IS a legitimate failure of the no-trust estimator (and the trust region is
+  exactly the mechanism that prevents it), so the penalised numbers are the
+  pre-registered primary, but the 10D effect on converged runs is small.
+* **randn init seeding** OK: restart-only seed, independent of the tape
+  (so A/B/C share x_T and all conditional draws), differs from the tape's
+  own ("x_T",) key convention only by construction, recorded in every JSON
+  (`protocol.x_init = "randn"`).
+* **Protocol fields**: every runs_r5 JSON carries `protocol = {x_init:
+  randn, zeta, step_clip, step_tau: 1.0, rng: tape, dtype: float32,
+  loss_backend: reference}`, offset 6000, R=100; the zeta values match
+  `zeta_star.json`; cm_samples = n x 99 in every cell (A and B equal cost).
+* **Same-process pairing NOT satisfied**: `submit_r5.sh` runs one cell per
+  array task (36 tasks), so A and B of a cell ran in different processes and
+  possibly on different nodes; no host is recorded. Same seeds, but not
+  same-node (the round-2 chaos flag). Unverifiable from the artefacts.
+* Arm C diverged in 71-99% of restarts in every cell (score 1.45-2.0): the
+  "no trust at the trust scale" result is unambiguous and needs no re-run.
+
+## 10.3 Results (offset 6000, R=100; diff = B - A, + = trust better)
+
+| setting | n=4 | n=8 | n=16 | n=32 |
+|---|---|---|---|---|
+| 2D (A z=16 vs B z=2) | **+0.590*** [+0.483,+0.696] | **+0.360*** [+0.264,+0.456] | **+0.228*** [+0.143,+0.313] | **+0.087*** [+0.024,+0.150] p=0.008 |
+| 5D (A z=8 vs B z=0.25) | -0.004 n.s. | +0.022 n.s. | **+0.065*** [+0.019,+0.113] p=0.008 | +0.029 n.s. (p=0.18) |
+| 10D (A z=4 vs B z=1) | **+0.128*** [+0.055,+0.207] p<0.001 | **+0.116*** [+0.044,+0.193] p=0.003 | **+0.093*** [+0.028,+0.164] p=0.006 | +0.059 (p=0.09) |
+
+A vs C: +0.87 to +1.52 everywhere, p < 1e-4 (C diverges). 2D success rates
+A 52/74/85/75% vs B 11/30/46/53%. Prediction (i) of H-R5 -- that calibrating
+zeta would shrink the trust effect far below the legacy +0.25..+0.40 at 2D
+n<=8 -- is FALSIFIED in the other direction (+0.59/+0.36): with a random
+start the uncapped estimator cannot use a large zeta at all (divergence-free
+ceiling 2 vs 16), and that ceiling, not the tail cap per se, is most of the
+2D gap.
+
+## 10.4 Verdict under the corrected protocol and the 2-scale rule
+**trust_noise1: PASS (provisional).** 2D: PASS (4/4 n, p <= 0.008). 10D:
+PASS (3/4 n, p <= 0.006; n=32 +0.059 p=0.09; never negative; on converged
+restarts only the gain is +0.05..+0.06 at n <= 16). 5D: INCONCLUSIVE (n=16
++0.065 p=0.008 only; never negative). Two scales pass, no significant loss
+anywhere, both arms at their own best zeta, equal calls -> the promotion
+rule is met on this run. The mechanism is now understood: the trust region's
+value is that it makes large guidance scales usable (zeta 4-16 vs a
+divergence-free ceiling of 0.25-2 without it), plus a modest tail-cap gain
+on converged runs.
+
+**Why "provisional" -- an independent re-run at offset 7000 IS warranted**,
+and is authored: (1) A/B pairing in the round-5 run was cross-task (not
+same-node), (2) the 2D zeta choice (16 vs the basin rule's 8) is untested at
+the compared n, (3) roughly half of the 10D effect comes from B's
+divergences at 4-5%, so the 10D margin (p=0.003-0.006) is thinner than it
+looks and this is the campaign's final promotion decision, worth a second
+independent draw. Design: `verification/heldout_r5_cells.py` +
+`submit_heldout_r5.sh` -- offset 7000 (never used), R=100, one process per
+setting (3 array tasks, 28 cells): A and B at n in {4,8,16,32} for
+2D/5D/10D, plus the 2D sensitivity arm A8 (trust @ zeta 8); C is not re-run.
+`analyze_r5.py` reports penalised and non-diverged-pair diffs, mmd2_eval,
+A8 vs B and A8 vs A, and records the node. Status of trust_noise1 becomes
+final PASS if 2D and 10D reproduce (p <= 0.05 at >= 2 n each, no significant
+loss); if 10D drops to null on the re-run the corrected-protocol verdict
+becomes "2D-only, INCONCLUSIVE overall".
+
+## 10.5 Status summary of the campaign's promoted configuration
+* Legacy protocol (x_T = 0, zeta = 1; rounds 2-4): trust_noise1 PASS
+  (2D + 10D), all other candidates FAIL / conditional / 10D-only.
+* Corrected protocol (round 5): trust_noise1 PASS provisional, pending the
+  offset-7000 same-node confirmation; the other candidates have NOT been
+  re-tested under the corrected protocol and keep no promotion claim.
+
+## 10.6 Confirmatory re-run (offset 7000, job 45938702) and FINAL verdict
+
+Protocol as authored in 10.4: 28 cells, R=100, one process per setting
+(2D group on glacier-26, 5D/10D on glacier-34; all AMD EPYC 7662) -- every
+A/B (and A8) pairing is same-process, same-node. Divergences: A 0 in all
+1200 runs (A8 0/400); B 2D 9/1/2/0, 5D 1/0/0/0, 10D 1/4/3/1. cm_samples =
+n x 99 in every cell. Full table `verification/heldout_r5_tables.md`.
+
+Paired diff B - A (+ = trust better), offset 7000; second value = restricted
+to pairs where neither arm diverged:
+
+| setting | n=4 | n=8 | n=16 | n=32 |
+|---|---|---|---|---|
+| 2D | **+0.533*** / +0.416*** | **+0.357*** / +0.340*** | **+0.189*** / +0.154*** | **+0.064*** (p=0.016) / same |
+| 5D | **+0.067*** (p=0.025) / +0.059 (p=0.043) | **+0.076*** (p=0.013) / same | **+0.056*** (p=0.021) / same | **+0.063*** (p=0.045) / same |
+| 10D | **+0.068*** (p=0.024) / +0.058 (p=0.040) | **+0.119*** (p=0.001) / +0.069 (p=0.020) | +0.027 (p=0.44) / -0.016 n.s. | +0.021 (p=0.47) / +0.004 n.s. |
+
+Pooled over both independent runs (offsets 6000 + 7000, R=200): 2D
++0.561/+0.358/+0.209/+0.075 (all p<0.001); 5D +0.032 (p=0.10)/+0.049
+(p=0.018)/+0.060 (p=0.001)/+0.046 (p=0.016); 10D +0.098 (p<0.001)/+0.117
+(p<0.001)/+0.060 (p=0.013)/+0.040 (p=0.071). `mmd2_eval` (the objective at
+x_hat) is better for trust in every 5D/10D cell (p<0.001) and at 2D n<=8.
+
+2D zeta sensitivity (basin rule 8 vs amended 16): A8 beats B at every n
+(+0.59/+0.40/+0.21/+0.09, all p<0.001) and is not distinguishable from A
+(A - A8 = +0.05/+0.04/+0.03/+0.03, p=0.12-0.40, slightly in favour of 8):
+the 2D result does not depend on the calibration-rule choice.
+
+**FINAL VERDICT -- trust_noise1 under the corrected protocol: PASS.**
+2D: PASS on both runs (4/4 n). 10D: PASS (offset 6000: 3/4 n; offset 7000:
+2/4 n at n<=8; pooled 3/4; never negative) -- the gain is real but
+concentrated at n<=8 and about half of it, in the penalised metric, is the
+no-trust arm's 3-5% divergence rate (converged-only +0.05..+0.07 at n<=8,
+null at n>=16). 5D: PASS on the confirmation (4/4 at p<0.05, small
++0.06), INCONCLUSIVE on the first run, pooled 3/4 -- a small but consistent
+gain. Two (arguably three) scales, equal conditional cost, both arms at their
+own best zeta, zero divergences for trust, no significant loss in 24 cells
+across two independent seed sets. The trust region is promoted as the
+campaign's one confirmed estimator improvement; its mechanism is that it
+makes guidance scales of 4-16 usable where the uncapped estimator diverges
+above 0.25-2, plus a modest tail-cap gain on converged runs.

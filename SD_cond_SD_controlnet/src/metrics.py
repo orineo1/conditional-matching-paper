@@ -176,6 +176,9 @@ def evaluate_distribution_mmd(
     eval_prompt,
     n_eval=10,
     device="cuda",
+    batch_size=2,
+    seed=None,
+    clip_batch_size=32,
 ):
     """
     Full evaluation: latent -> scribble PIL -> sprinter photos -> CLIP -> MMD.
@@ -191,6 +194,10 @@ def evaluate_distribution_mmd(
         eval_prompt:             Text prompt for Sprinter generation.
         n_eval:                  Number of Sprinter photos to generate.
         device:                  torch device string.
+        batch_size:              Sprinter batch size (default 2 = original).
+        seed:                    if given, photo j uses its own
+                                 torch.Generator(device).manual_seed(seed + j)
+                                 (same photos regardless of batch_size).
 
     Returns:
         (mmd_scalar, eval_photos_list, clip_embs)
@@ -198,15 +205,22 @@ def evaluate_distribution_mmd(
     from clip_utils import encode_images_clip
     from image_utils import latent_to_pil
 
-    with torch.no_grad():
-        scribble_pil = latent_to_pil(latent, architect_vae, architect_image_processor)
+    if hasattr(latent, "save") and not torch.is_tensor(latent):   # a PIL scribble was passed
+        scribble_pil = latent
+    else:
+        with torch.no_grad():
+            scribble_pil = latent_to_pil(latent, architect_vae, architect_image_processor)
 
     original_vae_dtype = sprinter.vae.dtype
     sprinter.vae.to(dtype=torch.float16)
     eval_photos = []
     with torch.no_grad():
-        for start in range(0, n_eval, 2):
-            bs = min(2, n_eval - start)
+        for start in range(0, n_eval, batch_size):
+            bs = min(batch_size, n_eval - start)
+            gens = None
+            if seed is not None:
+                gens = [torch.Generator(device=device).manual_seed(int(seed) + start + j)
+                        for j in range(bs)]
             result = sprinter(
                 prompt=[eval_prompt] * bs,
                 image=[scribble_pil] * bs,
@@ -215,15 +229,25 @@ def evaluate_distribution_mmd(
                 controlnet_conditioning_scale=0.8,
                 output_type="pil",
                 return_dict=True,
+                generator=gens,
             )
             eval_photos.extend(result.images)
     sprinter.vae.to(dtype=original_vae_dtype)
 
-    tensors = [TF.to_tensor(img).unsqueeze(0) for img in eval_photos]
-    photo_tensor = torch.cat(tensors, dim=0).to(device)
+    # CLIP-encode in chunks: photos stay on the CPU, only [bs,3,512,512] chunks and
+    # the [n,768] embeddings live on the GPU (an n_eval=2000 single batch needs
+    # ~6 GB of pixels + ~2 GB per ViT activation and OOMs a 44 GB card).
     clip_model.to(device)
+    clip_chunks = []
     with torch.no_grad():
-        clip_embs = encode_images_clip(photo_tensor, clip_model, clip_processor)
+        for start in range(0, len(eval_photos), clip_batch_size):
+            chunk = eval_photos[start:start + clip_batch_size]
+            photo_tensor = torch.cat(
+                [TF.to_tensor(img).unsqueeze(0) for img in chunk], dim=0
+            ).to(device)
+            clip_chunks.append(encode_images_clip(photo_tensor, clip_model, clip_processor))
+            del photo_tensor
+    clip_embs = torch.cat(clip_chunks, dim=0)
     clip_model.to("cpu")
 
     mmd = compute_mmd(clip_embs, all_clip_embeddings).item()

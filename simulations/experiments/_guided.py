@@ -54,12 +54,27 @@ def n_for_step(t, sched, n_max, schedule):
 def run(model_cond, model_uncond, S_G, bandwidth, n_max, spatial, temporal,
         restart, schedule="constant", adam_rho=0.4, device="cpu",
         guidance_target="x_t", mu_strength=1.0, beta1=0.9, beta2=0.995,
-        delta=1e-8):
+        delta=1e-8, zeta=1.0, step_clip="none", step_tau=1.0, x_init=0.0,
+        noise_coeff=0.0):
     """``guidance_target`` selects where the guidance gradient is taken.
 
     ``x_t``  DPS/LGD style: differentiate through the denoiser back to x_t and
              add the correction to the DDIM iterate. This is what Experiments
              2-4 use and what ``Optimization.optimize_LGD`` does.
+    ``noise_coeff`` replicates the AdamDPS synthetic protocol (arXiv:2603.16797,
+    Section 4): the guidance gradient is perturbed by Gaussian noise of magnitude
+    ``noise_coeff * ||grad||``. That paper's synthetic GMM study is noise-free by
+    construction, so they inject noise this way and show AdamDPS's advantage over
+    DPS GROWS with the coefficient. Sweeping it here tests whether our benchmark
+    reproduces that behaviour. The perturbation is keyed on (restart, t) so both
+    arms of a paired comparison see the SAME noise realisation.
+
+    ``zeta`` scales the guidance step, ``step_clip="noise"`` bounds it by
+    ``step_tau * sqrt(1 - alphabar_t)``, and ``x_init="randn"`` draws
+    x_T ~ N(0, I) per restart instead of pinning it to 0. The defaults
+    (1.0 / "none" / 0.0) reproduce the original loop exactly, so Experiments
+    2, 3, 6 and 7 as already run are unaffected.
+
     ``beta1``/``beta2``/``delta`` are the Adam moment constants; the defaults are
     the official AdamDPS values and are what Experiments 2-4 and 6 use, so
     passing nothing reproduces them exactly.
@@ -74,8 +89,22 @@ def run(model_cond, model_uncond, S_G, bandwidth, n_max, spatial, temporal,
     mmd = MMDLoss(kernel=RBF(bandwidth=bandwidth, device="cpu"), device="cpu")
     adam = (AdamGuidance(beta1=beta1, beta2=beta2, delta=delta, rho=adam_rho,
                          inv_sqrt_alpha=False) if temporal == "adam" else None)
+    # "momentum": accumulation WITHOUT normalisation -- the arm that separates
+    # the two mechanisms Adam bundles. Adam's division by sqrt(v_hat) discards
+    # gradient magnitude, which on a multimodal landscape is signal (steep into
+    # the true basin, shallow in spurious ones). This keeps the magnitude and
+    # only smooths across diffusion steps. Debiased so early steps are not
+    # damped, matching Adam's m_hat.
+    mom_state = {"m": None, "k": 0}
 
-    x = torch.zeros(1, model_uncond.nfeatures, device=device)
+    if isinstance(x_init, str):
+        if x_init != "randn":
+            raise ValueError(f"unknown x_init {x_init!r}")
+        g0 = torch.Generator().manual_seed(0x5EED0000 ^ int(restart))
+        x = torch.randn(1, model_uncond.nfeatures, generator=g0).to(device)
+    else:
+        x = torch.full((1, model_uncond.nfeatures), float(x_init),
+                       device=device)
     calls, n_hist, diverged = 0, [], False
     t0 = time.perf_counter()
     for t in range(T - 1, 0, -1):
@@ -117,7 +146,37 @@ def run(model_cond, model_uncond, S_G, bandwidth, n_max, spatial, temporal,
         else:
             g, = torch.autograd.grad(loss, x, allow_unused=True)
             g = torch.zeros_like(x) if g is None else g
-            upd = g.detach() if adam is None else adam.step(g)
+            if noise_coeff > 0.0:
+                gd0 = g.detach()
+                gen_n = torch.Generator().manual_seed(
+                    key_seed("gnoise", restart, t, 0))
+                eps = torch.randn(gd0.shape, generator=gen_n).to(gd0.device)
+                g = gd0 + noise_coeff * gd0.norm() * eps
+            if temporal == "adam":
+                gu = adam.step(g)
+            elif temporal == "momentum":
+                mom_state["k"] += 1
+                gd = g.detach()
+                # m starts at ZERO, exactly as AdamGuidance does. Seeding it
+                # with g instead double-counts the bias correction: debiasing by
+                # (1 - beta1**1) then returns g/(1 - beta1), inflating the first
+                # step by 2x at beta1=0.5 and 20x at beta1=0.95, so each beta1
+                # silently ran a different effective step size.
+                if mom_state["m"] is None:
+                    mom_state["m"] = torch.zeros_like(gd)
+                mom_state["m"] = beta1 * mom_state["m"] + (1 - beta1) * gd
+                gu = mom_state["m"] / (1 - beta1 ** mom_state["k"])
+            elif temporal == "none":
+                gu = g.detach()
+            else:
+                raise ValueError(f"unknown temporal {temporal!r}")
+            upd = zeta * gu
+            if step_clip != "none":
+                with torch.no_grad():
+                    ab_t = model_uncond.baralphas[t].to(upd.device)
+                    ref = (step_tau * (1 - ab_t).sqrt() if step_clip == "noise"
+                           else step_tau * (x_prev.detach() - x.detach()).norm())
+                    upd = upd * torch.clamp(ref / (upd.norm() + 1e-12), max=1.0)
             with torch.no_grad():
                 x = x_prev.detach().clone() - upd
         if not torch.isfinite(x).all() or float(x.abs().max()) > 50.0:

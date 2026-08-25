@@ -32,7 +32,9 @@ from tfg import n_schedule as n_sched
 from tfg.adam_guidance import AdamGuidance
 from tfg.adaptive import gradient_agreement, recurrence_should_stop
 from tfg.config import TFGConfig
+from tfg.precond import make_preconditioner
 from tfg.schedule import structured_vector
+from tfg.trust import clip_step, noise_cap
 
 
 def _noop_trace(name, t, r, k, tensor):
@@ -107,6 +109,9 @@ class GeneralizedTFG:
         self._adam = (AdamGuidance(beta1=t.beta1, beta2=t.beta2, delta=t.delta,
                                    rho=t.adam_rho, inv_sqrt_alpha=False)
                       if t.mode == "adam" else None)
+        # [Agent P] gradient preconditioner (None when precond.mode == "none",
+        # keeping the default path identical to the frozen reference).
+        self._precond = make_preconditioner(getattr(t, "precond", None))
         self._prev_used = None
         # [A4] stale-gradient cache (component 2, implementation="stale")
         self._stale_grad = None
@@ -216,11 +221,12 @@ class GeneralizedTFG:
             return Delta_t
         if tc.step_clip == "noise":
             ref = tc.step_tau * self.schedule.sqrt_one_minus_ab(t)
+        elif tc.step_clip == "noise_prev_rms":       # [Agent S] SD convention
+            ref = noise_cap(tc.step_tau, self.schedule.sqrt_one_minus_ab(t - 1),
+                            numel=Delta_t.numel(), min_noise=tc.step_min_noise)
         else:
             ref = tc.step_tau * (x_ddim - x_t.detach()).norm()
-        nrm = Delta_t.norm()
-        factor = torch.clamp(ref / (nrm + tc.grad_eps), max=1.0)
-        return Delta_t * factor
+        return clip_step(Delta_t, ref, eps=tc.grad_eps)
 
     def _temporal(self, grad):
         """Apply the configured temporal operator to the rho-branch gradient."""
@@ -238,7 +244,9 @@ class GeneralizedTFG:
 
     # -- main loop ---------------------------------------------------------
 
-    def run(self, shape, trace=None):
+    def run(self, shape, trace=None, x_init=None):
+        """``x_init`` (optional, [Agent S]): start from this tensor instead of
+        the tape's ``("x_T",)`` draw / zeros -- e.g. an SDEdit-noised latent."""
         trace = _noop_trace if trace is None else trace
         cfg = self.config
         sch = self.schedule
@@ -251,7 +259,9 @@ class GeneralizedTFG:
         agreement_on = adaptive_n and ns.policy == "agreement"
         n_recur_max = ar.max_recurrences if ar.enabled else cfg.N_recur
 
-        if cfg.init == "zeros":
+        if x_init is not None:
+            x_t = x_init.to(device=device).detach()
+        elif cfg.init == "zeros":
             x_t = torch.zeros(shape, device=device, dtype=dtype)
         else:
             x_t = self.tape.randn(("x_T",), shape, device=device, dtype=dtype)
@@ -348,7 +358,13 @@ class GeneralizedTFG:
                 #   guidance = AdaptiveMomentEstimate(g); guidance *= strength
                 #   x_prev  += guidance / alpha_t ** 0.5
                 # since line 9 below supplies the 1/sqrt(alpha_t).
-                grad_used = self._temporal(self._preprocess(grad_rho))
+                # [Agent P] optional preconditioning, after grad_norm
+                # pre-processing and before the temporal operator; rho_t and
+                # step_clip below are unchanged.
+                grad_pre = self._preprocess(grad_rho)
+                if self._precond is not None:
+                    grad_pre = self._precond.apply(grad_pre)
+                grad_used = self._temporal(grad_pre)
                 # Traced ONLY when a temporal operator is active, so the
                 # default path emits exactly the key set that
                 # tfg/reference.py emits and the Algorithm 1 equivalence

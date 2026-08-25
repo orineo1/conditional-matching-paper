@@ -290,9 +290,8 @@ scale constant, which is the reason to try it first.
 6. **Not held-out:** Adam-arm and LGD-arm interactions, `trust_noise0.3`, `relclip_ema1`,
    `qclip0.75`, the combination hypotheses (`trust_noise1 + relclip2`, `+ sqrt_floor`, `+ LGD at
    n=4`, `trust_noise1` with calibrated `zeta_d`) -- screening evidence only or none.
-7. **MNIST / SD stages not run** (Stage 2/3 of the brief). MNIST is blocked on a credential:
-   the pretrained CDM checkpoints require `HF_TOKEN`, and neither a token nor the checkpoints exist
-   on the cluster or locally (true blocker -- user input needed). SD was not reached; the cluster
+7. **MNIST / SD stages not run** (Stage 2/3 of the brief). MNIST was initially thought blocked on `HF_TOKEN`, but the checkpoint snapshot is present in the
+   cluster HF cache (correction 2026-08-24) -- Stage 2 is feasible and simply was not run. SD was not reached; the cluster
    time went to the 627 synthetic cells (519 screening + 108 held-out) and the MMD benchmark grids.
    All SD/MNIST statements are static audits. Agent 2's cluster CPU/GPU MMD grids WERE run (EPYC
    7662 4 threads; NVIDIA L4); Agent 5's systems cluster scripts were not; the systems speed numbers
@@ -389,3 +388,29 @@ git add experiments/model-optimization
 git commit -m "Performance campaign: baseline, hypotheses, screening, held-out verification, final report"
 # the pre-existing uncommitted files (exp5b, exp7, _guided.py diff) are separate earlier work
 ```
+
+## 11. Addendum — rounds 3-5 (2026-08-24)
+
+**Protocol correction.** An external audit found rounds 1-4 used the legacy protocol
+(`x_T = 0`, `zeta = 1`), which `simulations/experiments/README.md` had meanwhile shown
+to be defective. Round 5 re-established the headline result under the corrected protocol
+(`x_T ~ N(0,I)`, per-arm calibrated zeta, `protocol/`):
+- calibration: with the trust region every dimension is divergence-free to zeta=32 and
+  calibrates at zeta* = 16/8/4 (2D/5D/10D); without it the estimator cannot exceed
+  zeta = 2/0.25/1. The trust region's primary value is making the correct step scale usable.
+- trust vs no-trust at each arm's own zeta*, two independent seed sets (offsets 6000, 7000,
+  R=100 each): 2D +0.5/+0.36/+0.2/+0.06 (all n, p<=0.016), 5D +0.06..+0.08 (confirmation run,
+  all n), 10D +0.07/+0.12 at n<=8; no significant loss in 24 cells; robust to the zeta rule.
+  **Verifier: FINAL PASS.** (`VERIFICATION.md` section 10)
+
+**Round 3-4 candidates (all legacy-protocol unless stated):** preconditioning (4 rules) —
+rejected, direction is not the constraint; sample replay (Ori's `reuse_frac`, found on
+`claude/hybrid-sampling-optimization-55fv3b`, generalised to geometric / FIFO / cohort
+buffers) — geo0.7d5 failed held-out; equal-cost controls M-8/M-9 showed no general gain;
+fifo16 was a genuine 10D-only gain on the legacy protocol but under the corrected protocol
+(M-11) it is 2D-only and significantly worse in 5D — closed; importance-selected backprop —
+unbiased and stable, no cost win on the MLP benchmark (forwards n+k), estimated 2-3.5x guidance
+saving at SD scale only (`backsel/THEORY.md` section 6).
+
+**Standing results:** trust_noise1 (accuracy; corrected protocol PASS) and the exact
+cached-target MMD (speed). Everything else tested is documented as rejected or regime-limited.

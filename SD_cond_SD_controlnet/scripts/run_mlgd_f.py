@@ -51,6 +51,8 @@ from generation import (
 from image_utils import build_base_image, latent_to_pil, sobel_proxy
 from metrics import compute_mmd, compute_swd, evaluate_distribution_mmd
 from models import load_models, setup_gradient_checkpointing
+from profiling import StepProfiler
+from trust import apply_trust, prev_alpha_bar, trust_cap
 from visualization import plot_row, visualize_step
 
 LOSS_FNS = {"mmd": compute_mmd, "swd": compute_swd}
@@ -119,6 +121,57 @@ def parse_args():
                    default="stabilityai/stable-diffusion-xl-base-1.0")
 
     p.add_argument("--seed", type=int, default=None)
+
+    # ── Performance-campaign flags (all opt-in; defaults reproduce the original run) ──
+    p.add_argument("--no_vis", action="store_true",
+                   help="Skip per-step (and baseline) visualisation. Exact: no effect on "
+                        "the guidance path (with --seeded_rng also RNG-exact).")
+    p.add_argument("--arch_single_batch", action="store_true",
+                   help="If guidance_scale==0 run the architect UNet on the unconditional "
+                        "half only (batch 1 instead of the CFG batch 2). Exact up to fp16 "
+                        "batch-dim round-off.")
+    p.add_argument("--trust_noise", type=float, default=0.0,
+                   help="TAU>0: cap the latent correction ||-zeta*grad||_2 <= "
+                        "TAU*sqrt(1-abar_{t_prev})*sqrt(numel) (src/trust.py). 0 = off.")
+    p.add_argument("--backsel", type=int, default=0,
+                   help="K>0: differentiate only K of num_variations per step "
+                        "(src/backsel.py); forces --seeded_rng.")
+    p.add_argument("--backsel_rule", type=str, default="uniform",
+                   choices=["uniform", "is", "kcenter", "strat"])
+    p.add_argument("--backsel_weighting", type=str, default="ht",
+                   choices=["ht", "soft"],
+                   help="ht: the rule's own unbiased weights (default). soft: "
+                        "softmax proximity reweighting of non-selected gradients "
+                        "onto the selected ones (src/backsel.py::soft_reweight).")
+    p.add_argument("--backsel_soft_tau_scale", type=float, default=1.0,
+                   help="multiplier on tau for --backsel_weighting soft")
+    p.add_argument("--backsel_soft_tau_mode", type=str, default="local",
+                   choices=["local", "bandwidth"],
+                   help="soft tau: 'local' = median squared distance of skipped samples to "
+                        "their nearest representative (scale-free, default); 'bandwidth' = "
+                        "MMD median-heuristic bandwidth^2 (too large per the synthetic study)")
+    p.add_argument("--seeded_rng", action="store_true",
+                   help="Per-component generators: init noise, per-variation sprinter "
+                        "seeds (seed-derived), eval seeds. Makes arms share identical "
+                        "noise and makes batching / backsel replay exact.")
+    p.add_argument("--variation_batch_size", type=int, default=1,
+                   help="Sprinter batch size for the variations (original: 1).")
+    p.add_argument("--engine", type=str, default="legacy", choices=["legacy", "tfg"],
+                   help="tfg: run the architect loop through the shared generalised TFG "
+                        "engine (simulations/src/tfg, src/tfg_engine_path.py); implies "
+                        "--no_vis and --seeded_rng; no intermediate eval. Legacy = unchanged loop.")
+    p.add_argument("--profile", action="store_true",
+                   help="Per-step timing split + peak memory -> <output_dir>/profile.json")
+    p.add_argument("--eval_n", type=int, default=None,
+                   help="Fresh sprinter samples for the FINAL MMD eval (default: "
+                        "eval_n_intermediate = 10, the repo default).")
+    p.add_argument("--eval_n_intermediate", type=int, default=10,
+                   help="Sprinter samples for intermediate evals / baseline vis (repo: 10).")
+    p.add_argument("--eval_batch_size", type=int, default=2,
+                   help="Sprinter batch size in evaluate_distribution_mmd (repo: 2).")
+    p.add_argument("--target_cache", type=str, default=None,
+                   help="Directory: load targets/scribble from it if present, else build "
+                        "and save there (identical targets across arms).")
 
     # Mode
     p.add_argument("--mode", type=str, default="gender", choices=["gender", "age"],
@@ -430,6 +483,81 @@ def build_targets_age(args, sprinter, clip_model, clip_processor, device,
             pca_fixed, source_image, scribble_pil, N_total, target_groups, pca_path)
 
 
+def _target_cache_path(d):
+    return os.path.join(d, "targets_cache.npz")
+
+
+def save_target_cache(cache_dir, target_images_per_group, source_image, scribble_pil, target_groups):
+    os.makedirs(cache_dir, exist_ok=True)
+    arrays = {f"group__{name}": np.stack([np.array(im) for im in imgs])
+              for name, imgs in target_images_per_group.items()}
+    arrays["source_portrait"] = np.array(source_image)
+    arrays["scribble"] = np.array(scribble_pil)
+    np.savez(_target_cache_path(cache_dir), **arrays)
+    with open(os.path.join(cache_dir, "target_groups.json"), "w") as f:
+        json.dump([[g[0], g[1], g[2]] for g in target_groups], f, indent=2)
+    print(f"Target cache saved to {cache_dir}", flush=True)
+
+
+def build_targets_cached(args, sprinter, clip_model, clip_processor, device, sobel_cond_pil):
+    """
+    build_targets_gender with an on-disk cache of the generated target images,
+    source portrait and HED scribble (so every arm uses byte-identical
+    targets). CLIP embeddings and PCA are recomputed deterministically.
+    """
+    from PIL import Image
+    cache = args.target_cache
+    if cache is None or not os.path.exists(_target_cache_path(cache)):
+        out = build_targets_gender(args, sprinter, clip_model, clip_processor, device, sobel_cond_pil)
+        if cache is not None:
+            save_target_cache(cache, out[0], out[8], out[9], out[11])
+        return out
+
+    print(f"Loading targets from cache {cache}", flush=True)
+    data = np.load(_target_cache_path(cache))
+    with open(os.path.join(cache, "target_groups.json")) as f:
+        groups = json.load(f)
+    _COLORS  = ["royalblue", "crimson", "limegreen", "orange",
+                "mediumpurple", "gold", "deepskyblue", "hotpink"]
+    _MARKERS = ["o", "x", "^", "s", "D", "P", "v", "<"]
+    target_groups = [(n, pt, int(k), _COLORS[i % 8], _MARKERS[i % 8])
+                     for i, (n, pt, k) in enumerate(groups)]
+    target_images_per_group = {
+        name: [Image.fromarray(a) for a in data[f"group__{name}"]] for name, _, _, _, _ in target_groups
+    }
+    source_image = Image.fromarray(data["source_portrait"])
+    scribble_pil = Image.fromarray(data["scribble"])
+    group_names   = [g[0] for g in target_groups]
+    group_colors  = [g[3] for g in target_groups]
+    group_markers = [g[4] for g in target_groups]
+    N_total       = sum(g[2] for g in target_groups)
+
+    clip_model.to(device)
+    clip_embs_per_group = {}
+    with torch.no_grad():
+        for name, imgs in target_images_per_group.items():
+            clip_embs_per_group[name] = encode_images_clip(
+                pil_images_to_tensor(imgs, device), clip_model, clip_processor)
+    clip_model.to("cpu")
+    all_clip_embeddings = torch.cat(list(clip_embs_per_group.values()), dim=0)
+    group_sizes = [len(imgs) for imgs in target_images_per_group.values()]
+
+    anchor_embs = np.vstack([clip_embs_per_group[group_names[0]].cpu().numpy(),
+                             clip_embs_per_group[group_names[-1]].cpu().numpy()])
+    pca_fixed = PCA(n_components=2)
+    pca_fixed.fit(anchor_embs)
+    fig, ax = plt.subplots(figsize=(8, 6))
+    for (name, _, _, color, marker), embs in zip(target_groups, clip_embs_per_group.values()):
+        coords = pca_fixed.transform(embs.cpu().numpy())
+        ax.scatter(coords[:, 0], coords[:, 1], c=color, label=name, marker=marker, alpha=0.7, s=50)
+    ax.legend(); ax.grid(True, alpha=0.3)
+    pca_path = os.path.join(args.output_dir, "target_clip_pca.png")
+    fig.savefig(pca_path, dpi=100, bbox_inches="tight"); plt.close(fig)
+    return (target_images_per_group, clip_embs_per_group, all_clip_embeddings,
+            group_names, group_sizes, group_colors, group_markers,
+            pca_fixed, source_image, scribble_pil, N_total, target_groups, pca_path)
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -443,7 +571,18 @@ def main():
     steps_dir = os.path.join(args.output_dir, "steps")
     os.makedirs(steps_dir, exist_ok=True)
 
-    n_eval = 10  # number of Sprinter photos per MMD evaluation
+    n_eval = args.eval_n_intermediate  # Sprinter photos per intermediate MMD evaluation (repo: 10)
+    eval_n_final = args.eval_n if args.eval_n is not None else n_eval
+    if args.backsel > 0 or args.engine == "tfg":
+        args.seeded_rng = True
+    if args.engine == "tfg":
+        args.no_vis = True
+    seeded = args.seeded_rng
+    if seeded and args.seed is None:
+        raise ValueError("--seeded_rng requires --seed")
+    prof = StepProfiler(enabled=args.profile, device=device)
+    prof.meta = {"args": vars(args)}
+    profile_path = os.path.join(args.output_dir, "profile.json")
 
     if args.seed is not None:
         torch.manual_seed(args.seed)
@@ -475,7 +614,8 @@ def main():
     if args.mode == "gender":
         (target_images_per_group, clip_embs_per_group, all_clip_embeddings,
          group_names, group_sizes, group_colors, group_markers,
-         pca_fixed, source_image, scribble_pil, N_total, target_groups, pca_path) =             build_targets_gender(args, sprinter, clip_model, clip_processor,
+         pca_fixed, source_image, scribble_pil, N_total, target_groups, pca_path) = \
+            build_targets_cached(args, sprinter, clip_model, clip_processor,
                                  device, sobel_cond_pil)
     else:  # age
         (target_images_per_group, clip_embs_per_group, all_clip_embeddings,
@@ -509,6 +649,13 @@ def main():
             "controlnet_scale":             args.controlnet_scale,
             "edge_method":                  "hed_scribble",
             "n_eval":                       n_eval,
+            "eval_n_final":                 eval_n_final,
+            "engine":                       args.engine,
+            "perf_flags":                   {k: getattr(args, k) for k in
+                                             ["no_vis", "arch_single_batch", "trust_noise", "backsel",
+                                              "backsel_rule", "backsel_weighting", "backsel_soft_tau_scale", "backsel_soft_tau_mode",
+                                              "seeded_rng", "variation_batch_size",
+                                              "profile", "eval_batch_size"]},
             "eval_interval":                eval_interval,
             "lora_path":                    args.lora_path,
             "architect_unet_path":          args.architect_unet_path,
@@ -578,7 +725,12 @@ def main():
     t_start        = timesteps[start_step]
     alphas_cumprod = architect.scheduler.alphas_cumprod.to(device)
     alpha          = alphas_cumprod[t_start.long()].to(torch.float32)
-    noise          = torch.randn_like(scribble_latent)
+    if seeded:
+        init_gen = torch.Generator(device=device).manual_seed(args.seed * 7919 + 1)
+        noise = torch.randn(scribble_latent.shape, generator=init_gen,
+                            device=device, dtype=scribble_latent.dtype)
+    else:
+        noise = torch.randn_like(scribble_latent)
     latents        = ((alpha ** 0.5) * scribble_latent + ((1 - alpha) ** 0.5) * noise).to(torch.float16)
     latents_regular = latents.detach().clone()
 
@@ -599,75 +751,97 @@ def main():
         loss_fn = LOSS_FNS[args.loss_fn]
 
     # ── Baseline visualisation (before any correction) ──────────────────────
-    with torch.no_grad():
-        baseline_noise_pred = predict_noise_cfg(
-            architect.unet, architect.scheduler, latents.detach(),
-            timesteps_to_run[0], cfg_encoder_states, added_cond_kwargs, args.guidance_scale,
-        )
-        baseline_pred_x0 = compute_pred_x0_direct(
-            architect.scheduler, baseline_noise_pred, timesteps_to_run[0], latents.detach(),
-        )
-        baseline_px = architect.vae.decode(
-            (baseline_pred_x0 / architect.vae.config.scaling_factor).to(architect.vae.dtype)
-        ).sample
-        baseline_px_norm = torch.clamp((baseline_px + 1.0) / 2.0, 0.0, 1.0)
+    if args.no_vis:
+        print("--no_vis: skipping baseline visualisation.", flush=True)
+    else:
+      with torch.no_grad():
+          baseline_noise_pred = predict_noise_cfg(
+              architect.unet, architect.scheduler, latents.detach(),
+              timesteps_to_run[0], cfg_encoder_states, added_cond_kwargs, args.guidance_scale,
+              single_batch=args.arch_single_batch,
+          )
+          baseline_pred_x0 = compute_pred_x0_direct(
+              architect.scheduler, baseline_noise_pred, timesteps_to_run[0], latents.detach(),
+          )
+          baseline_px = architect.vae.decode(
+              (baseline_pred_x0 / architect.vae.config.scaling_factor).to(architect.vae.dtype)
+          ).sample
+          baseline_px_norm = torch.clamp((baseline_px + 1.0) / 2.0, 0.0, 1.0)
 
-        sprinter.vae.to(dtype=torch.float16)
-        baseline_var_images = [
-            sprinter(
-                prompt=args.sprinter_variation_prompt,
-                image=baseline_px_norm,
-                num_inference_steps=2,
-                guidance_scale=args.guidance_scale,
-                controlnet_conditioning_scale=args.controlnet_scale,
-                output_type="pil",
-            ).images[0]
-            for _ in range(n_eval)
-        ]
-        sprinter.vae.to(dtype=torch.float32)
+          sprinter.vae.to(dtype=torch.float16)
+          baseline_var_images = [
+              sprinter(
+                  prompt=args.sprinter_variation_prompt,
+                  image=baseline_px_norm,
+                  num_inference_steps=2,
+                  guidance_scale=args.guidance_scale,
+                  controlnet_conditioning_scale=args.controlnet_scale,
+                  output_type="pil",
+              ).images[0]
+              for _ in range(n_eval)
+          ]
+          sprinter.vae.to(dtype=torch.float32)
 
-        var_tensors = torch.cat(
-            [TF.to_tensor(img).unsqueeze(0) for img in baseline_var_images], dim=0
-        ).to(device)
-        clip_model.to(device)
-        baseline_clip_flat = encode_images_clip(
-            var_tensors, clip_model, clip_processor
-        ).cpu().numpy()
-        clip_model.to("cpu")
+          var_tensors = torch.cat(
+              [TF.to_tensor(img).unsqueeze(0) for img in baseline_var_images], dim=0
+          ).to(device)
+          clip_model.to(device)
+          baseline_clip_flat = encode_images_clip(
+              var_tensors, clip_model, clip_processor
+          ).cpu().numpy()
+          clip_model.to("cpu")
 
-        sd_baseline = {
-            "step": 0, "timestep": timesteps_to_run[0].item(),
-            "mmd_loss": 0.0, "zeta_i": 0.0,
-            "latents_step_cpu":         latents.detach().cpu(),
-            "latents_step_regular_cpu": latents.detach().cpu(),
-            "pred_x0_cpu":              baseline_pred_x0.detach().cpu(),
-            "pred_x0_regular_cpu":      baseline_pred_x0.detach().cpu(),
-            "variation_clip_flat":      baseline_clip_flat,
-        }
+          sd_baseline = {
+              "step": 0, "timestep": timesteps_to_run[0].item(),
+              "mmd_loss": 0.0, "zeta_i": 0.0,
+              "latents_step_cpu":         latents.detach().cpu(),
+              "latents_step_regular_cpu": latents.detach().cpu(),
+              "pred_x0_cpu":              baseline_pred_x0.detach().cpu(),
+              "pred_x0_regular_cpu":      baseline_pred_x0.detach().cpu(),
+              "variation_clip_flat":      baseline_clip_flat,
+          }
 
-    visualize_step(sd_baseline, architect, sprinter, target_clip_np,
-                   num_cond=4, save_path=os.path.join(steps_dir, "step_baseline.png"),
-                   pca_fixed=pca_fixed, group_names=group_names, group_sizes=group_sizes)
+      visualize_step(sd_baseline, architect, sprinter, target_clip_np,
+                     num_cond=4, save_path=os.path.join(steps_dir, "step_baseline.png"),
+                     pca_fixed=pca_fixed, group_names=group_names, group_sizes=group_sizes)
     print("✅ Baseline visualisation saved.", flush=True)
 
     # ── 9. MLGD-F guidance loop ─────────────────────────────────────────────
     dps_start_time = time.time()
-    for i, t in enumerate(timesteps_to_run):
+    latents_step = noise_pred = None
+    loop_steps = timesteps_to_run
+    if args.engine == "tfg":
+        from tfg_engine_path import run_engine_loop
+        print("--engine tfg: running the guided loop through tfg.engine.GeneralizedTFG", flush=True)
+        latents, latents_regular, step_gradients = run_engine_loop(
+            args=args, architect=architect, sprinter=sprinter, clip_model=clip_model,
+            clip_processor=clip_processor, loss_fn=loss_fn, all_clip_embeddings=all_clip_embeddings,
+            latents_init=latents, latents_regular_init=latents_regular,
+            cfg_encoder_states=cfg_encoder_states, added_cond_kwargs=added_cond_kwargs,
+            timesteps_to_run=timesteps_to_run, scheduler_regular=scheduler_regular,
+            prof=prof, device=device, wandb_log=(lambda d: wandb.log(d, commit=False)))
+        prof.dump(profile_path)
+        loop_steps = timesteps_to_run[:0]        # legacy loop skipped
+    for i, t in enumerate(loop_steps):
         print(f"\n{'='*60}", flush=True)
         print(f"Step {i+1}/{len(timesteps_to_run)}  (t={t})", flush=True)
         print(f"{'='*60}", flush=True)
 
+        prof.begin_step(i + 1, t.item())
         latents_step         = latents.detach().requires_grad_(True)
         latents_step_regular = latents_regular.detach()
 
+        prof_arch = prof.section("architect"); prof_arch.__enter__()
         noise_pred = predict_noise_cfg(
             architect.unet, architect.scheduler,
             latents_step, t, cfg_encoder_states, added_cond_kwargs, args.guidance_scale,
+            single_batch=args.arch_single_batch,
         )
         with torch.no_grad():
             noise_pred_regular = predict_noise_cfg(
                 architect.unet, scheduler_regular,
                 latents_step_regular, t, cfg_encoder_states, added_cond_kwargs, args.guidance_scale,
+                single_batch=args.arch_single_batch,
             )
 
         pred_x0 = compute_pred_x0_direct(architect.scheduler, noise_pred, t, latents_step)
@@ -685,8 +859,16 @@ def main():
             vae_decode_checkpoint, pred_x0_scaled, use_reentrant=False
         )
         pixel_x0_norm = torch.clamp((pixel_x0 + 1.0) / 2.0, 0.0, 1.0)
+        prof_arch.__exit__(None, None, None)
 
-        grad, mmd_loss, zeta_i, loss_norm, vl_clip_flat = run_dps_step_clip(
+        variation_seeds = None
+        backsel_gen = None
+        if seeded:
+            base = args.seed * 1_000_003 + (i + 1) * 10_000
+            variation_seeds = [base + j for j in range(args.num_variations)]
+            backsel_gen = torch.Generator().manual_seed(base + 9_999)
+
+        dps_out = run_dps_step_clip(
             latents=latents,
             latents_step=latents_step,
             noise_pred=noise_pred,
@@ -694,7 +876,7 @@ def main():
             sprinter=sprinter,
             all_clip_embeddings=all_clip_embeddings,
             num_variations=args.num_variations,
-            variation_batch_size=1,
+            variation_batch_size=args.variation_batch_size,
             base_zeta_prime=args.base_zeta,
             clip_model=clip_model,
             clip_processor=clip_processor,
@@ -703,7 +885,17 @@ def main():
             variation_prompt=args.sprinter_variation_prompt,
             loss_fn=loss_fn,
             loss_scale=args.loss_scale,
+            variation_seeds=variation_seeds,
+            backsel_k=args.backsel,
+            backsel_rule=args.backsel_rule,
+            backsel_generator=backsel_gen,
+            backsel_weighting=args.backsel_weighting,
+            backsel_soft_tau_scale=args.backsel_soft_tau_scale,
+            backsel_soft_tau_mode=args.backsel_soft_tau_mode,
+            profiler=prof,
         )
+        grad, mmd_loss, zeta_i, loss_norm, vl_clip_flat = dps_out[:5]
+        backsel_info = dps_out[5] if len(dps_out) > 5 else None
 
         grad_norm = grad.norm().item()
         zeta_val  = zeta_i.item() if isinstance(zeta_i, torch.Tensor) else zeta_i
@@ -715,6 +907,18 @@ def main():
         else:
             correction = -zeta_i * grad
 
+        # trust region: cap always computed (logged at tau=1 for calibration), applied only if tau>0
+        # abar_prev is floored at alphas_cumprod[0] (t=0 noise level) so the final step,
+        # which lands on final_alpha_cumprod = 1, keeps a small non-zero cap instead of 0.
+        abar_prev     = min(prev_alpha_bar(architect.scheduler, t), float(alphas_cumprod[0]))
+        cap_tau1      = trust_cap(1.0, abar_prev, correction.numel())
+        trust_scale, trust_cap_val, corr_norm_raw = 1.0, None, float(correction.norm().item())
+        if args.trust_noise > 0:
+            trust_cap_val = trust_cap(args.trust_noise, abar_prev, correction.numel())
+            correction, trust_scale, corr_norm_raw = apply_trust(correction, trust_cap_val)
+            print(f"  trust: ||corr||={corr_norm_raw:.4f} cap={trust_cap_val:.4f} "
+                  f"scale={trust_scale:.4f} (abar_prev={abar_prev:.4f})", flush=True)
+
         step_gradients.append({
             "step":            i + 1,
             "timestep":        t.item(),
@@ -723,6 +927,14 @@ def main():
             "zeta_i":          zeta_val,
             "loss_norm":       loss_norm.item(),
             "correction_norm": zeta_val * grad_norm,
+            "correction_norm_raw":     corr_norm_raw,
+            "correction_norm_applied": float(correction.norm().item()),
+            "trust_cap":   trust_cap_val,
+            "trust_cap_tau1": cap_tau1,
+            "abar_prev":   abar_prev,
+            "trust_scale": trust_scale,
+            "backsel": ({k: v for k, v in backsel_info.items() if k not in ("p",)}
+                        if backsel_info else None),
         })
 
         wandb_log = {
@@ -734,11 +946,13 @@ def main():
         }
 
         if i % eval_interval == 0:
+          with prof.section("eval_intermediate"):
             unguided_mmd, _, _ = evaluate_distribution_mmd(
                 pred_x0_regular.detach(), architect.vae, architect.image_processor,
                 sprinter, clip_model, clip_processor,
                 all_clip_embeddings, args.sprinter_eval_prompt,
-                n_eval=n_eval, device=device,
+                n_eval=n_eval, device=device, batch_size=args.eval_batch_size,
+                seed=(args.seed * 1_000_003 + (i + 1) * 10_000 + 5_000) if seeded else None,
             )
             wandb_log["intermediate/unguided_cond_mmd"] = unguided_mmd
             wandb_log["intermediate/mlgd_f_cond_mmd"]   = mmd_loss.item()
@@ -762,17 +976,25 @@ def main():
             }
             step_vis_data.append(sd)
 
-        visualize_step(sd, architect, sprinter, target_clip_np,
-                       num_cond=5, save_path=os.path.join(steps_dir, f"step_{i:03d}.png"),
-                       pca_fixed=pca_fixed, group_names=group_names, group_sizes=group_sizes)
+        if not args.no_vis:
+            with prof.section("vis"):
+                visualize_step(sd, architect, sprinter, target_clip_np,
+                               num_cond=5, save_path=os.path.join(steps_dir, f"step_{i:03d}.png"),
+                               pca_fixed=pca_fixed, group_names=group_names, group_sizes=group_sizes)
 
-        latents = denoise_step(
-            architect.scheduler, noise_pred, t, latents_step, correction=correction
-        )
-        with torch.no_grad():
-            latents_regular = denoise_step(
-                scheduler_regular, noise_pred_regular, t, latents_step_regular
+        with prof.section("denoise"):
+            latents = denoise_step(
+                architect.scheduler, noise_pred, t, latents_step, correction=correction
             )
+            with torch.no_grad():
+                latents_regular = denoise_step(
+                    scheduler_regular, noise_pred_regular, t, latents_step_regular
+                )
+        prof.end_step(extra={"mmd_loss": mmd_loss.item(), "grad_norm": grad_norm,
+                             "trust_scale": trust_scale,
+                             "n_differentiated": (backsel_info["n_differentiated"]
+                                                  if backsel_info else args.num_variations)})
+        prof.dump(profile_path)
 
         del grad, mmd_loss, loss_norm, zeta_i, correction
         del pixel_x0, pixel_x0_norm, pred_x0, pred_x0_regular
@@ -783,13 +1005,39 @@ def main():
     torch.cuda.empty_cache()
     print(f"\n✅ MLGD-F complete! {len(step_vis_data)} steps stored.", flush=True)
 
+    # ── 9b. Persist the final state BEFORE the (memory-heavy) final eval ───────
+    # final_latents.pt + final_scribble_*.png are sufficient for
+    # experiments/model-optimization/sd/eval_final.py to (re)compute the final
+    # MMD offline; metrics_partial.json carries the per-step records.
+    torch.save({"latents": latents.detach().cpu(),
+                "latents_regular": latents_regular.detach().cpu(),
+                "args": vars(args), "n_total_targets": int(N_total)},
+               os.path.join(args.output_dir, "final_latents.pt"))
+    torch.save({"all_clip_embeddings": all_clip_embeddings.detach().cpu(),
+                "group_names": group_names, "group_sizes": group_sizes},
+               os.path.join(args.output_dir, "target_clip_embeddings.pt"))
+    with torch.no_grad():
+        final_mlgd_f_pil  = latent_to_pil(latents,         architect.vae, architect.image_processor)
+        final_regular_pil = latent_to_pil(latents_regular, architect.vae, architect.image_processor)
+    final_mlgd_f_pil.save(os.path.join(args.output_dir, "final_scribble_mlgd_f.png"))
+    final_regular_pil.save(os.path.join(args.output_dir, "final_scribble_regular.png"))
+    with open(os.path.join(args.output_dir, "metrics_partial.json"), "w") as f:
+        json.dump({"args": vars(args), "steps": step_gradients,
+                   "optimization_time_sec": time.time() - dps_start_time,
+                   "eval_n_final": eval_n_final,
+                   "profile_summary": prof.summary() if args.profile else None}, f, indent=2)
+    print("✅ Final latents / scribbles / metrics_partial.json persisted.", flush=True)
+    del step_vis_data
+    gc.collect(); torch.cuda.empty_cache()
+
     # ── 10. Final MMD evaluation ────────────────────────────────────────────
     print("Computing final MMD (regular)...", flush=True)
     regular_mmd, regular_eval_photos, _ = evaluate_distribution_mmd(
         latents_regular, architect.vae, architect.image_processor,
         sprinter, clip_model, clip_processor,
         all_clip_embeddings, eval_prompt=args.sprinter_eval_prompt,
-        n_eval=n_eval, device=device,
+        n_eval=eval_n_final, device=device, batch_size=args.eval_batch_size,
+        seed=(args.seed * 1_000_003 + 7_000_000) if seeded else None,
     )
 
     print("Computing final MMD (MLGD-F)...", flush=True)
@@ -797,21 +1045,20 @@ def main():
         latents, architect.vae, architect.image_processor,
         sprinter, clip_model, clip_processor,
         all_clip_embeddings, eval_prompt=args.sprinter_eval_prompt,
-        n_eval=n_eval, device=device,
+        n_eval=eval_n_final, device=device, batch_size=args.eval_batch_size,
+        seed=(args.seed * 1_000_003 + 7_000_000) if seeded else None,
     )
+    if args.profile:
+        prof.meta["final_eval"] = {"eval_n": eval_n_final, "mlgd_f_mmd": mlgd_f_mmd,
+                                   "regular_mmd": regular_mmd,
+                                   "optimization_time_sec": time.time() - dps_start_time}
+        prof.dump(profile_path)
 
     print(f"Regular MMD : {regular_mmd:.6f}", flush=True)
     print(f"MLGD-F MMD  : {mlgd_f_mmd:.6f}",  flush=True)
     print(f"Delta (↓ better for MLGD-F): {regular_mmd - mlgd_f_mmd:.6f}", flush=True)
 
-    # ── 11. Final visualisations ────────────────────────────────────────────
-    with torch.no_grad():
-        final_mlgd_f_pil  = latent_to_pil(latents,         architect.vae, architect.image_processor)
-        final_regular_pil = latent_to_pil(latents_regular, architect.vae, architect.image_processor)
-
-    final_mlgd_f_pil.save(os.path.join(args.output_dir, "final_scribble_mlgd_f.png"))
-    final_regular_pil.save(os.path.join(args.output_dir, "final_scribble_regular.png"))
-
+    # ── 11. Final visualisations (scribbles already saved in 9b) ─────────────
     heatmap_path = os.path.join(args.output_dir, "scribble_heatmap.png")
     compare_scribbles_heatmap(final_mlgd_f_pil, final_regular_pil, save_path=heatmap_path)
     print("✅ Scribble heatmap saved.", flush=True)
@@ -888,6 +1135,8 @@ def main():
             "final_regular_swd":      swd_regular,  # None — run analysis.py to compute
             "swd_delta":              None,         # computed in analysis.py
             "optimization_time_sec":  optimization_time_sec,
+            "eval_n_final":           eval_n_final,
+            "profile_summary":        prof.summary() if args.profile else None,
             "mlgd_f_gender":          mlgd_f_stats,
             "regular_gender":         regular_stats,
             "npy": {

@@ -1,0 +1,124 @@
+# Agent P -- preconditioning the guidance gradient (round 3). Pre-registered
+# 2026-08-24, BEFORE any screening cell was run (only the plumbing smoke test,
+# 2D n=8, 10 restarts, is run locally after this file is written).
+# Primary metric everywhere: failure-penalised mean exact GMM L2
+# (_common.penalised_score, PENALTY=2.0), paired over restart indices 0..39
+# (offset 0; offsets >= 1000 remain reserved for the verifier), bootstrap 95% CI
+# and paired permutation p (_common.paired_stats). Secondary: success rate,
+# cm_samples (must equal baseline: all rules are O(d) gradient transforms),
+# divergence count, wall time.
+# Champion comparator: trust_noise1 (step_clip="noise", step_tau=1.0), the
+# promoted rule of VERIFICATION.md. Every setting includes BOTH baseline and
+# trust_noise1 arms, so a new rule is judged (i) vs baseline and (ii) vs the
+# champion; "interesting" requires beating (i) with p <= 0.05 somewhere and
+# never being significantly worse than (ii) in that dim.
+agent: P
+area: preconditioning of the rho-branch guidance gradient g_t = grad_{x_t} MMD^2
+baseline:
+  engine: simulations/src/tfg/engine.py (GeneralizedTFG), legacy switches
+          init=zeros, guidance_scaling=raw, eta_per_perturbation=True,
+          repository_schedule float32 (bit-identical to _guided.py::run).
+  arm: no_lgd/none only; settings 2D/5D/10D x n in {4,8,32}; rng=tape.
+  known_regime: per-step gradient SNR < 1 at every n (estimator/REPORT.md sec 4);
+    heavy tail (p90 ~ 6-8x median, max 100-500x); raw-norm medians 2D
+    0.04-0.09, 5D 0.09-0.25, 10D 0.29-0.38; fixed-size normalised steps
+    (Adam/norm_only/unit) fail in 10D because they inflate the bulk, not
+    because they cap the tail. Design constraint for every candidate below:
+    NEVER inflate the step norm (all preconditioners are norm-preserving or
+    norm-shrinking), leave step-SIZE control to the raw norm or trust_noise1.
+candidates:
+- id: P-1
+  name: full-covariance whitening of the gradient history (precond_cov[_trust])
+  switch: TemporalConfig.precond.mode="whiten" (EMA C_t of g g^T, beta=0.9,
+          ridge eps*tr(C)/d, direction C_reg^{-1/2} g rescaled to ||g||;
+          causal - state from PAST steps only, identity for the first
+          `warmup`=5 steps); _trust adds step_clip=noise, step_tau=1.
+  mechanism: the MMD gradient noise is anisotropic when the target set is; a
+    full-matrix AdaGrad/Shampoo-style whitening (feasible at d<=9) equalises
+    the noise across directions WITHOUT changing the step norm, unlike Adam
+    which fixes the norm to ~rho*sqrt(d).
+  expected_benefit: small (+0.0..0.05) in 5D/10D where anisotropy across the 9
+    coordinates can exist; ~null in 2D (d=1 spatial x is near-isotropic).
+  why_it_might_fail: with SNR<1 the EMA covariance is dominated by noise, whose
+    covariance may be nearly isotropic -> whitening = identity + estimation
+    noise in the rotation; heavy tail corrupts C_t (a single outlier step owns
+    the EMA for ~10 steps).
+  rejection: no cell with p<=0.05 improvement over baseline, or any cell
+    significantly worse than baseline.
+- id: P-2
+  name: norm-preserving diagonal RMS direction fix (precond_diag[_trust])
+  switch: precond.mode="diag" (EMA v_t of g^2, direction g/sqrt(v_reg)
+          rescaled to ||g||; causal, warmup as P-1).
+  mechanism: what Adam/norm_only SHOULD have been given the graveyard: keep the
+    per-coordinate equalisation (the part that helped 2D) but preserve the raw
+    norm so the step is never inflated (the part that killed 10D at n=32,
+    where Adam's rho-sized floor over-steps near the optimum).
+  expected_benefit: recovers norm_only's 2D n<=8 gains (+0.1..0.2) without the
+    10D n=32 loss (-0.18 for norm_only); the cleanest test of "was Adam's
+    failure the normalised MAGNITUDE (our claim) or the diagonal DIRECTION".
+  why_it_might_fail: if the 2D gain of norm_only came precisely from the
+    magnitude flooring (a small persistent gradient turned into a rho step),
+    the norm-preserving version keeps none of it.
+  rejection: as P-1; additionally FAIL if significantly worse than baseline in
+    10D at any n (would mean the diagonal direction itself is harmful).
+- id: P-3
+  name: norm-preserving sign-SGD (precond_sign[_trust])
+  switch: precond.mode="sign" (sign(g) * ||g||/sqrt(#nonzero); stateless).
+  mechanism: the most aggressive curvature-free direction fix; per-coordinate
+    magnitudes carry mostly noise at SNR<1, the sign is right 60-80% of the
+    time (sec 4: P(wrong sign) 0.2-0.4) -> discard magnitudes, keep signs and
+    the overall scale.
+  expected_benefit: robustness to per-coordinate heavy tails; if it beats
+    precond_diag the magnitude information is pure noise.
+  why_it_might_fail: sign destroys genuine anisotropy of the signal and is
+    biased whenever coordinates differ in true scale; in d=1 (2D setting,
+    spatial dim 1) it is exactly the identity, so 2D cells test only plumbing.
+  rejection: as P-1 (5D/10D only; 2D is identity by construction).
+- id: P-4
+  name: per-coordinate median over a short gradient window (precond_median[_trust])
+  switch: precond.mode="median" (window w=5 of raw g_t incl. current,
+          per-coordinate median; no rescaling - the median's norm is the
+          robust scale).
+  mechanism: robust temporal aggregation - a median-of-means-style estimator
+    across TIME instead of across the n conditional rows (the within-step
+    per-row MoM needs n extra backward passes, see THEORY.md sec (e); the
+    temporal version is free). Kills single-step tail outliers completely
+    (breakdown point 40% at w=5) where EMA momentum only dilutes them 10x, and
+    averages ~w steps -> effective SNR up ~sqrt(w).
+  expected_benefit: the largest expected gain of the four: it is the only rule
+    here that both caps the tail AND raises SNR; expect trust_noise1-like
+    gains, possibly additive with it (precond_median_trust).
+  why_it_might_fail: a 5-step lag on a 99-step schedule biases the direction
+    when the true gradient rotates quickly (late steps); the median under-
+    estimates the magnitude when the distribution is skewed -> may under-step
+    at n=32 where the raw gradient is already well scaled.
+  rejection: as P-1; additionally reject the _trust combo if it is not better
+    than trust_noise1 alone anywhere (no added value over the champion).
+- id: P-5 (theory only, NOT screened this round)
+  name: kernel-metric / empirical-Fisher preconditioner from per-row gradients
+  status: derived in precond/THEORY.md sec (d)-(e); implementation deferred -
+    the per-row gradient contributions g_i require n (or k group) extra
+    backward passes at every step, violating the matched-conditional-calls
+    protocol only in wall time but tripling autograd cost; screened only if a
+    P-1..P-4 direction rule shows a significant win that plateaus.
+- id: P-6 (theory only)
+  name: schedule-aware scaling sqrt(1-alphabar_t)^p
+  status: shown in THEORY.md sec (c) to be trust_noise1's cap made
+    unconditional; as a pure rescaling it is dominated by the cap (which is a
+    no-op when the step is already small) -> not screened separately.
+grid:
+  settings: [2D, 5D, 10D]
+  n: [4, 8, 32]
+  arm: no_lgd/none
+  candidates: [baseline, trust_noise1,
+               precond_cov, precond_cov_trust,
+               precond_diag, precond_diag_trust,
+               precond_sign, precond_sign_trust,
+               precond_median, precond_median_trust]
+  restarts: 40 (0..39, offset 0), paired seeds; 90 cells, one per array task.
+compute: identical conditional calls to baseline in every cell (all rules are
+  O(d)-O(d^3) transforms of the already-computed gradient; d<=9 so the eigh is
+  microseconds); wall time expected within 5% of baseline.
+promotion_path: any survivor (p<=0.05 win somewhere, never significantly worse
+  than baseline anywhere, not dominated by trust_noise1) goes to the verifier
+  at offset 1000 with 100 restarts before any claim.

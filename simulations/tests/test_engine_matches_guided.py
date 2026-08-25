@@ -130,6 +130,35 @@ def test_engine_matches_guided_final_and_intermediates(setup, spatial, temporal)
           f"per-step intermediates: {worst:.3e}")
 
 
+def test_engine_matches_guided_corrected_protocol(setup):
+    """Protocol correction of 2026-08-24: x_T ~ N(0,I) (per-restart generator),
+    zeta = 8, noise-level trust region. Engine (--x-init randn --zeta 8
+    --step-clip noise) must still equal _guided.run(x_init="randn", zeta=8,
+    step_clip="noise") bit-for-bit, for none and adam."""
+    import inspect
+    from _guided import run as guided_run
+    if "x_init" not in inspect.signature(guided_run).parameters:
+        pytest.skip("_guided.run has no x_init (pre-correction checkout)")
+    from engine_runner import run_engine
+    params, S_G, bw, mc, mu = setup
+    worst = 0.0
+    for temporal, zeta in (("none", 8.0), ("adam", 0.125)):
+        for r in (0, 1):
+            xg, ig = guided_run(mc, mu, S_G, bw, N, "no_lgd", temporal, r, zeta=zeta,
+                                step_clip="noise", step_tau=1.0, x_init="randn")
+            xe, ie = run_engine(mc, mu, S_G, bw, N, "no_lgd", temporal, r, rng="legacy",
+                                x_init="randn", zeta=zeta, step_clip="noise", step_tau=1.0)
+            assert ig["diverged"] == ie["diverged"]
+            assert ie["protocol"]["x_init"] == "randn" and ie["protocol"]["zeta"] == zeta
+            d = float((xg.double() - xe.double()).abs().max())
+            worst = max(worst, d)
+            assert d <= TOL, (temporal, r, d)
+    x0, _ = run_engine(mc, mu, S_G, bw, N, "no_lgd", "none", 0, rng="legacy", x_init="randn")
+    x1, _ = run_engine(mc, mu, S_G, bw, N, "no_lgd", "none", 1, rng="legacy", x_init="randn")
+    assert float((x0 - x1).abs().max()) > 1e-3       # different x_T per restart
+    print(f"\n[corrected protocol] achieved max abs diff: {worst:.3e}")
+
+
 def test_the_comparison_is_not_vacuous(setup):
     """Different restarts / arms must give different answers, otherwise the
     equality above would be meaningless."""

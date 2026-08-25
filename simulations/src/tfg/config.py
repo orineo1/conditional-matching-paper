@@ -109,6 +109,183 @@ class AdaptiveRecurrenceConfig:
 
 
 @dataclass
+class PrecondConfig:
+    """[Agent P] Preconditioning of the rho-branch gradient (opt-in).
+
+    Applied AFTER the ``grad_norm`` pre-processing and BEFORE the temporal
+    operator; the later ``rho_t`` scaling, ``step_clip`` trust region and the
+    line-9 ``/sqrt(alpha_t)`` are unchanged.  See ``tfg/precond.py`` and
+    ``experiments/model-optimization/precond/THEORY.md``.
+
+    ``mode``
+        ``none``    off (default; the engine path is byte-identical to the
+                    frozen reference).
+        ``whiten``  full-covariance whitening: EMA (factor ``ema``) of the
+                    outer products of PAST raw gradients, ridge
+                    ``eps * tr(C)/d``, direction ``C^{-1/2} g`` rescaled to the
+                    RAW norm ``||g||`` (norm-preserving); identity for the
+                    first ``warmup`` steps.
+        ``diag``    diagonal second-moment direction fix: EMA of past ``g^2``,
+                    direction ``g / sqrt(v_reg)`` rescaled to ``||g||``
+                    (norm-preserving RMSProp); identity for ``warmup`` steps.
+        ``sign``    ``sign(g) * ||g|| / sqrt(#nonzero)`` (norm-preserving
+                    sign-SGD; stateless; the identity when g has one nonzero
+                    coordinate).
+        ``median``  per-coordinate median over a sliding window of the last
+                    ``window`` raw gradients (current included); the output
+                    norm is the median's own (tail-robust) norm.
+
+    Norm-preservation is deliberate: fixed-magnitude outputs (Adam/norm_only/
+    unit) are the verified 10D failure mode; these rules change the direction
+    (or, for ``median``, the estimator) and leave step-size control to the raw
+    norm or to ``TemporalConfig.step_clip``.  Validation happens in
+    ``tfg.precond.make_preconditioner`` at engine construction.
+    """
+    mode: str = "none"        # none | whiten | diag | sign | median
+    ema: float = 0.9          # EMA factor for whiten/diag state
+    eps: float = 1e-6         # relative ridge for whiten/diag
+    window: int = 5           # median window length
+    warmup: int = 5           # steps before whiten/diag activate (identity)
+
+
+@dataclass
+class ReplayConfig:
+    """[Agent M] Sample-replay MMD: mix DETACHED conditional samples from past
+    outer steps into the guidance MMD batch (opt-in, off by default).
+
+    Generalisation of the upstream ``reuse_frac`` mechanism
+    (``upstream/claude/hybrid-sampling-optimization-55fv3b``,
+    ``Optimization.optimize_LGD``); theory and derivations in
+    ``experiments/model-optimization/replay/THEORY.md``, implementation in
+    ``tfg/replay.py``.  The engine itself is untouched: the replay wrapper
+    lives outside, around the ``log_f`` callable (``tfg.replay.wrap_log_f``),
+    exactly like the rest of the distributional path.
+
+    ``mode``
+        ``subsample``  draw ``r_k`` rows from the step-``t+k`` cache
+                       (NoiseTape-keyed ``("replay", t, j, k)``, uniform
+                       without replacement) and evaluate the ordinary
+                       V-statistic on the stacked fresh+replay batch;
+        ``weighted``   use every cached row with per-group weights
+                       ``W_k ~ decay^k`` in a weighted V-statistic (fixed
+                       bandwidth only).
+    ``decay``
+        Geometric decay ``lambda``: the step-``t+k`` group carries weight
+        ``~ lambda^k`` (``k = 0`` is the fresh group).  ``0.0`` disables
+        replay exactly (fresh-only batch).
+    ``depth``
+        Number of past steps buffered (``k = 1..depth``).
+    ``batch_total``
+        ``> 0``: fixed total MMD rows ``B``; the engine's ``n_t`` must be set
+        to the fresh count ``replay_counts(B, decay, depth)[0]`` (calls-saving
+        arm).  ``0``: augment mode -- fresh count stays the engine's ``n_t``
+        and replay rows are added on top (``r_k = round(n_t * decay^k)``).
+    ``policy`` [M-10]
+        Buffer plan used when ``fill=True``: ``geometric`` (top-up split
+        ``~ decay^k`` -- the M-9 arm), ``fifo`` (uniform inclusion of the
+        most recent ``batch_total - n_t`` rows, oldest evicted), ``cohort``
+        (capped-cohort thinning: cohort ``k`` keeps ``min(n_t,
+        ceil(batch_total / 2^k))`` rows -- implicit smooth decay, longer
+        tail).  ``depth`` must cover the plan (``tfg.replay.fifo_counts`` /
+        ``cohort_counts``); ignored when ``fill=False``.
+    ``fill`` [M-9]
+        With ``batch_total > 0``: instead of deriving the fresh count from the
+        geometric split, keep the engine's ``n_t`` as the fresh count and TOP
+        UP with ``batch_total - n_t`` recycled rows split ``~ decay^k``
+        (``tfg.replay.fill_counts``), clamped by cache availability -- the
+        tiny-fresh-budget arm of hypothesis M-9.  Ignored when
+        ``batch_total = 0``.
+    """
+    enabled: bool = False
+    mode: str = "subsample"      # subsample | weighted
+    decay: float = 0.5
+    depth: int = 1
+    batch_total: int = 0
+    fill: bool = False
+    policy: str = "geometric"    # geometric | fifo | cohort   (fill=True only)
+
+    def validate(self):
+        if self.mode not in ("subsample", "weighted"):
+            raise ValueError(f"unknown replay mode {self.mode!r}")
+        if not (0.0 <= self.decay < 1.0):
+            raise ValueError("replay decay must lie in [0, 1)")
+        if self.depth < 1:
+            raise ValueError("replay depth must be >= 1")
+        if self.batch_total < 0:
+            raise ValueError("replay batch_total must be >= 0")
+        if self.fill and self.batch_total <= 0:
+            raise ValueError("replay fill=True requires batch_total > 0")
+        if self.fill and self.mode != "subsample":
+            raise ValueError("replay fill=True is only defined for mode='subsample'")
+        if self.policy not in ("geometric", "fifo", "cohort"):
+            raise ValueError(f"unknown replay policy {self.policy!r}")
+        return self
+
+
+@dataclass
+class BackselConfig:
+    """[Agent B] Importance-selected backpropagation (opt-in, off by default).
+
+    Per predictor evaluation: all ``n`` conditional samples are generated
+    under ``torch.no_grad()`` (full-batch MMD value and output-space
+    gradients ``g_i = dL/dy_i``, kernel-only), then ``k`` samples are
+    selected (tape key ``("backsel", t, j)``), regenerated WITH graphs by
+    replaying their per-sample eta keys (identical noise), and only those are
+    backpropagated: ``dL/dx ~ sum_{i in S} w_i g_i^T dy_i/dx``.  Theory,
+    unbiasedness proofs and cost accounting:
+    ``experiments/model-optimization/backsel/THEORY.md``; implementation in
+    ``tfg/backsel.py`` (the engine itself is untouched -- the wrapper lives
+    around the ``log_f`` callable, like ``tfg/replay.py``).
+
+    ``rule``
+        ``uniform``     k of n without replacement, weights ``n/k`` (unbiased
+                        control);
+        ``importance``  k iid draws with ``p_i ~ (1-floor)||g_i||/sum + floor/n``,
+                        inverse-probability weights ``c_i/(k p_i)`` (unbiased);
+        ``kcenter``     greedy k-center on the ``y_i``, cluster-aggregated
+                        output gradient through each center's Jacobian
+                        (APPROXIMATE; exact at ``k = n``).
+    ``k``
+        Number of differentiated samples per evaluation; ``k >= n`` is the
+        exact identity (all rules).
+    ``floor``
+        Mixture floor of the importance distribution (bounds the weights by
+        ``n/(k*floor)``); ``importance`` only.
+    """
+    enabled: bool = False
+    rule: str = "uniform"        # uniform | importance | kcenter | stratified | stratified_balanced
+    k: int = 4
+    floor: float = 0.25
+    # --- [B-R7] soft assignment of the non-selected output gradients ---
+    weighting: str = "hard"      # hard | soft
+    tau_mult: float = 1.0        # tau = tau_mult x the scale chosen by tau_mode
+    # [Agent S] tau_mode: "bandwidth" = tau_mult x the loss's bandwidth (synthetic
+    # default, unchanged); "local" = tau_mult x median over the non-selected rows
+    # of the squared distance to their nearest representative (the SD default:
+    # the global bandwidth measures the TARGET spread and is far too large,
+    # backsel/REPORT.md sec 7).  ``stratified_balanced``: k-center strata with
+    # capacity ceil(n/k), one uniform representative per stratum, weight |C_c|
+    # (unbiased, the SD "strat" rule).
+    tau_mode: str = "bandwidth"  # bandwidth | local
+
+    def validate(self):
+        if self.rule not in ("uniform", "importance", "kcenter", "stratified",
+                             "stratified_balanced"):
+            raise ValueError(f"unknown backsel rule {self.rule!r}")
+        if self.weighting not in ("hard", "soft"):
+            raise ValueError(f"unknown backsel weighting {self.weighting!r}")
+        if self.tau_mode not in ("bandwidth", "local"):
+            raise ValueError(f"unknown backsel tau_mode {self.tau_mode!r}")
+        if self.tau_mult <= 0:
+            raise ValueError("backsel tau_mult must be positive")
+        if self.k < 1:
+            raise ValueError("backsel k must be >= 1")
+        if not (0.0 < self.floor <= 1.0):
+            raise ValueError("backsel floor must lie in (0, 1]")
+        return self
+
+
+@dataclass
 class TemporalConfig:
     """Temporal treatment of the rho-branch gradient.
 
@@ -140,7 +317,10 @@ class TemporalConfig:
       ``none``  off;
       ``noise`` ||Delta_t|| <= step_tau * sqrt(1 - alphabar_t)   (noise-level relative;
                 ``step_tau=1`` is the promoted ``trust_noise1`` rule);
-      ``ddim``  ||Delta_t|| <= step_tau * ||x_ddim - x_t||       (relative to the DDIM move).
+      ``ddim``  ||Delta_t|| <= step_tau * ||x_ddim - x_t||       (relative to the DDIM move);
+      ``noise_prev_rms`` [Agent S] ||Delta_t|| <= step_tau * max(sqrt(1-alphabar_{t-1}),
+                step_min_noise) * sqrt(numel(Delta_t))  (per-element RMS convention of the
+                SD pipeline, shared implementation in ``tfg/trust.py``).
     The clip is a pure rescaling of the direction when the norm exceeds the
     bound, never a change of direction; it does not touch the mu branch.
     """
@@ -157,8 +337,13 @@ class TemporalConfig:
     grad_eps: float = 1e-12
     clip_ref: str = "median"          # median | ema   (clip_rel only)
     clip_ema: float = 0.9
-    step_clip: str = "none"           # none | noise | ddim
+    step_clip: str = "none"           # none | noise | ddim | noise_prev_rms
     step_tau: float = 1.0
+    # [Agent S] ``noise_prev_rms``: the SD latent convention (tfg/trust.py):
+    # ||Delta_t|| <= step_tau * max(sqrt(1-alphabar_{t-1}), step_min_noise) * sqrt(numel).
+    step_min_noise: float = 0.0
+    # --- [Agent P] gradient preconditioning (off by default) ---
+    precond: PrecondConfig = field(default_factory=PrecondConfig)
 
 
 @dataclass
@@ -205,6 +390,8 @@ class TFGConfig:
     n_schedule: NScheduleConfig = field(default_factory=NScheduleConfig)
     temporal_cache: TemporalCacheConfig = field(default_factory=TemporalCacheConfig)
     adaptive_recurrence: AdaptiveRecurrenceConfig = field(default_factory=AdaptiveRecurrenceConfig)
+    replay: ReplayConfig = field(default_factory=ReplayConfig)  # [Agent M] sample-replay MMD (handled outside the engine, in tfg/replay.py)
+    backsel: BackselConfig = field(default_factory=BackselConfig)  # [Agent B] importance-selected backprop (handled outside the engine, in tfg/backsel.py)
 
     def validate(self):
         if self.N_recur < 1:
@@ -232,7 +419,7 @@ class TFGConfig:
             raise ValueError(f"unknown clip_ref {tm.clip_ref!r}")
         if not (0.0 <= tm.clip_ema < 1.0):
             raise ValueError("clip_ema must lie in [0,1)")
-        if tm.step_clip not in ("none", "noise", "ddim"):
+        if tm.step_clip not in ("none", "noise", "ddim", "noise_prev_rms"):
             raise ValueError(f"unknown step_clip {tm.step_clip!r}")
         if tm.step_clip != "none" and tm.step_tau <= 0:
             raise ValueError("step_tau must be positive")

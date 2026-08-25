@@ -93,3 +93,131 @@ sbatch --array=0-17%18 ../experiments/model-optimization/verification/submit_hel
 4. Screening wall times contain cluster-contention outliers (17 s/run); Pareto on calls only.
 5. `screening_rows.csv` hardware label is the report machine, not the run machine.
 6. Selection and evaluation metric coincide (exact GMM L2) -- fine since it is the paper's independent metric and is not the optimised objective; held-out seeds + `mmd2_eval` + success added.
+
+---
+
+# Round 3, Phase 1 addendum (2026-08-24): replay_geo0.7d5_trust red-team
+
+Files reviewed: `simulations/src/tfg/replay.py`, `tests/test_replay.py` (26 pass),
+`config.py` `ReplayConfig` diff, `estimator/engine_runner.py` replay candidates,
+`replay/{REPORT,THEORY,ORI_IMPLEMENTATION}.md`, all 126 `replay/runs/*.json`.
+
+## (a) No target leak, no tape-key reuse -- CLEAN
+Replay rows are DETACHED past conditional samples of the same trajectory
+(`ReplayBuffer.push` stores `rows.detach().clone()`); the target enters only
+through the unchanged `DistributionalLoss`. Subsample selection uses tape keys
+`("replay", t, j, k)`; the NoiseTape hashes the full tuple (tag strings
+"delta"/"eta"/"renoise"/"replay" are disjoint), and I logged every tape request
+of a full `replay_geo0.7d5_trust` n=32 run: tags {delta: 99, eta: 1089,
+replay: 480}, eta indices i=0..10 only, no key requested with two shapes.
+Fresh rows use the SAME eta keys as any run with the same n_t -- keyed tape, so
+no draw-order shift. Buffer is created inside `wrap_log_f` per `run_engine`
+call: no state leaks across restarts or arms.
+
+## (b) Calls accounting HONEST
+`cm_samples` counts actual `CMSampler` generator draws only. Own run,
+`replay_geo0.7d5_trust` n=32: `cm_samples = 1089 = 11 x 99` (replay_counts(32,
+0.7, 5) = [11, 8, 5, 4, 2, 2]); n=4 -> [1,1,1,1,0,0] = 99; n=8 -> [3,...] =
+297 -- exactly the fresh-call numbers in the screening rows and REPORT tables.
+Probing the loss: MMD batch sizes over the 99 steps are 11, 19, 24, 28, 30,
+then 32 for the remaining 94 steps -- the total batch really is n after a
+depth-5 warm-up ramp (the first ~5 steps run on smaller batches; negligible
+but worth knowing). The saving is real compute, not bookkeeping.
+
+## (c) Paired-seed protocol -- OK with one note
+All 126 screening cells: offset 0, restarts 0..39, float32, tape rng. The
+trust_noise1 / baseline comparator cells in `replay/runs/` are score-identical
+to the round-2 `estimator/runs/` cells (deterministic reproduction). Note:
+same-n pairs share all eta keys; cross-n pairs (replay n_t=11 vs trust n=32)
+share only the first min(n_t) draws per step -- pairing is partial but valid
+(paired_stats only requires shared restarts).
+
+## (d) Bit-identity claims CONFIRMED (own runs)
+* replay disabled / decay=0 == baseline: exact (test + code path: the wrapper
+  is not even installed unless `cfg.replay.enabled`).
+* `replay_geo0.3d3` == `replay30` at n=4 and n=8: `torch.equal` True (counts
+  round to the same split); differ at n=32 -- exactly as REPORT section 0 says.
+* `replay_counts` reproduces Ori's `round(p*n)` split (tested for 8/250).
+* Also: `replay50` never ran (validate rejects lambda=1) -- disclosed by the
+  implementer; the 12/12-n.s. promotion claim does not rest on it.
+
+## Red-team notes on the CLAIM itself (for Phase 2)
+1. The promotion is a NON-INFERIORITY claim ("matched quality, fewer calls")
+   backed by n.s. p-values at R=40 -- weak evidence by construction; the
+   held-out run uses R=100 and I will report CIs (a CI whose lower bound is
+   above ~-0.05 is the meaningful "matched" statement, not p > 0.05).
+2. One of the 12 "call-matched" pairings (replay@n32 1089 vs trust@n8 792)
+   gives the CANDIDATE 37% more calls; in 2D trust@n8/n4 partially dominate
+   replay's points, so the 2D story is only the same-n n=32 win + the
+   <300-call regime (where replay is the only point). REPORT discloses this.
+3. Same-n replay is significantly WORSE in 3 screening cells (5D n8/n32, 10D
+   n32); the claim must stay "same quality at fewer calls", never "better".
+4. Round-3 held-out at OFFSET 2000 (fully fresh), not 1000: trust_noise1 was
+   promoted partly on the offset-1000 seeds, which would taint a
+   non-inferiority comparison against it; all 8 cells per setting re-run in
+   ONE process per setting (3 array tasks) so every pairing is same-node.
+   Scripts: `heldout_r3_cells.py`, `submit_heldout_r3.sh`, `analyze_r3.py`.
+
+## Precond spot-check (clean reject stands)
+Own run: `precond_sign/diag/cov` at 2D n=8 are `torch.equal`-identical to
+baseline (d_x = 1 -> norm-preserving direction rules are the identity), as the
+precond REPORT's exact-zero controls state. No further verification needed.
+
+---
+
+# Round 4, Phase 1 addendum (2026-08-24): M-10 FIFO / cohort replay red-team
+
+Reviewed: `tfg/replay.py` (`fifo_counts`, `cohort_counts`, `fill` policy
+dispatch in `wrap_log_f`), `engine_runner.py` replay parser, `replay/cells_m10.py`,
+`m10_tables.md`, `hypotheses/agentM.yaml` M-10, all `runs_m9/` (30) and
+`runs_m10/` (21) JSONs.
+
+* **Plans** (own computation): fifo16 f=2 = [2 | 2x7] (depth 7), fifo16 f=4 =
+  [4 | 4x3], cohort16 f=2 = [2 | 2,2,2,1x8] (depth 11), cohort16 f=4 =
+  [4 | 4,4,2,1,1]; cohort8@f4 == fifo8@f4 == [4 | 4] and the two runs are
+  `torch.equal`-identical (registered degeneracy confirmed).
+* **Calls accounting HONEST**: fresh n_t stays f (`fill=True` never changes
+  `n_max`); own runs give cm_samples = 198 (f=2) / 396 (f=4) = f x 99 for
+  fifo16 and cohort16; `cells_m10.run_group` asserts the same. Probed MMD batch
+  sizes: ramp 2,4,...,16 over the first 7 (fifo16) / 11 (cohort16) steps, then
+  16 for the remaining steps -- the buffer is real recycled rows, no extra
+  generator draws. fifo takes ALL rows of each buffered step (no subsampling ->
+  no "replay" tape draws at all); cohort subsamples 1-of-2 for the thinned
+  cohorts via the `("replay", t, j, k)` tape keys (deterministic).
+* **Keys / pairing**: tape tags for fifo16 f=2 = {delta: 99, eta: 198}, eta
+  i in {0, 1} only -- identical fresh draws to trust_noise1@2, so the same-f
+  pairing is complete (the first outer step, with an empty buffer, is
+  bit-identical to trust@f: verified). Gradients flow only through the fresh
+  rows (buffer stores detached clones). No target information in the buffer.
+* **Stats reproduced** from the JSONs with `_common.paired_stats`: 2D f2
+  fifo16 +0.0890 p=0.0069; 10D f2 fifo16 +0.0841 p=0.0005; 10D f4 fifo16
+  +0.0821 p=0.0007; 5D f2 +0.0201 p=0.44; 10D f2 cohort16 +0.0497 p=0.044 --
+  the tables are what the data say.
+* **RED FLAG -- comparator reuse across jobs**: the primary comparators
+  (trust_noise1@f, M-9 arm A) and the trust@8 ceiling were NOT re-run in
+  M-10; they come from the M-9 job (`submit_m9.sh`, array 0-8) while the
+  candidates ran in the M-10 job (`submit_m10.sh`, array 0-5) -- different
+  SLURM jobs, hence in general different nodes and certainly different
+  processes. `engine_runner.cell` records no host/CPU, so same-node pairing
+  CANNOT be confirmed. Given the float32 cross-platform chaos (round-2 red flag
+  1) this adds pairing noise if glacier is heterogeneous (all 132 verifier
+  cells so far ran on `AMD EPYC 7662`, so it is probably benign -- but it is
+  unverifiable from the artefacts).
+* **RED FLAG -- selection**: fifo16 is the best of 10 policy x f arms per
+  setting, evaluated on the M-9 seeds; the p-values are post-selection.
+  Round-4 held-out at OFFSET 5000 (never used), R=100, all 7 cells of a
+  setting in ONE process (3 array tasks): trust@2/4, fifo16@2/4,
+  cohort16@2/4, trust@8 reference. Scripts `heldout_r4_cells.py`,
+  `submit_heldout_r4.sh`, `analyze_r4.py` (same-f paired diffs with CIs,
+  mmd2_eval, vs-trust@8 and the call-halving check candidate@2 vs trust@4).
+
+---
+
+# Round 5 addendum (2026-08-24): corrected-protocol red-team -- see VERIFICATION.md section 10.2
+Key own checks: x_T seeding restart-only (paired across arms, tape-independent);
+protocol fields present and consistent with zeta_star.json in all 36 JSONs;
+cm_samples = n x 99 in every cell; B diverges at small n despite the n=128
+divergence-free calibration (2D 9/2/1/0, 10D 5/5/3/4) -> non-diverged-pair
+diffs computed; round-5 cells ran one per array task (A/B pairing cross-task);
+basin (8) vs l2-min (16) for 2D trust within the n=128 noise floor, untested at
+compared n -> A8 arm added to the offset-7000 confirmatory re-run.

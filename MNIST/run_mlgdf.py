@@ -304,10 +304,24 @@ def compute_step_size(r_t, t, mode):
 def optimize_LGD(model_uncond, model_cond_cm, noise_scheduler,
                  nsamples, num_x_t, num_inference_steps,
                  step_size_mode, device, seed=None, clamp=False,
-                 mog_means=None, mog_variances=None, weights=None):
+                 mog_means=None, mog_variances=None, weights=None,
+                 temporal="none", beta1=0.9, beta2=0.995, adam_delta=1e-8):
     """
     Unified optimization loop for uniform, unimodal, and bimodal targets.
     If mog_means is None, uses uniform target.
+
+    ``temporal="adam"`` applies the AdamDPS moment update (arXiv:2603.16797) to
+    the guidance gradient before the step. Default "none" is the original loop,
+    bit-for-bit.
+
+    WHY THIS MATTERS HERE AND NOT IN simulations/. Adam's second moment is
+    PER-COORDINATE adaptive scaling. The GMM benchmarks in simulations/ have
+    dim(X) = 1 (2D), 4 (5D) and 9 (10D), so there is little or nothing for it to
+    scale ACROSS, and m_hat/sqrt(v_hat) degenerates towards a signed step of
+    constant magnitude -- which is what every negative result there measured.
+    Here x_t is a 1x1x28x28 image: 784 coordinates whose gradient scales differ
+    by orders of magnitude, which is the regime adaptive moments were designed
+    for. This is therefore the first honest test of the method in this repo.
     """
     if seed is not None:
         set_seed(seed)
@@ -317,6 +331,7 @@ def optimize_LGD(model_uncond, model_cond_cm, noise_scheduler,
     timesteps = ddim.timesteps
 
     x_t = torch.randn(1, 1, 28, 28, device=device, requires_grad=True)
+    adam_state = {"m": None, "v": None, "k": 0}
 
     for i, t in enumerate(timesteps[:-1]):
         x_t      = x_t.detach().clone().requires_grad_(True)
@@ -352,6 +367,22 @@ def optimize_LGD(model_uncond, model_cond_cm, noise_scheduler,
 
         log_me = -torch.logsumexp(torch.stack(losses), dim=0) + math.log(num_x_t)
         grad   = torch.autograd.grad(log_me, x_t, retain_graph=True)[0]
+
+        if temporal == "adam":
+            with torch.no_grad():
+                g = grad.detach()
+                if adam_state["m"] is None:
+                    adam_state["m"] = torch.zeros_like(g)
+                    adam_state["v"] = torch.zeros_like(g)
+                adam_state["k"] += 1
+                k = adam_state["k"]
+                adam_state["m"] = beta1 * adam_state["m"] + (1 - beta1) * g
+                adam_state["v"] = beta2 * adam_state["v"] + (1 - beta2) * g * g
+                m_hat = adam_state["m"] / (1 - beta1 ** k)
+                v_hat = adam_state["v"] / (1 - beta2 ** k)
+                grad = m_hat / (v_hat.sqrt() + adam_delta)
+        elif temporal != "none":
+            raise ValueError(f"unknown temporal {temporal!r}")
 
         with torch.no_grad():
             if mog_means is None and t < 250:
@@ -399,7 +430,8 @@ def run_and_save(model_uncond, model_cond, noise_scheduler,
                  nsamples, num_x_t, num_inference_steps, step_size_mode,
                  experiment_name, save_dir,
                  clamp=False, seeds=range(15), device='cuda',
-                 mog_means=None, mog_variances=None, weights=None):
+                 mog_means=None, mog_variances=None, weights=None,
+                 temporal="none", beta1=0.9, beta2=0.995):
 
     os.makedirs(save_dir, exist_ok=True)
     print(f'\n{"="*60}\n  EXPERIMENT: {experiment_name}\n{"="*60}')
@@ -417,6 +449,9 @@ def run_and_save(model_uncond, model_cond, noise_scheduler,
             num_x_t             = num_x_t,
             num_inference_steps = num_inference_steps,
             step_size_mode      = step_size_mode,
+            temporal            = temporal,
+            beta1               = beta1,
+            beta2               = beta2,
             device              = device,
             seed                = seed,
             clamp               = clamp,
@@ -583,6 +618,14 @@ def main():
                    choices=["unimodal", "bimodal", "uniform"])
     p.add_argument("--num_inference_steps", type=int,   default=130)
     p.add_argument("--step_size_mode",      type=str,   default="double")
+    p.add_argument("--temporal",            type=str,   default="none",
+                   choices=["none", "adam"],
+                   help="'adam' applies the AdamDPS moment update to the "
+                        "guidance gradient. x_t is 784-dimensional here, so "
+                        "per-coordinate adaptive scaling is meaningful, unlike "
+                        "the dim(X)=1..9 GMM benchmarks in simulations/.")
+    p.add_argument("--beta1",               type=float, default=0.9)
+    p.add_argument("--beta2",               type=float, default=0.995)
     p.add_argument("--num_x_t",             type=int,   default=3)
     p.add_argument("--nsamples",            type=int,   default=1500)
     p.add_argument("--clamp",               action="store_true", default=False)
@@ -597,7 +640,12 @@ def main():
     p.add_argument("--train_classifier_only", action="store_true")
     args = p.parse_args()
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+        device = torch.device("mps")          # Apple GPU, for local smoke runs
+    else:
+        device = torch.device("cpu")
     make_deterministic(GLOBAL_SEED)
 
     if args.train_classifier_only:
@@ -629,11 +677,13 @@ def main():
         var_str = ""
 
     clamp_str = "_cl1" if args.clamp else "_cl0"
+    temporal_str = "" if args.temporal == "none" else f"_{args.temporal}"
     run_name  = (f"{experiment}{var_str}"
                  f"_st{args.num_inference_steps}"
                  f"_ss{args.step_size_mode}"
                  f"_xt{args.num_x_t}"
                  f"_ns{args.nsamples}"
+                 f"{temporal_str}"
                  f"{clamp_str}")
 
     save_dir = os.path.join(REPO_ROOT, "MNIST", "results", f"{experiment}_run", run_name)
@@ -713,6 +763,9 @@ def main():
         mog_means           = mog_means,
         mog_variances       = mog_variances,
         weights             = weights,
+        temporal            = args.temporal,
+        beta1               = args.beta1,
+        beta2               = args.beta2,
     )
 
     preds, confs = classify_generated_images(payload['results'], classifier, device)

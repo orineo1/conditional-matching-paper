@@ -1,0 +1,349 @@
+# Agent B -- importance-selected backpropagation (round 4). Pre-registered
+# 2026-08-24, BEFORE any smoke or screening run of the backsel candidates.
+# Theory and derivations in backsel/THEORY.md; implementation in
+# simulations/src/tfg/backsel.py (opt-in, off by default).
+# Primary metric: failure-penalised mean exact GMM L2 (_common.penalised_score,
+# PENALTY=2.0), paired over restarts 0..39 (offset 0; >= 1000 reserved for the
+# verifier), bootstrap 95% CI + paired permutation p.  Two cost currencies are
+# reported SEPARATELY: conditional forward samples (cm_samples: n no-grad
+# + k with-grad per predictor evaluation, i.e. n+k, NOT n) and DIFFERENTIATED
+# samples (diff_samples = k per evaluation) -- the expensive currency on real
+# models (graph memory + backward), the one this mechanism reduces from n to k.
+agent: B
+area: subset selection for the backward pass of the guidance MMD
+baseline:
+  engine: GeneralizedTFG via estimator/engine_runner.py, legacy switches,
+          rng=tape, float32, fixed bandwidth, transform=mmd2, arms
+          no_lgd/none, settings 2D/5D/10D, n in {8, 32}.
+  comparators_in_every_setting: [baseline, trust_noise1]
+mechanism_summary: >
+  Per predictor evaluation with batch n: (1) generate ALL n conditional
+  samples under torch.no_grad() (full forward, no graphs); (2) compute the
+  full-batch MMD and its output-space gradient g_i = dMMD^2/dy_i for every
+  sample (cheap, kernel-only, no conditional model involved); (3) select a
+  subset S of k << n samples by a tape-keyed selection rule; (4) regenerate
+  EXACTLY those samples WITH graphs by replaying their per-sample eta keys
+  (CMSampler keys are ("eta", t, j, i): bit-identical regeneration, proven by
+  test); (5) backprop d MMD/d x = sum_{i in S} w_i g_i^T (dy_i/dx) with
+  weights making the estimator unbiased (uniform, importance) or a cluster
+  aggregate (kcenter).  The MMD geometry (value AND g_i) stays full-batch;
+  only the differentiated set shrinks from n to k.
+candidates:
+- id: B-1
+  name: backsel_uni_k{2,4} (control)
+  spec: uniform without replacement, Horvitz-Thompson weights w_i = n/k
+  prediction: >
+    Unbiased but adds pure selection variance on top of an estimator that is
+    already noise-dominated (SNR < 1 at every n, estimator/REPORT.md sec 4).
+    Expect degradation vs the equal-n comparator that grows as n/k: at n=8
+    k=2 a significant 2D loss (diff < -0.08 vs trust_noise1 comparator is the
+    honest expectation); at n=32 k=4 smaller.  This arm answers "is
+    noise-free subsampling enough?" -- we predict NO on quality alone; the
+    candidate survives only as a Pareto trade (diff_samples 4-16x lower).
+- id: B-2
+  name: backsel_is_k{2,4} (gradient-magnitude importance sampling)
+  spec: >
+    k iid draws from p_i = (1-floor)*||g_i||/sum||g|| + floor/n, floor=0.25,
+    inverse-probability weights w_i = c_i/(k p_i); unbiased (proof in
+    tfg/backsel.py docstring + statistical test).
+  prediction: >
+    The measured per-run gradient-norm tail is heavy (within-run p90 ~6-8x
+    the median, max 100-500x, estimator/REPORT.md sec 4); if the OUTPUT-space
+    per-sample norms ||g_i|| inherit that spread, IS variance ~ (sum||h||)^2/k
+    beats uniform's ~ n*sum||h||^2/k, so backsel_is beats backsel_uni at the
+    same k in most cells (sign test across the 12 cells, p <= 0.05).
+    Absolute quality: still below the full-backprop comparator at k=2; at
+    n=32 k=4 possibly within noise (|diff| < 0.08, p > 0.05) -- that would be
+    the promotable Pareto point (8x fewer differentiated samples).
+- id: B-3
+  name: backsel_clust_k{2,4} (k-center cluster aggregation)
+  spec: >
+    greedy k-center on the y_i (tape-keyed start), representative = center,
+    aggregated output gradient g_eff(c) = sum_{i in cluster c} g_i applied
+    through the representative's Jacobian.  Biased (Jacobian substitution
+    error within clusters), zero selection variance given the tape;
+    exact when k = n.
+  prediction: >
+    Keeps ALL the output-gradient mass (no inverse-probability inflation), so
+    lowest variance of the three; bias is small if dy_i/dx varies slowly
+    across samples at the same x (same condition, different eta -- plausibly
+    true for the smooth consistency model).  Predict: best of the three rules
+    at k=2; at k=4 n=32 within noise of the full-backprop comparator in >= 2
+    settings.  If instead J_i varies strongly with eta, clust inherits a
+    systematic direction error and loses to IS -- that ordering flip is the
+    diagnostic.
+- id: B-4
+  name: _trust combinations (all six x trust_noise1)
+  spec: cfg.temporal.step_clip=noise, step_tau=1 on top
+  prediction: >
+    The campaign's standing result is that the step rule, not estimator
+    variance, is the binding constraint; trust_noise1 caps exactly the tail
+    steps that selection noise inflates.  Predict the backsel-vs-comparator
+    gap SHRINKS under trust (interaction: diff(_trust arms vs trust_noise1)
+    closer to 0 than diff(plain arms vs baseline) in the majority of cells).
+    All promotion claims are made on the _trust arms only.
+rejection: >
+  A rule is dead if it is significantly worse (p <= 0.05) than its
+  equal-compute comparator in a majority of its 12 cells at k=4 (the lenient
+  k).  The mechanism as a whole is dead if no arm reaches |diff| < 0.08
+  (the seed-noise floor) with p > 0.05 vs trust_noise1 at n=32, k=4 in at
+  least 2 of 3 settings -- i.e. if even an 8x cut in differentiated samples
+  cannot be had for free anywhere.  Cost honesty: cm_samples RISES by k/n
+  (12-25%); if quality is matched, the win is claimed ONLY in the
+  diff_samples/memory currency, never in forward calls.
+exactness: >
+  k = n reproduces the full gradient to 1e-12 (all three rules, float64,
+  tested); k < n uniform/is are UNBIASED stochastic estimators of the exact
+  gradient (statistical test); clust is APPROXIMATE.  Off-by-default;
+  enabled=False is byte-identical to the plain path (tested).
+
+# ---------------------------------------------------------------------------
+# B-R6 -- redo in the regime the mechanism exists for (pre-registered
+# 2026-08-24 BEFORE any run of backsel/fidelity.py).  Boss's finding: the
+# 102-cell screening tested n=8/32, k=2/4 with dim(Y)=1 -- not the SD case
+# (100+ generated samples per step, 10-20 differentiated, high-dim embedding).
+# ---------------------------------------------------------------------------
+B-R6:
+  stage_1:
+    name: gradient fidelity of subset backprop at n=128 (no end-to-end runs)
+    settings:
+      dimy8:  dimy_benchmark.as_params(8),  oracle conditional (exp5 protocol), uncond_seed20240401_dx1_dimy8.pt
+      dimy16: dimy_benchmark.as_params(16), oracle conditional,                  uncond_seed20240401_dx1_dimy16.pt
+      10D:    paper 10D (dim x=9, dim y=1), trained CM cm_seed20240401_dx9dy1.pt, contrast axis
+    verified_checkpoints: >
+      uncond_..._dimy{8,16}.pt exist.  There is NO matching conditional-model
+      checkpoint for the dimY benchmark: Experiments 5/5B use the EXACT ORACLE
+      conditional (exp5_dimy_scaling.conditional_samples: reparameterised
+      Gaussian-mixture draws, differentiable in x through the conditional mean
+      mu_y + (Sigma_yx/Sigma_xx)(x - mu_x)).  Consequence, stated up front: in
+      the dimY settings every sample has the SAME Jacobian dy_i/dx =
+      Sigma_yx/Sigma_xx (the component index is a detached multinomial), so
+      the x-gradient is J^T sum_i g_i and (a) any rule that conserves
+      output-gradient mass (k-center aggregation) is EXACT there, (b) the
+      selection error is entirely the OUTPUT-space error of
+      s_hat = sum_{i in S} w_i g_i vs s = sum_i g_i, and (c) with dim(x)=1 the
+      x-space cosine is only a sign.  The dimY settings therefore measure
+      redundancy/selection error in a high-dim y; the Jacobian-variation
+      axis (what broke clust k=2 in 5D) is measured by the 10D setting only
+      (per-sample Jacobians of the trained CM, dim x = 9, cosine meaningful).
+    protocol: corrected -- x_T ~ N(0,I) per restart, step_clip=noise tau=1 (trust_noise1),
+      zeta = zeta_d* of exp5b_zeta_calibration_v2 (d=8 6.8389, d=16 1.3667),
+      10D zeta = 0.03125 (exp12 none-arm calibration at n=128), n = 128 at every step.
+    design: >
+      10 trust_noise1 trajectories per setting (restarts 0..9), probes at
+      t in {98,90,80,70,60,50,40,30,20,10,3} (buckets early t>=70, mid 30-69,
+      late t<30); at each probe: 128 fresh conditional samples, full gradient
+      (all 128 differentiated; asserted equal to sum_i J_i^T g_i within 1e-4
+      rel), per-sample Jacobians J_i (batched vjp), output gradients g_i;
+      rules uniform / importance (IPW, floor 0.25) / kcenter (representative
+      carries the cluster's summed g through its own Jacobian) /
+      kcenter_mean2 (k/2 clusters, 2 differentiated members per cluster,
+      summed g through the MEAN of the two Jacobians); k in {8,16,32,64};
+      20 selection draws each (kcenter: 20 tape-keyed start rows).
+    metrics_per_setting_bucket_rule_k:
+      - cos_x: cosine(G_hat, G) in x-space (10D; sign-agreement rate in dimY)
+      - cos_y: cosine(s_hat, s) in output space, s = sum_i g_i (the quantity
+               that determines G for a common Jacobian; reported everywhere)
+      - rel_norm_err: | ||G_hat|| - ||G|| | / ||G||
+      - std across the 20 draws of cos and of ||G_hat||/||G||
+      - ESS of the contributions h_i = J_i^T g_i: (sum||h||)^2 / sum||h||^2, and of ||g_i||
+      - clusteredness of the y_i: silhouette at the k=8 k-center partition and
+        within/between distance ratio; effective rank of the y_i covariance
+    decision_rule: >
+      A (rule, k) passes to stage 2 only if median cos >= 0.9 AND p10 cos >= 0.8
+      in BOTH dimY settings (cos = cos_y there, since cos_x is a sign with
+      dim x = 1 -- pre-registered substitute), and additionally is reported
+      with its 10D cos_x so a Jacobian-variation failure is visible.  If
+      kcenter passes trivially in dimY (it is exact there), its stage-2
+      admission ALSO requires median cos_x >= 0.9 in 10D.
+    predictions: >
+      (1) uniform: cos_y rises with k roughly as sqrt(k/(n-k)) inverse noise;
+      expected median cos_y ~0.6 at k=8, ~0.9 at k=32, ~0.97 at k=64.  (2) IS:
+      >= uniform at every k (the ||g_i|| proxy is EXACT for a common
+      Jacobian), gap largest at small k if ||g_i|| is heavy-tailed (ESS(||g||)
+      << 128); if ESS(||g||) ~ 128 (no heavy tail) IS ~ uniform.  (3) kcenter:
+      cos_y = 1 in dimY (exact), the informative number is 10D cos_x, which
+      we predict DEGRADES below 0.9 at k <= 16 (Jacobian varies with eta --
+      the 5D clust k=2 collapse) and kcenter_mean2 recovers part of it.
+      (4) Redundancy: silhouette at k=8 < 0.3 (the conditional is a smooth
+      mixture with 0.124 per-coordinate variance across 11 components -- the
+      y_i are clustered by COMPONENT, so ~11 natural clusters; k-center with
+      k >= 16 should capture them and clust cos should jump between k=8 and 16).
+    rejection: >
+      If no rule reaches median cos_y >= 0.9 at k <= 32 in both dimY settings,
+      the mechanism has no fidelity margin at the SD-relevant ratio (k/n <= 1/4)
+      and stage 2 is not run.
+  stage_2:
+    name: end-to-end quality at n=128 (only after stage 1, on the boss's go)
+    arms: full-batch n=128 (ceiling, 128 diff) / backsel n=128,k (128+k fwd, k diff) / fresh n=k (k fwd, k diff)
+    protocol: corrected, R=100, offset 9000, paired same-process; primary = exact L2 (dimY / 10D)
+    status: NOT RUN
+  stage_1_addendum_pre_run: >
+    Added 2026-08-24 after the 2-trajectory SMOKE of dimy8/10D and BEFORE the
+    cluster run.  The smoke showed the dimY construction is degenerate for
+    this question (as its own docstring warns): eff_rank(cov y) ~ 1.03,
+    ESS(||g||) ~ 124/128, cos_y >= 0.98 already at k = 8 -- the coordinates
+    are repeated measurements of one scalar, so the g_i are near-collinear
+    and any subset reproduces their sum.  Settings nuis8 / nuis16
+    (dimy_benchmark.as_params_nuisance, dim y = 8/16 with ONE informative
+    coordinate + pure-noise coordinates; same X marginal, so the dimy{8,16}
+    unconditional checkpoint and zeta* are reused, bandwidth recomputed on
+    its own target) are added as the construction where the MMD is
+    genuinely high-dimensional.  The pre-registered decision rule is kept
+    unchanged on dimy8/dimy16 and reported ALSO on nuis8/nuis16 (second
+    admission column); stage-2 candidates must pass BOTH columns.
+    Prediction for nuis: ESS(||g||) well below 128, cos_y at k=8 < 0.9 for
+    uniform/importance, kcenter still exact (common Jacobian), so the
+    binding gate for all rules is the 10D cos_x (Jacobian variation), where
+    the smoke shows uniform/importance fail p10 at k <= 32 and kcenter /
+    kcenter_mean2 pass from k = 32.
+  stage_1_result: >
+    Cluster run (fidelity_tables.md): 10D kcenter passes at k=16 (med cos_x
+    0.992, p10 0.872) and k=32; kcenter_mean2 at k=16/32; uniform/importance
+    only at k>=32.  In dimY/nuis cos_y = 1.000 for kcenter is EXACT BY
+    CONSTRUCTION (common oracle Jacobian) and is not evidence.
+  B-R6b_stage_2_pre_registration: >
+    Written 2026-08-24 BEFORE any stage-2 run (smoke of one group at 5
+    restarts excepted).  Runner backsel/stage2.py, settings 10D / dimy16 /
+    nuis16, corrected protocol (x_T ~ N(0,I) keyed on the restart, trust
+    noise tau=1, zeta as stage 1), n=128 generated at every step, R=100,
+    restarts 9000..9099, all arms of a setting in ONE process (paired),
+    conditional noise keyed on (restart, t, i) so every arm sees the same
+    128 candidate samples at the same (restart, t) and fresh-k sees the
+    FIRST k of them.
+    arms: full128 (ceiling; 128 fwd / 128 diff), kcenter16, kcenter32,
+    kcenter_mean2_16, uniform32 (128+k fwd / k diff), fresh16, fresh32
+    (k fwd / k diff).
+    primary metric: failure-penalised exact L2 (10D: _guided.evaluate GMM
+    L2; dimY/nuis: exp5 population L2), paired diff + bootstrap CI +
+    permutation p vs full128 AND vs fresh-k (the equal-differentiation
+    comparator); success rate, divergences; cost = fwd samples, diff
+    samples, s/run, peak RSS.
+    predictions:
+      P1 kcenter16 and kcenter32 are within noise of full128 in 10D
+         (|diff| < 0.05, CI contains 0) -- stage-1 cos_x med >= 0.99;
+         in dimy16/nuis16 they are IDENTICAL-in-expectation to full128
+         (exact aggregation), so any diff there is pure seed noise
+         (|diff| < 0.03).
+      P2 kcenter16 beats fresh16 significantly in 10D (CI > 0): same 16
+         differentiated samples, but the MMD geometry (value and g_i)
+         uses 128; the same at k=32 with a smaller margin.  In dimY/nuis
+         the same ordering (full geometry vs 16-sample geometry).
+      P3 uniform32 is between fresh32 and full128 (not significantly
+         different from either at R=100) -- stage-1 p10 cos_x 0.79 at k=32.
+      P4 kcenter_mean2_16 ~ kcenter16 (|diff| < 0.03).
+      P5 cost: fwd = (128+k)*T for backsel arms, diff = k*T; wall time of
+         backsel arms ABOVE fresh-k and at or above full128 on this MLP
+         (the no-grad 128-forward + kernel gradient are not free here).
+    diagnostic (kcenter16): realised cluster-size distribution per step
+      (min/median/max, singleton fraction) and selection stability between
+      consecutive steps: index-Jaccard of S_t vs S_{t-1} (conditional noise
+      is fresh per step, so the chance level is ~k/(2n-k) = 0.067) and the
+      mean displacement of the center set in y between consecutive steps
+      relative to the within-step center spacing.
+    rejection: kcenter16 significantly worse than full128 in 10D (CI < 0)
+      kills the SD-scale claim at k/n = 1/8; kcenter16 NOT better than
+      fresh16 in 10D means the full-batch geometry buys nothing and the
+      mechanism reduces to "use fewer samples".
+    status: NOT RUN (smoke only)
+  B-R6b_amendment_2026-08-24_zeta_source: >
+    Before any stage-2 run.  The 10D zeta in the original pre-registration
+    (0.03125) was exp12's none-arm number from another session; the 5-restart
+    smoke showed it makes the test powerless (all arms 0.672-0.677, full128 vs
+    fresh16 differ by 0.004).  The campaign's corrected-protocol calibration
+    is experiments/model-optimization/protocol/zeta_star.json: 10D trust
+    zeta* = 4.0 (l2-min over divergence-free zeta at n=128, trust on; round 5
+    ran at it and guidance clearly moves: trust 0.57-0.59 vs no-trust
+    0.63-0.72).  PRIMARY 10D group now runs at zeta = 4.0; a second, labelled
+    SENSITIVITY group 10D_z003 keeps zeta = 0.03125 (cheap, ~4 min) and is
+    reported separately, never pooled.  dimy16/nuis16 keep exp5b_v2 zeta*
+    (no other calibration exists for them).  Predictions P1-P5 and the
+    rejection rule are unchanged and apply to the zeta = 4.0 group.
+  B-R6b_verdicts_2026-08-24: >
+    Stage 2 ran (job 45938918), 10D at zeta*=4.0, R=100, offset 9000.
+    P1 SUPPORTED: kcenter16 +0.015 [-0.015,+0.045] vs full128, kcenter32
+    -0.001 [-0.027,+0.024].  P2 MOOT: fresh32 = full128 (0.5013 vs 0.5011)
+    and fresh16 -0.020 n.s. -- the benchmark saturates at ~32 samples, so
+    the full-batch geometry has nothing to buy; only kcenter_mean2_16 vs
+    fresh16 is significant (+0.043 [+0.007,+0.078]).  P3 supported
+    (uniform32 n.s. vs both).  P4 supported (mean2 0.478 vs kcenter16
+    0.486).  P5 supported (fwd (128+k)T, diff kT, wall 1.32-1.43 vs 1.29
+    s/run).  Rejection not triggered.  Sensitivity 10D_z003: all arms
+    0.606-0.613, inert, reported separately.  dimy16/nuis16 NOT RUN:
+    OOM-killed (4 GB cgroup); not rerun -- common-Jacobian oracle
+    settings, tautological for kcenter.
+    Conclusion: clustering-based back-selection preserves quality at
+    k/n = 16/128 (fidelity + end-to-end); the synthetic benchmark cannot
+    show a cost win (saturates at ~32 samples, MLP backward negligible);
+    decision moves to the SD dev runs (baseline/novis/trust/
+    backsel_k8_kcenter/backsel_k8_uniform/trust_backsel; SD smoke:
+    regen_err 0.0, backward 50-60% of step time).
+
+# ---------------------------------------------------------------------------
+# B-R7 -- soft assignment of non-selected output gradients (user's rule),
+# pre-registered 2026-08-24 BEFORE implementation/run.
+# ---------------------------------------------------------------------------
+B-R7:
+  context: >
+    On SD, hard kcenter lost badly (+0.10 MMD): greedy k-center leaves one
+    11-19-member cluster whose summed g goes through ONE Jacobian (coherent
+    amplification, correction norms 2x), while uniform (HT weights) lost only
+    +0.04.  The failure mode is NORM INFLATION of the Jacobian-substituted
+    aggregate, not direction.
+  rule: >
+    Select S (uniform | stratified = one tape-random member per k-center
+    cluster | kcenter = the centers).  Weighting "soft": every NON-selected
+    j distributes g_j over S with a_ji = softmax_i(-||y_j - y_i||^2 / tau),
+    representative i pushes g_i + sum_j a_ji g_j through its own Jacobian.
+    tau = the MMD kernel's median bandwidth (the middle of the 5 scales,
+    i.e. bw x 2^0 -- no new constant), also tau/4 and 4 tau.  Mass is
+    conserved (sum_i g_eff_i = sum_j g_j) for every tau; tau -> 0 with
+    kcenter selection is exactly hard kcenter; tau -> inf splits every
+    non-selected g equally over S.
+  implementation: tfg/backsel.py (BackselConfig.weighting = hard | soft, tau_mult; rule stratified added), tests in tests/test_backsel.py
+  experiment: >
+    Stage-1 fidelity harness only (backsel/fidelity.py), 10D, n=128 with
+    k in {8,16,32} and n=32 with k=8 (the SD regime 8/32); rules uniform,
+    kcenter, stratified, soft-uniform, soft-stratified (+ soft-kcenter as a
+    free extra) x tau_mult in {0.25, 1, 4}; 10 trajectories x 11 probes x 20
+    draws (local, minutes).  Metrics: cos_x median/p10, rel-norm error,
+    and NORM INFLATION ||G_hat||/||G|| median/p90.
+  predictions: >
+    (1) Hard kcenter has the largest inflation p90 (> 1.5 at k=8, n=128)
+    -- the SD failure reproduced in the harness; uniform (HT) inflation p90
+    < 1.5 but worse cos_x p10.  (2) soft-stratified at tau = bw has
+    inflation p90 within 1.3 AND cos_x >= hard kcenter at the same k: the
+    spread over several Jacobians averages the substitution error.  (3)
+    tau/4 approaches hard behaviour (higher inflation), 4 tau approaches
+    the uniform split (lower inflation, lower cos_x at small k); tau = bw
+    is the pre-registered SD choice unless tau/4 or 4 tau dominates on
+    BOTH metrics.  (4) At n=32, k=8 the ordering is the same with larger
+    inflation everywhere.
+  decision_for_SD_arm: >
+    Recommend the (selection, tau) with the lowest inflation p90 among
+    those whose cos_x median >= 0.9 at k=8 n=128; if none, the lowest
+    inflation with cos_x median >= hard kcenter's.
+  B-R7_verdicts_2026-08-25: >
+    Ran locally (10D, zeta*=4.0, 10 trajectories x 11 probes x 20 draws, n=128
+    k in {8,16,32} and n=32 k in {8,16}; backsel/fidelity_r7_tables.md).
+    (1) NOT reproduced: in this dim(y)=1 harness hard kcenter's inflation p90
+    (1.59 at k=8/128) is BELOW uniform-HT's (2.71); the SD kcenter failure
+    (one 11-19-member cluster through one Jacobian) needs a high-dim y where
+    clusters are wide -- here nearest neighbours in y are near-identical and
+    Jacobian substitution is benign.  (2) SUPPORTED in direction: soft
+    assignment at tau = bw/4 has the lowest inflation p90 of every rule at
+    every k (soft_uniform 1.43/1.30/1.20 at k=8/16/32 vs kcenter
+    1.59/1.42/1.26 vs uniform 2.71/2.05/1.65) with cos_x median >= kcenter;
+    soft_stratified_t0.25 matches kcenter's cos_x p10 (0.69 vs 0.68 at k=8)
+    at p90 1.52.  (3) WRONG in the predicted direction of tau: tau = bw and
+    4 bw are WORSE on both metrics (cos_x p10 drops to 0.17 / -0.12 at k=8;
+    inflation p90 1.62 / 1.83) -- the kernel bandwidth is the TARGET-SET
+    spread (bw = 9.3 vs within-cluster d^2 ~ 0.1), so softmax(-d^2/bw) is
+    nearly uniform and spreads g_j over far representatives.  tau must be
+    on the local (nearest-representative) scale.  (4) n=32, k=8: same
+    ordering (soft_uniform_t0.25 p90 1.37, kcenter 1.55, uniform 2.36).
+    Decision rule applied (lowest inflation p90 with cos_x med >= 0.9 at
+    k=8, n=128): soft_uniform, tau = bw/4 -> recommended SD arm, with the
+    caveat that on 768-D CLIP the right tau is the local scale; a
+    scale-free tau = median_j min_i ||y_j - y_i||^2 is the exploratory
+    follow-up (not run).

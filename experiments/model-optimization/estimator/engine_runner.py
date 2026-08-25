@@ -40,7 +40,7 @@ from _guided import evaluate                                          # noqa: E4
 from _models import PAPER_TS, SEEDS, conditional_model, unconditional_model  # noqa: E402
 from tfg.config import TFGConfig                                      # noqa: E402
 from tfg.distributional import (CMSampler, DistributionalLoss, LegacyTape,   # noqa: E402
-                                repository_schedule)
+                                RandnInitTape, repository_schedule)
 from tfg.engine import GeneralizedTFG                                 # noqa: E402
 from tfg.noise_tape import NoiseTape                                  # noqa: E402
 
@@ -200,6 +200,144 @@ def candidate_spec(name, n, T):
         loss_kw["bandwidth"] = "pooled_floor"
     elif name in ("sqrt_abs_eps", "sqrt_floor", "mmd2"):
         loss_kw["transform"] = name
+    elif name.startswith("precond_"):
+        # [Agent P] round 3: precond_{cov,diag,sign,median}[_trust]
+        body = name[len("precond_"):]
+        with_trust = body.endswith("_trust")
+        if with_trust:
+            body = body[: -len("_trust")]
+        p_mode = {"cov": "whiten", "diag": "diag", "sign": "sign",
+                  "median": "median"}.get(body)
+        if p_mode is None:
+            raise ValueError(f"unknown candidate {name!r}")
+
+        def mut(cfg, _mode=p_mode, _trust=with_trust):
+            cfg.temporal.precond.mode = _mode
+            if _trust:
+                cfg.temporal.step_clip = "noise"
+                cfg.temporal.step_tau = 1.0
+    elif name.startswith("replay"):
+        # [Agent M] round 3: sample-replay MMD (tfg/replay.py).  Names:
+        #   replay<P>            Ori's reuse: depth 1, P% of the batch replayed,
+        #                        total MMD batch = n, fresh calls = n - round(P% n)
+        #   replay_w<P>          same split, weighted-V-statistic mode
+        #   replay_geo<lam>d<D>  geometric decay lam, depth D, batch = n
+        #   replay_wgeo<lam>d<D> weighted geometric
+        #   ..._aug              augment: fresh = n (calls = baseline), batch grows
+        #   replay_fill<B>_geo<lam>d<D>  [M-9] fresh = n, topped up to MMD batch B
+        #                        with recycled rows ~ lam^k (ReplayConfig.fill)
+        #   replay_fifo<B> / replay_cohort<B>  [M-10] fresh = n, topped up to
+        #                        batch B: uniform FIFO / capped-cohort thinning
+        #   ..._trust            + trust_noise1 on top (champion combination)
+        from tfg.replay import replay_counts
+        body = name[len("replay"):]
+        r_trust = body.endswith("_trust")
+        if r_trust:
+            body = body[: -len("_trust")]
+        r_aug = body.endswith("_aug")
+        if r_aug:
+            body = body[: -len("_aug")]
+        r_mode = "subsample"
+        r_fill = 0
+        if body.startswith("_w"):
+            r_mode, body = "weighted", body[2:]
+        elif body.startswith("_"):
+            body = body[1:]
+        if body.startswith("fill"):
+            fill_s, body = body[4:].split("_", 1)
+            r_fill = int(fill_s)
+        if body.startswith(("fifo", "cohort")):
+            from tfg.replay import cohort_counts, fifo_counts
+            r_policy = "fifo" if body.startswith("fifo") else "cohort"
+            r_fill = int(body[len(r_policy):])
+            plan = (fifo_counts if r_policy == "fifo" else cohort_counts)(r_fill, n)
+            r_decay, r_depth = 0.7, max(1, len(plan) - 1)   # decay unused by these plans
+
+            def mut(cfg, _pol=r_policy, _d=r_depth, _B=r_fill, _tr=r_trust):
+                cfg.replay.enabled = True
+                cfg.replay.mode = "subsample"
+                cfg.replay.policy = _pol
+                cfg.replay.depth = _d
+                cfg.replay.batch_total = _B
+                cfg.replay.fill = True
+                if _tr:
+                    cfg.temporal.step_clip = "noise"
+                    cfg.temporal.step_tau = 1.0
+            notes["approximate"] = True
+            return mut, sampler_kw, loss_kw, notes
+        if body.startswith("geo"):
+            lam_s, d_s = body[3:].split("d")
+            r_decay, r_depth = float(lam_s), int(d_s)
+        else:
+            p = float(body) / 100.0
+            if not (0.0 < p < 0.5):
+                raise ValueError(f"replay percent must be in (0,50): {name!r}")
+            r_decay, r_depth = p / (1.0 - p), 1
+        r_batch = r_fill if r_fill else (0 if r_aug else n)
+
+        def mut(cfg, _m=r_mode, _lam=r_decay, _d=r_depth, _B=r_batch,
+                _tr=r_trust, _fill=bool(r_fill)):
+            cfg.replay.enabled = True
+            cfg.replay.mode = _m
+            cfg.replay.decay = _lam
+            cfg.replay.depth = _d
+            cfg.replay.batch_total = _B
+            cfg.replay.fill = _fill
+            if _B > 0 and not _fill:   # calls-saving arm: engine draws only the fresh rows
+                cfg.n_schedule.n_max = replay_counts(_B, _lam, _d)[0]
+            if _tr:
+                cfg.temporal.step_clip = "noise"
+                cfg.temporal.step_tau = 1.0
+        notes["approximate"] = True
+    elif name.startswith("backsel_"):
+        # [Agent B] round 4: importance-selected backpropagation (tfg/backsel.py).
+        #   backsel_{uni,is,clust}_k<K>[_cohort<B>|_fifo<B>][_trust]
+        #     uni    uniform k of n without replacement, weights n/k (unbiased control)
+        #     is     gradient-magnitude importance sampling, inverse-probability
+        #            weights, floor 0.25 (unbiased)
+        #     clust  greedy k-center on y_i, cluster-aggregated output gradient
+        #            through the center's Jacobian (approximate)
+        #     _cohort<B>/_fifo<B>  composed with Agent C's [M-10] replay top-up
+        #            (fresh = n, MMD batch B); selection over the fresh rows only
+        #     _trust + trust_noise1 on top (champion combination)
+        #   Forward samples per evaluation = n + k (no-grad batch + regenerated
+        #   subset); DIFFERENTIATED samples = k (reported as diff_samples).
+        body = name[len("backsel_"):]
+        b_trust = body.endswith("_trust")
+        if b_trust:
+            body = body[: -len("_trust")]
+        b_policy, b_B = None, 0
+        for pol in ("cohort", "fifo"):
+            tag = f"_{pol}"
+            if tag in body:
+                body, B_s = body.split(tag, 1)
+                b_policy, b_B = pol, int(B_s)
+        rule_s, k_s = body.rsplit("_k", 1)
+        b_rule = {"uni": "uniform", "is": "importance", "clust": "kcenter"}.get(rule_s)
+        if b_rule is None:
+            raise ValueError(f"unknown candidate {name!r}")
+        if b_policy is not None:
+            from tfg.replay import cohort_counts, fifo_counts
+            plan = (fifo_counts if b_policy == "fifo" else cohort_counts)(b_B, n)
+            b_depth = max(1, len(plan) - 1)
+        else:
+            b_depth = 1
+
+        def mut(cfg, _r=b_rule, _k=int(k_s), _tr=b_trust, _pol=b_policy, _B=b_B, _d=b_depth):
+            cfg.backsel.enabled = True
+            cfg.backsel.rule = _r
+            cfg.backsel.k = _k
+            if _pol is not None:
+                cfg.replay.enabled = True
+                cfg.replay.mode = "subsample"
+                cfg.replay.policy = _pol
+                cfg.replay.depth = _d
+                cfg.replay.batch_total = _B
+                cfg.replay.fill = True
+            if _tr:
+                cfg.temporal.step_clip = "noise"
+                cfg.temporal.step_tau = 1.0
+        notes["approximate"] = True   # stochastic (uni/is, unbiased) or biased (clust) gradient
     else:
         raise ValueError(f"unknown candidate {name!r}")
     return mut, sampler_kw, loss_kw, notes
@@ -225,9 +363,17 @@ def build_models(setting, dtype=torch.float32):
 def run_engine(mc, mu, S_G, bw, n, spatial, temporal, restart, *, rng="tape",
                dtype=torch.float32, adam_rho=0.4, beta1=0.9, beta2=0.995,
                delta=1e-8, candidate="baseline", cfg_mutator=None, sampler_kw=None,
-               loss_kw=None, trace_steps=False, tape_seed=None, loss_backend="reference"):
+               loss_kw=None, trace_steps=False, tape_seed=None, loss_backend="reference",
+               x_init="zeros", zeta=1.0, step_clip="none", step_tau=1.0):
     """Engine-based counterpart of ``_guided.run``; same return signature plus
-    ``cm_samples`` (actual generator draws), ``grad_norms``, ``agreement``."""
+    ``cm_samples`` (actual generator draws), ``grad_norms``, ``agreement``.
+
+    Protocol fields (defaults = the legacy protocol of Exp 2-7 and campaign
+    rounds 1-4): ``x_init`` ``zeros`` | ``randn`` (``x_T ~ N(0,I)`` from the
+    generator ``_guided.py`` uses, seed ``0x5EED0000 ^ restart``); ``zeta`` = the
+    guidance step scale (``rho_scalar``; multiplies the Adam output too, as in
+    ``_guided``); ``step_clip``/``step_tau`` = the noise-level trust region
+    (candidates such as ``trust_noise1`` set the same fields)."""
     sch = repository_schedule(mu, dtype=dtype)
     T = sch.T
     M = M_LGD if spatial == "lgd" else 1
@@ -235,9 +381,13 @@ def run_engine(mc, mu, S_G, bw, n, spatial, temporal, restart, *, rng="tape",
     s_kw = {**s_kw, **(sampler_kw or {})}
     l_kw = {**l_kw, **(loss_kw or {})}
 
-    cfg = TFGConfig(T=T, N_recur=1, N_iter=0, gamma_bar=0.0, rho_scalar=1.0,
-                    mu_scalar=0.0, n_mc=M, init="zeros", guidance_scaling="raw",
+    if x_init not in ("zeros", "randn"):
+        raise ValueError(x_init)
+    cfg = TFGConfig(T=T, N_recur=1, N_iter=0, gamma_bar=0.0, rho_scalar=float(zeta),
+                    mu_scalar=0.0, n_mc=M, init=x_init, guidance_scaling="raw",
                     smoothing=("lgd_beta" if M > 1 else "tfg"))
+    cfg.temporal.step_clip = step_clip
+    cfg.temporal.step_tau = float(step_tau)
     cfg.n_schedule.enabled = True
     cfg.n_schedule.type = "constant"
     cfg.n_schedule.n_max = int(n)
@@ -254,6 +404,9 @@ def run_engine(mc, mu, S_G, bw, n, spatial, temporal, restart, *, rng="tape",
     if cfg.temporal.mode == "adam" and temporal == "none":
         cfg.temporal.adam_rho = adam_rho          # e.g. norm_only on a none arm
     cfg.validate()
+    protocol = {"x_init": x_init, "zeta": float(cfg.rho_scalar),
+                "step_clip": cfg.temporal.step_clip, "step_tau": float(cfg.temporal.step_tau),
+                "rng": rng, "dtype": str(dtype).split(".")[-1], "loss_backend": loss_backend}
 
     seed = restart if tape_seed is None else tape_seed
     base_tape = NoiseTape(seed=seed, dtype=dtype)
@@ -265,6 +418,8 @@ def run_engine(mc, mu, S_G, bw, n, spatial, temporal, restart, *, rng="tape",
         tape, source = base_tape, "tape"
     else:
         raise ValueError(rng)
+    if x_init == "randn":
+        tape = RandnInitTape(tape, restart)
 
     sampler = CMSampler(mc, PAPER_TS, tape, source=source, dtype=dtype, **s_kw)
     loss_kw_full = {"bandwidth": "fixed", "bandwidth_value": bw, "transform": "mmd2",
@@ -277,8 +432,22 @@ def run_engine(mc, mu, S_G, bw, n, spatial, temporal, restart, *, rng="tape",
         t_batch = torch.full([x.shape[0], 1], int(t))
         return mu(x, t_batch, None)
 
-    def log_f(x, n_t=None, eta_keys=None):
-        return -loss(sampler(x, eta_keys))
+    if getattr(cfg, "replay", None) is not None and cfg.replay.enabled:
+        from tfg.replay import wrap_log_f          # [Agent M] opt-in sample replay
+        log_f = wrap_log_f(sampler, loss, base_tape, cfg.replay)
+    else:
+        def log_f(x, n_t=None, eta_keys=None):
+            return -loss(sampler(x, eta_keys))
+
+    if getattr(cfg, "backsel", None) is not None and cfg.backsel.enabled:
+        # [Agent B] opt-in importance-selected backprop; composes with replay
+        # (selection over the fresh rows of the replay-stacked batch).
+        from tfg.backsel import wrap_log_f as backsel_wrap
+        inner = None
+        if cfg.replay.enabled:
+            from tfg.replay import wrap_log_f as replay_wrap
+            inner = (lambda s_, l_: replay_wrap(s_, l_, base_tape, cfg.replay))
+        log_f = backsel_wrap(sampler, loss, base_tape, cfg.backsel, inner=inner)
 
     engine = GeneralizedTFG(eps_theta, log_f, sch, tape, cfg)
     steps = {}
@@ -308,7 +477,12 @@ def run_engine(mc, mu, S_G, bw, n, spatial, temporal, restart, *, rng="tape",
             "steps": len(c.n_t_history), "grad_norms": gn,
             "agreement": list(c.agreement_history),
             "recurrences": sum(c.recurrence_history), "stale_steps": c.stale_steps,
-            "approximate": bool(notes.get("approximate", False))}
+            "approximate": bool(notes.get("approximate", False)),
+            "protocol": protocol}
+    # [Agent B] differentiated samples (graphs + backward): the full batch
+    # unless the backsel wrapper reports its own count.
+    b_stats = getattr(log_f, "stats", None)
+    info["diff_samples"] = int(b_stats["diff_samples"]) if b_stats and b_stats["diff_samples"] else int(sampler.cm_samples)
     if trace_steps:
         info["x_prev_trace"] = steps["x_prev"]
         info["grad_trace"] = steps["grad_rho_raw"]
@@ -320,16 +494,19 @@ def run_engine(mc, mu, S_G, bw, n, spatial, temporal, restart, *, rng="tape",
 # ---------------------------------------------------------------------------
 
 def cell(setting, n, spatial, temporal, candidate, restarts, offset=0, dtype="float32",
-         rng="tape", verbose=True, loss_backend="reference"):
+         rng="tape", verbose=True, loss_backend="reference", x_init="zeros", zeta=1.0,
+         step_clip="none", step_tau=1.0):
     dt = DTYPES[dtype]
     params, S_G, bw, mc, mu = build_models(setting, dt)
     runs, xs = [], []
     t_wall = time.perf_counter()
     for r in range(offset, offset + restarts):
         x, info = run_engine(mc, mu, S_G, bw, n, spatial, temporal, r, rng=rng, dtype=dt,
-                             candidate=candidate, loss_backend=loss_backend)
+                             candidate=candidate, loss_backend=loss_backend,
+                             x_init=x_init, zeta=zeta, step_clip=step_clip, step_tau=step_tau)
         ev = evaluate(x, params, info)
-        ev.update({k: info[k] for k in ("cm_samples", "n_t_mean", "recurrences", "stale_steps")})
+        ev.update({k: info[k] for k in ("cm_samples", "n_t_mean", "recurrences", "stale_steps",
+                                        "diff_samples")})   # [Agent B] diff_samples appended
         ev["grad_norm_median"] = st.median(info["grad_norms"]) if info["grad_norms"] else None
         ev["agreement_mean"] = (st.mean(info["agreement"]) if info["agreement"] else None)
         runs.append(ev)
@@ -339,6 +516,7 @@ def cell(setting, n, spatial, temporal, candidate, restarts, offset=0, dtype="fl
     summ = {"setting": setting, "n": n, "spatial": spatial, "temporal": temporal,
             "candidate": candidate, "restarts": restarts, "offset": offset, "dtype": dtype,
             "loss_backend": loss_backend,
+            "protocol": info["protocol"],
             "score": penalised_score(runs),
             "L2_mean": st.mean([q["L2"] for q in fin]) if fin else float("nan"),
             "L2_median": st.median([q["L2"] for q in fin]) if fin else float("nan"),
@@ -346,6 +524,7 @@ def cell(setting, n, spatial, temporal, candidate, restarts, offset=0, dtype="fl
             "diverged": len(runs) - len(fin),
             "conditional_calls_mean": st.mean([q["conditional_calls"] for q in runs]),
             "cm_samples_mean": st.mean([q["cm_samples"] for q in runs]),
+            "diff_samples_mean": st.mean([q["diff_samples"] for q in runs]),   # [Agent B]
             "seconds_per_run": wall / restarts, "wall_s": wall,
             "peak_mem_mb": peak_rss_mb(),
             "grad_norm_median": st.median([q["grad_norm_median"] for q in runs
@@ -372,10 +551,16 @@ def main():
     ap.add_argument("--rng", default="tape", choices=["tape", "legacy"])
     ap.add_argument("--loss", default="reference", choices=["reference", "fast"],
                     help="MMD backend: repository MMDLoss, or the exact cached-target tfg.fast_mmd")
+    ap.add_argument("--x-init", default="zeros", choices=["zeros", "randn"],
+                    help="x_T = 0 (legacy) or x_T ~ N(0,I) with _guided's per-restart generator")
+    ap.add_argument("--zeta", type=float, default=1.0, help="guidance step scale (rho_scalar)")
+    ap.add_argument("--step-clip", default="none", choices=["none", "noise", "ddim"])
+    ap.add_argument("--step-tau", type=float, default=1.0)
     ap.add_argument("--out", default=None, help="json path for the cell summary")
     a = ap.parse_args()
     s = cell(a.setting, a.n, a.spatial, a.temporal, a.candidate, a.restarts, a.offset,
-             a.dtype, a.rng, loss_backend=a.loss)
+             a.dtype, a.rng, loss_backend=a.loss, x_init=a.x_init, zeta=a.zeta,
+             step_clip=a.step_clip, step_tau=a.step_tau)
     if a.out:
         Path(a.out).write_text(json.dumps(s, indent=1, default=str))
 

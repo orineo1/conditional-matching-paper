@@ -100,7 +100,7 @@ Standing caveat: 10D at zeta=1 is mis-calibrated (exp5b calibration is the prere
 The synthetic loop cannot test back-selection (cheap backward, shared Jacobians) or the trust region in latent space. Moving both into `SD_cond_SD_controlnet/scripts/run_mlgd_f.py` behind opt-in flags with per-step profiling; reduced-but-faithful dev config on L40S; final metric = fresh 2000-sample MMD, plus wall time, VRAM, differentiated variations.
 
 ### Round 7 (in progress) — Stable Diffusion runs (`sd/`)
-Flags added to `SD_cond_SD_controlnet/scripts/run_mlgd_f.py` (all opt-in): `--no_vis`,
+Flags added to `SD_cond_SD_controlnet/scripts/run_mlgd_f.py` (all opt-in): `--mmd_cache_target` (exact cached-target MMD, `src/metrics.py::_target_stats`), `--no_vis`,
 `--arch_single_batch`, `--trust_noise TAU`, `--backsel K --backsel_rule
 {uniform,is,kcenter,strat} [--backsel_weighting soft]`, `--profile` (`src/profiling.py`), fixed
 final-eval OOM (`src/metrics.py` chunked CLIP; final state persisted before eval), standalone

@@ -12,7 +12,29 @@ import torch
 import torchvision.transforms.functional as TF
 
 
-def compute_mmd(x, y, bandwidth=None, bandwidth_scale=1.0, kernel_alpha=1.0):
+# ---- cached target statistics (exact; from the campaign's fast_mmd, IMPROVEMENTS.md sec 2) ----
+# The target set y is fixed for a whole run and detached, so its pairwise squared-distance
+# matrix D_yy never changes. compute_mmd(..., cache_target=True) computes it once per target
+# tensor and re-evaluates only exp(-(D_yy/2bw^2)^alpha) for the current bandwidth: the m x m
+# distance block (m^2 x d work) is never recomputed and never enters the autograd graph.
+_TARGET_CACHE = {}
+
+
+def _target_stats(y):
+    key = (y.data_ptr(), tuple(y.shape), str(y.device), str(y.dtype))
+    st = _TARGET_CACHE.get(key)
+    if st is None:
+        with torch.no_grad():
+            y_sq = (y ** 2).sum(dim=1, keepdim=True)
+            d_yy = (y_sq + y_sq.T - 2 * torch.mm(y, y.T)).clamp_min(0.0)
+        st = {"y_sq": y_sq, "d_yy": d_yy}
+        _TARGET_CACHE.clear()          # one target set per run
+        _TARGET_CACHE[key] = st
+    return st
+
+
+def compute_mmd(x, y, bandwidth=None, bandwidth_scale=1.0, kernel_alpha=1.0,
+                cache_target=False):
     """
     Unbiased Maximum Mean Discrepancy with a generalised RBF kernel.
 
@@ -23,6 +45,8 @@ def compute_mmd(x, y, bandwidth=None, bandwidth_scale=1.0, kernel_alpha=1.0):
         bandwidth_scale: multiplicative scale applied after median estimation.
         kernel_alpha:    RBF exponent. 1 = standard Gaussian.
                          >1 = flatter centre, sharper falloff.
+        cache_target:    reuse the fixed target set's pairwise distances across calls
+                         (exact; see _target_stats). Off by default.
 
     Returns:
         Scalar MMD estimate (sqrt of unbiased MMD²).
@@ -64,8 +88,16 @@ def compute_mmd(x, y, bandwidth=None, bandwidth_scale=1.0, kernel_alpha=1.0):
         bandwidth = bandwidth.detach() * bandwidth_scale
 
     K_xx = rbf_kernel(x, x, bandwidth, kernel_alpha)
-    K_yy = rbf_kernel(y, y, bandwidth, kernel_alpha)
-    K_xy = rbf_kernel(x, y, bandwidth, kernel_alpha)
+    if cache_target:
+        st = _target_stats(y)
+        with torch.no_grad():
+            K_yy = torch.exp(-(st["d_yy"] / (2 * bandwidth ** 2)) ** kernel_alpha)
+        x_sq = (x ** 2).sum(dim=1, keepdim=True)
+        dist_xy = x_sq + st["y_sq"].T - 2 * torch.mm(x, y.T)
+        K_xy = torch.exp(-(dist_xy / (2 * bandwidth ** 2)) ** kernel_alpha)
+    else:
+        K_yy = rbf_kernel(y, y, bandwidth, kernel_alpha)
+        K_xy = rbf_kernel(x, y, bandwidth, kernel_alpha)
 
     # Skip K_xx diagonal term when n=1 to avoid 0/0
     xx_term = (K_xx.sum() - K_xx.trace()) / (n * (n - 1)) if n > 1 else 0.0

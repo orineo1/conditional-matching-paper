@@ -83,6 +83,9 @@ def parse_args():
     p.add_argument("--controlnet_scale", type=float, default=0.5)
     p.add_argument("--loss_fn",          type=str,   default="mmd",
                    choices=["mmd", "swd"])
+    p.add_argument("--mmd_cache_target", action="store_true",
+                   help="Exact cached-target MMD: compute the target-target distance block "
+                        "once per run (src/metrics.py::_target_stats). Off by default.")
     p.add_argument("--bandwidth_scale",  type=float, default=1.0,
                    help="Scale factor for MMD bandwidth (< 1 = sharper kernel)")
     p.add_argument("--loss_scale",       type=float, default=1.0,
@@ -654,6 +657,7 @@ def main():
             "perf_flags":                   {k: getattr(args, k) for k in
                                              ["no_vis", "arch_single_batch", "trust_noise", "backsel",
                                               "backsel_rule", "backsel_weighting", "backsel_soft_tau_scale", "backsel_soft_tau_mode",
+                                              "mmd_cache_target",
                                               "seeded_rng", "variation_batch_size",
                                               "profile", "eval_batch_size"]},
             "eval_interval":                eval_interval,
@@ -746,6 +750,7 @@ def main():
 
     if args.loss_fn == "mmd":
         loss_fn = partial(compute_mmd, bandwidth_scale=args.bandwidth_scale,
+                          cache_target=args.mmd_cache_target,
                           kernel_alpha=args.kernel_alpha)
     else:
         loss_fn = LOSS_FNS[args.loss_fn]

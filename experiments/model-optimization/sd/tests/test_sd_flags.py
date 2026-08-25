@@ -331,3 +331,18 @@ def test_tfg_engine_noise_prev_rms_matches_sd_cap():
         got = eng._step_clip(D, t, D, D)
         cap = noise_cap(0.25, float(sch.sqrt_one_minus_ab(t - 1)), numel=64, min_noise=0.03)
         assert abs(got.norm().item() - min(cap, D.norm().item())) < 1e-9
+
+
+def test_cached_target_mmd_is_exact():
+    from metrics import compute_mmd
+    torch.manual_seed(7)
+    x = torch.randn(9, 16, dtype=torch.float64, requires_grad=True)
+    y = torch.randn(25, 16, dtype=torch.float64)
+    for alpha in (1.0, 2.0):
+        for bw in (None, torch.tensor(1.3, dtype=torch.float64)):
+            a = compute_mmd(x, y, bandwidth=bw, kernel_alpha=alpha)
+            b = compute_mmd(x, y, bandwidth=bw, kernel_alpha=alpha, cache_target=True)
+            c = compute_mmd(x, y, bandwidth=bw, kernel_alpha=alpha, cache_target=True)  # cache hit
+            assert torch.allclose(a, b, atol=1e-5) and torch.allclose(b, c)
+            ga = torch.autograd.grad(a, x)[0]; gb = torch.autograd.grad(b, x)[0]
+            assert torch.allclose(ga, gb, atol=1e-5)

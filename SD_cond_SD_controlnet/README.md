@@ -122,6 +122,18 @@ baseline run tells you which `TAU` would bind and how often (on the dev task the
 ratio has median 0.03 and a heavy tail up to 1.4; `TAU = 0.25` clips 5–8 % of
 steps, the spikes only).
 
+## 2b. Exact cached-target MMD (`--mmd_cache_target`)
+
+The other verified improvement from the synthetic campaign
+(`experiments/model-optimization/IMPROVEMENTS.md` §2). The target set is fixed for a
+whole run, so its pairwise distance block is computed once
+(`src/metrics.py::_target_stats`) and only the cross block and the sample-sample
+block are evaluated per step; the target block never enters the autograd graph.
+Mathematically identical loss and gradient (test: `sd/tests/test_sd_flags.py::
+test_cached_target_mmd_is_exact`, incl. the median-heuristic bandwidth and
+`kernel_alpha`). On SD the MMD is <0.1% of a step, so this is hygiene rather than a
+speed-up here; it is what made the synthetic loop ~2x faster.
+
 ## 3. Profiling (`--profile`) and the other flags
 
 `--profile` writes `<output_dir>/profile.json` (rewritten every step): CUDA-synced

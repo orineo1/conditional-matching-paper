@@ -97,6 +97,13 @@ def parse_args():
     p.add_argument("--reuse_frac", type=float, default=0.0,
                    help="Fraction of num_variations reused from the previous step's fresh embeddings")
 
+    # Backprop subsampling: generate num_variations samples for the loss, but only
+    # backprop through a subset — cuts backward-pass cost without shrinking the loss's
+    # sample size. None = differentiate through every fresh variation (original behavior).
+    p.add_argument("--backsel_k", type=int, default=None,
+                   help="Of the freshly-generated variations, how many to backprop "
+                        "through each step (None = all)")
+
     # Prompts
     p.add_argument("--prompt",          type=str, default="")
     p.add_argument("--negative_prompt", type=str, default="")
@@ -509,6 +516,7 @@ def main():
             "scheduler_type":               type(architect.scheduler).__name__,
             "num_variations":               args.num_variations,
             "reuse_frac":                   args.reuse_frac,
+            "backsel_k":                    args.backsel_k,
             "base_zeta":                    args.base_zeta,
             "guidance_scale":               args.guidance_scale,
             "controlnet_scale":             args.controlnet_scale,
@@ -711,6 +719,7 @@ def main():
             loss_scale=args.loss_scale,
             prev_variation_clip=prev_variation_clip,
             reuse_frac=args.reuse_frac,
+            backsel_k=args.backsel_k,
         )
 
         grad_norm = grad.norm().item()

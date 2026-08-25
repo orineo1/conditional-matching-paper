@@ -39,6 +39,14 @@ cd "$REPO"
 OUTPUT_DIR="output/mlgd_f_age_${SLURM_JOB_ID}"
 mkdir -p "$OUTPUT_DIR"
 
+# Backprop-subsampling (--backsel_k): with e.g. num_variations=100 and backsel_k=20,
+# the loss still sees 100 fresh Sprinter samples/step but gradient only flows through
+# a random 20 of them each step — cuts backward-pass cost ~5x for the same loss
+# fidelity. Leave --backsel_k unset (or >= num_variations) to backprop through all of
+# them, i.e. the original behavior. Uncomment the line below to enable it:
+# BACKSEL_ARGS="--backsel_k 20"
+BACKSEL_ARGS=""
+
 # ── 5. Run ────────────────────────────────────────────────────────────────────
 python scripts/run_mlgd_f.py \
     --output_dir "$OUTPUT_DIR" \
@@ -53,6 +61,7 @@ python scripts/run_mlgd_f.py \
     --start_step 15 \
     --num_variations 6 \
     --reuse_frac 0.0 \
+    $BACKSEL_ARGS \
     --base_zeta 5.0 \
     --guidance_scale 0.0 \
     --controlnet_scale 0.5 \

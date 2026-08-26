@@ -110,9 +110,12 @@ def parse_args():
                         "(MMD witness-function importance sampling — scores all "
                         "fresh variations cheaply first, then backprops through "
                         "the highest-|score| subset for a lower-variance gradient)")
-    p.add_argument("--witness_floor", type=float, default=0.1,
+    p.add_argument("--witness_floor", type=float, default=0.3,
                    help="Uniform-mixing floor for witness sampling probabilities "
-                        "(0 = pure importance sampling, 1 = uniform)")
+                        "(0 = pure importance sampling, 1 = uniform). Defensive "
+                        "mixture p_i = floor/n + (1-floor)*|w_i|/sum(|w|); "
+                        "recommended 0.3-0.5 to bound the worst-case weight and "
+                        "avoid collapsing onto the same outliers every step")
 
     # Prompts
     p.add_argument("--prompt",          type=str, default="")

@@ -236,7 +236,7 @@ def run_dps_step_clip(
     backsel_k=None,
     backsel_rule="uniform",
     backsel_generator=None,
-    witness_floor=0.1,
+    witness_floor=0.3,
     witness_bandwidth_scale=1.0,
     witness_kernel_alpha=1.0,
 ):
@@ -289,10 +289,17 @@ def run_dps_step_clip(
                                versus doing it "the naive way".
         backsel_generator:     optional torch.Generator for reproducible witness
                                sampling.
-        witness_floor:         mixes the witness-score distribution with `witness_floor`
-                               mass of uniform, so low-|score| samples still have a
-                               nonzero chance of being selected (avoids collapsing
-                               onto a handful of outliers every step).
+        witness_floor:         defensive mixture: p_i = witness_floor/n + (1 - witness_floor)
+                               * |w_i| / sum(|w|), rather than sampling purely
+                               proportional to |w|. Bounds the worst-case weight so
+                               low-|score| samples still have a nonzero chance of
+                               being selected, instead of one or two outliers
+                               dominating every step. Combined with the
+                               replacement=False draw below (never pick the same
+                               index twice within one step's n_grad), this is the
+                               standard fix for importance sampling collapsing onto
+                               a handful of samples. Default 0.3 (recommended range
+                               0.3-0.5); 0 = pure |w|-proportional, 1 = uniform.
         witness_bandwidth_scale, witness_kernel_alpha:
                                RBF kernel params for the witness score (independent of
                                loss_fn's own kernel settings; only used when
@@ -370,13 +377,42 @@ def run_dps_step_clip(
                 all_embs.detach(), all_clip_embeddings,
                 bandwidth_scale=witness_bandwidth_scale, kernel_alpha=witness_kernel_alpha,
             )
+            # Defensive mixture: blend the |score|-proportional distribution with
+            # witness_floor mass of uniform (recommended ~0.3-0.5). Pure |w|-
+            # proportional sampling can put almost all the mass on one or two
+            # outliers step after step, starving everything else; the uniform floor
+            # bounds how skewed p can get. replacement=False below is the other
+            # half of the fix: even under a skewed p, no single sample can be
+            # picked twice within one step's n_grad draws.
             probs = scores.abs().double()
             probs = (1.0 - witness_floor) * probs / probs.sum().clamp_min(1e-12) + witness_floor / n_new
             probs = probs / probs.sum()
             # multinomial + a CPU generator require CPU probs.
-            grad_idx = set(torch.multinomial(
+            grad_idx_t = torch.multinomial(
                 probs.cpu(), n_grad, replacement=False, generator=backsel_generator
-            ).tolist())
+            )
+            grad_idx = set(grad_idx_t.tolist())
+
+            # Diagnostic: print scores/probs/selection every step so you can check
+            # across a run's log whether selection is collapsing onto the same few
+            # indices (it shouldn't, given the floor + no-replacement above).
+            scores_np = scores.cpu().numpy()
+            probs_np = probs.cpu().numpy()
+            selected_sorted = sorted(grad_idx)
+            print(
+                f"      [witness] scores={np.round(scores_np, 4).tolist()}",
+                flush=True,
+            )
+            print(
+                f"      [witness] probs ={np.round(probs_np, 4).tolist()}",
+                flush=True,
+            )
+            print(
+                f"      [witness] selected_idx={selected_sorted}  "
+                f"selected_scores={np.round(scores_np[selected_sorted], 4).tolist()}  "
+                f"score_range=[{scores_np.min():.4f}, {scores_np.max():.4f}]",
+                flush=True,
+            )
 
         variation_clip_list.extend(
             row if i in grad_idx else row.detach() for i, row in enumerate(all_rows)

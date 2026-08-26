@@ -88,6 +88,25 @@ def parse_args():
     p.add_argument("--kernel_alpha",     type=float, default=1.0,
                    help="Generalised RBF exponent (>1 = sharper falloff)")
 
+    # Adam on the DPS correction (alternative to the zeta_i-scaled gradient step)
+    p.add_argument("--use_adam", action="store_true",
+                   help="Use a persistent Adam optimizer on the correction instead "
+                        "of -zeta_i * grad. Adam keeps running first/second-moment "
+                        "estimates of the gradient across the whole guidance "
+                        "trajectory (a smoothed, per-coordinate adaptive step size); "
+                        "zeta_i already does a cruder scalar version of the same "
+                        "job (rescale by 1/loss), so zeta_i is ignored entirely "
+                        "when this is set -- combining both would double-normalize "
+                        "the step and make the effective step size impossible to "
+                        "reason about.")
+    p.add_argument("--adam_lr", type=float, default=0.01,
+                   help="Adam learning rate (only used with --use_adam; this is "
+                        "the step-size knob in Adam mode, playing the role "
+                        "--base_zeta plays in zeta_i mode)")
+    p.add_argument("--adam_beta1", type=float, default=0.9)
+    p.add_argument("--adam_beta2", type=float, default=0.999)
+    p.add_argument("--adam_eps",   type=float, default=1e-8)
+
     # Variations / eval
     p.add_argument("--num_variations", type=int, default=6)
     p.add_argument("--eval_interval",  type=int, default=0,
@@ -557,6 +576,11 @@ def main():
             "bandwidth_scale":              args.bandwidth_scale,
             "kernel_alpha":                 args.kernel_alpha,
             "mode":                         args.mode,
+            "use_adam":                     args.use_adam,
+            "adam_lr":                      args.adam_lr,
+            "adam_beta1":                   args.adam_beta1,
+            "adam_beta2":                   args.adam_beta2,
+            "adam_eps":                     args.adam_eps,
         },
     )
     print(f"✅ wandb run: {run.name}", flush=True)
@@ -626,6 +650,15 @@ def main():
     step_vis_data  = []
     prev_variation_clip = None   # one-step-old CLIP embeddings, used when args.reuse_frac > 0
     backsel_generator = torch.Generator().manual_seed(args.seed) if args.seed is not None else None
+
+    # Persistent Adam moment buffers across the whole guidance trajectory (only
+    # used when --use_adam). Accumulated in float32 regardless of latents' own
+    # dtype (float16 here) -- fp16 accumulation of squared gradients in adam_v can
+    # underflow/overflow and destabilize the sqrt(v)+eps denominator, so moments
+    # are always tracked in fp32 and only the final update is cast back down.
+    adam_m = torch.zeros_like(latents, dtype=torch.float32)
+    adam_v = torch.zeros_like(latents, dtype=torch.float32)
+    adam_t = 0
     target_clip_np = all_clip_embeddings.cpu().numpy()
     softmax_man_prompt   = target_groups[-1][1]   # last group (most masculine)
     softmax_woman_prompt = target_groups[0][1]    # first group (most feminine)
@@ -756,11 +789,37 @@ def main():
         zeta_val  = zeta_i.item() if isinstance(zeta_i, torch.Tensor) else zeta_i
         print(f"  MMD={mmd_loss.item():.6f}  ζi={zeta_val:.4f}  ∥∇∥={grad_norm:.6f}", flush=True)
 
+        adam_log = {}
         if torch.isnan(grad).any():
             print(f"  ⚠️  NaN in gradient at step {i} — skipping correction", flush=True)
             correction = torch.zeros_like(latents_step)
+        elif args.use_adam:
+            # zeta_i is intentionally unused here -- it's a scalar 1/loss rescale,
+            # Adam already adaptively rescales per-coordinate via its own moment
+            # estimates, and applying both would double-normalize the step.
+            # Moments accumulate in float32 even though latents_step is float16,
+            # to avoid v underflowing/overflowing under fp16 accumulation.
+            grad_f32 = grad.float()
+            adam_t += 1
+            adam_m.mul_(args.adam_beta1).add_(grad_f32, alpha=1 - args.adam_beta1)
+            adam_v.mul_(args.adam_beta2).addcmul_(grad_f32, grad_f32, value=1 - args.adam_beta2)
+            m_hat = adam_m / (1 - args.adam_beta1 ** adam_t)
+            v_hat = adam_v / (1 - args.adam_beta2 ** adam_t)
+            adam_update = args.adam_lr * m_hat / (v_hat.sqrt() + args.adam_eps)
+            correction = -adam_update.to(latents_step.dtype)
+            print(f"  [adam] t={adam_t}  ∥update∥={adam_update.norm().item():.6f}  "
+                  f"∥m∥={adam_m.norm().item():.6f}  mean(v)={adam_v.mean().item():.6e}",
+                  flush=True)
+            adam_log = {
+                "adam/step_norm": adam_update.norm().item(),
+                "adam/m_norm":    adam_m.norm().item(),
+                "adam/v_mean":    adam_v.mean().item(),
+                "adam/t":         adam_t,
+            }
         else:
             correction = -zeta_i * grad
+
+        correction_norm = correction.norm().item()
 
         step_gradients.append({
             "step":            i + 1,
@@ -769,7 +828,8 @@ def main():
             "mmd_loss":        mmd_loss.item(),
             "zeta_i":          zeta_val,
             "loss_norm":       loss_norm.item(),
-            "correction_norm": zeta_val * grad_norm,
+            "correction_norm": correction_norm,
+            **({"adam_step_norm": adam_log["adam/step_norm"]} if adam_log else {}),
         })
 
         wandb_log = {
@@ -777,7 +837,8 @@ def main():
             "mmd_loss":        mmd_loss.item(),
             "gradient_norm":   grad_norm,
             "zeta":            zeta_val,
-            "correction_norm": zeta_val * grad_norm,
+            "correction_norm": correction_norm,
+            **adam_log,
         }
 
         if i % eval_interval == 0:

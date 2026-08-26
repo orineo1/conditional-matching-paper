@@ -239,6 +239,7 @@ def run_dps_step_clip(
     witness_floor=0.3,
     witness_bandwidth_scale=1.0,
     witness_kernel_alpha=1.0,
+    witness_replacement=False,
 ):
     """
     CLIP-space MMD/SWD DPS step — core of the MLGD-F algorithm.
@@ -304,6 +305,23 @@ def run_dps_step_clip(
                                RBF kernel params for the witness score (independent of
                                loss_fn's own kernel settings; only used when
                                backsel_rule='witness').
+        witness_replacement:   False (default) — draw n_grad *distinct* indices;
+                               removes the "same outlier picked repeatedly" failure
+                               mode entirely, at the cost of needing n_grad <= n_new
+                               (already true here) and being unable to concentrate
+                               more than 1x weight on any single sample. True —
+                               draw n_grad indices with replacement (standard
+                               importance-resampling); an index drawn c times is
+                               included c times in the differentiable batch (the
+                               *same* checkpoint node reused c times — autograd
+                               correctly sums its gradient across all c uses, and it
+                               is still only recomputed once), so a high-|witness|
+                               sample can end up carrying more than 1x weight. This
+                               is the textbook with-replacement importance-sampling
+                               estimator, but is more prone to concentrating on a
+                               handful of samples than the without-replacement
+                               version — watch the "duplicate draws" line in the
+                               printed diagnostics below.
 
     Returns:
         (grad, loss_scaled, zeta_i, loss_norm, vl_clip_flat, new_variation_clip)
@@ -381,24 +399,30 @@ def run_dps_step_clip(
             # witness_floor mass of uniform (recommended ~0.3-0.5). Pure |w|-
             # proportional sampling can put almost all the mass on one or two
             # outliers step after step, starving everything else; the uniform floor
-            # bounds how skewed p can get. replacement=False below is the other
-            # half of the fix: even under a skewed p, no single sample can be
-            # picked twice within one step's n_grad draws.
+            # bounds how skewed p can get.
             probs = scores.abs().double()
             probs = (1.0 - witness_floor) * probs / probs.sum().clamp_min(1e-12) + witness_floor / n_new
             probs = probs / probs.sum()
             # multinomial + a CPU generator require CPU probs.
             grad_idx_t = torch.multinomial(
-                probs.cpu(), n_grad, replacement=False, generator=backsel_generator
+                probs.cpu(), n_grad, replacement=witness_replacement, generator=backsel_generator
             )
-            grad_idx = set(grad_idx_t.tolist())
+            # Without replacement: every draw is a distinct index, count 1 each --
+            # this is what removes the "same outlier picked repeatedly" failure
+            # mode entirely (the standard fix when k isn't tiny relative to n).
+            # With replacement: draws can repeat: an index drawn c times gets
+            # count c, and is included c times in the differentiable batch below
+            # (the textbook with-replacement importance-resampling estimator).
+            unique_idx, counts = torch.unique(grad_idx_t, return_counts=True)
+            grad_counts = dict(zip(unique_idx.tolist(), counts.tolist()))
 
             # Diagnostic: print scores/probs/selection every step so you can check
             # across a run's log whether selection is collapsing onto the same few
-            # indices (it shouldn't, given the floor + no-replacement above).
+            # indices.
             scores_np = scores.cpu().numpy()
             probs_np = probs.cpu().numpy()
-            selected_sorted = sorted(grad_idx)
+            selected_sorted = sorted(grad_counts)
+            dup_counts = {i: c for i, c in grad_counts.items() if c > 1}
             print(
                 f"      [witness] scores={np.round(scores_np, 4).tolist()}",
                 flush=True,
@@ -410,14 +434,20 @@ def run_dps_step_clip(
             print(
                 f"      [witness] selected_idx={selected_sorted}  "
                 f"selected_scores={np.round(scores_np[selected_sorted], 4).tolist()}  "
-                f"score_range=[{scores_np.min():.4f}, {scores_np.max():.4f}]",
+                f"score_range=[{scores_np.min():.4f}, {scores_np.max():.4f}]  "
+                f"replacement={witness_replacement}  duplicate_draws={dup_counts or 'none'}",
                 flush=True,
             )
 
-        variation_clip_list.extend(
-            row if i in grad_idx else row.detach() for i, row in enumerate(all_rows)
-        )
-        n_nograd = n_new - n_grad
+        rows_out = []
+        for i, row in enumerate(all_rows):
+            c = grad_counts.get(i, 0)
+            rows_out.extend([row] * c if c > 0 else [row.detach()])
+        variation_clip_list.extend(rows_out)
+        # Number of distinct candidates left fully undifferentiated -- with
+        # replacement this can exceed n_new - n_grad, since duplicate draws leave
+        # more candidates untouched than a without-replacement draw of the same size.
+        n_nograd = n_new - len(grad_counts)
     else:
         # Differentiable slots: checkpointed forward, gradient flows to latents_step.
         variation_clip_list.extend(checkpointed_forward(n_grad))

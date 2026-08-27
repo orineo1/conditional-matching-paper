@@ -75,8 +75,16 @@ def compute_witness_scores(X, Y, kernel=None):
     """
     kernel = kernel or RBF()
     with torch.no_grad():
-        X = X.detach()
-        Y = Y.detach()
+        # Always compute on CPU, matching this codebase's own convention
+        # (MMDLoss/RBF both default to device='cpu' and MMDLoss.forward() moves
+        # both its inputs there internally) -- mog_samples (Y) is generated on
+        # CPU by default regardless of where the model/X actually run, and
+        # downstream selection (select_backsel_mask's torch.multinomial) uses a
+        # CPU-only torch.Generator, so keeping everything on CPU here avoids
+        # both the immediate vstack device-mismatch and a second one further
+        # downstream between a CUDA scores tensor and that CPU generator.
+        X = X.detach().cpu()
+        Y = Y.detach().cpu()
         n = X.shape[0]
         K = kernel(torch.vstack([X, Y]))
         K_xx = K[:n, :n]

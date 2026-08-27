@@ -19,7 +19,13 @@ EXPERIMENT="5D_cond_1D"
 NUM_X_T=3                     # fixed, not swept
 N_RUNS=25
 SEED=42
-METHODS="LGD LGD-CM"           # any of: LGD LGD-CM
+# any of: LGD LGD-CM. Overridable via env so you can submit LGD and LGD-CM as
+# TWO SEPARATE jobs (e.g. on two different machines) instead of one job doing
+# both sequentially -- their analyses/plots are already independent per method
+# (curves_LGD.png vs curves_LGD-CM.png etc.), and output filenames now include
+# the methods run, so two jobs writing to the same results_dir won't clobber
+# each other. See the "SPLITTING INTO TWO JOBS" note below 5. before doing this.
+METHODS="${METHODS:-LGD LGD-CM}"
 NSAMPLES_LIST="50 100 250 500" # the "n" axis
 K_FRACS="0.1 0.2 0.5 1.0"      # the "proportion" axis (backsel_k / nsamples); 1.0
                                 # is always included automatically as the "full"
@@ -154,3 +160,29 @@ eval $CMD
 EXIT_CODE=$?
 echo "=== JOB ${SLURM_JOB_ID} FINISHED (exit ${EXIT_CODE}) ==="
 exit $EXIT_CODE
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SPLITTING INTO TWO JOBS (LGD on one machine, LGD-CM on another)
+# ══════════════════════════════════════════════════════════════════════════════
+# Safe to do -- results/plots/output filenames are already per-method -- with
+# ONE catch: load_or_train_models() always loads/trains ALL THREE models
+# (model_uncond, model_cond for LGD, model_cm for LGD-CM) regardless of which
+# --methods you pass, since it doesn't know in advance which you'll need. If
+# NEITHER job has cached checkpoints yet and both start at the same moment,
+# they'll race to train/write the SAME checkpoint files.
+#
+# Fix: run ONE small warm-up job first to populate the checkpoint cache, THEN
+# submit the two real jobs (they'll each just load the cached checkpoints, no
+# training, no race):
+#
+#   export REPO_ROOT=... ENV_PATH=...
+#   METHODS="LGD LGD-CM" sbatch --job-name=warmup \
+#       --export=ALL,SMOKE_TEST=true run_backsel_witness_sweep.sh
+#   # wait for it to finish (or use --dependency=afterok:<warmup_jobid> below),
+#   # then:
+#   METHODS="LGD"    sbatch --job-name=witness-LGD    run_backsel_witness_sweep.sh
+#   METHODS="LGD-CM" sbatch --job-name=witness-LGD-CM run_backsel_witness_sweep.sh
+#
+# (SMOKE_TEST=true in the warm-up keeps it fast: tiny grid, but
+# load_or_train_models still runs its full training/loading path for all three
+# models exactly as a real run would, so the cache it leaves behind is valid.)

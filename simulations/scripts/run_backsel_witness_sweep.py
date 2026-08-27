@@ -307,6 +307,11 @@ def main():
         "LGD-CM": dict(cond_model=model_cm,   CM_flag=True),
     }
     methods = [m for m in args.methods if m in method_models]
+    # Included in every output filename below so two concurrent jobs against the
+    # same results_dir/num_x_t/seed (e.g. one running --methods LGD, the other
+    # --methods LGD-CM, split across two machines) never overwrite each other's
+    # JSON/CSVs -- those were previously named only by (num_x_t, seed).
+    methods_tag = "-".join(methods)
     nsamples_list = args.nsamples_list
     k_fracs = sorted(set(args.k_fracs) | {1.0})  # always include the 1.0 baseline point
     rules = args.rules
@@ -406,7 +411,7 @@ def main():
         },
     }
 
-    json_path = os.path.join(results_dir, f"witness_sweep_numxt{args.num_x_t}_seed{args.seed}.json")
+    json_path = os.path.join(results_dir, f"witness_sweep_numxt{args.num_x_t}_seed{args.seed}_{methods_tag}.json")
     with open(json_path, "w") as f:
         json.dump(out, f, indent=2)
     print(f"[Results] Saved JSON to {json_path}")
@@ -450,12 +455,12 @@ def main():
                                              - piv.loc[(method, n, kf), ("L2_x_mean", "uniform")],
             })
         wu_df = pd.DataFrame(wu_rows)
-        wu_csv_path = os.path.join(results_dir, f"witness_sweep_numxt{args.num_x_t}_seed{args.seed}_witness_vs_uniform.csv")
+        wu_csv_path = os.path.join(results_dir, f"witness_sweep_numxt{args.num_x_t}_seed{args.seed}_{methods_tag}_witness_vs_uniform.csv")
         wu_df.to_csv(wu_csv_path, index=False)
         print(f"[Results] Saved witness-vs-uniform delta table to {wu_csv_path}")
         print(wu_df.to_string(index=False))
 
-    csv_path = os.path.join(results_dir, f"witness_sweep_numxt{args.num_x_t}_seed{args.seed}_summary.csv")
+    csv_path = os.path.join(results_dir, f"witness_sweep_numxt{args.num_x_t}_seed{args.seed}_{methods_tag}_summary.csv")
     summary_df.to_csv(csv_path, index=False)
     print(f"[Results] Saved summary CSV to {csv_path}")
 
@@ -464,7 +469,7 @@ def main():
     # (method, n, kf, alpha) witness point was computed.
     if "witness" in rules and len(alpha_list) > 1:
         alpha_csv_path = os.path.join(
-            results_dir, f"witness_sweep_numxt{args.num_x_t}_seed{args.seed}_alpha_sweep.csv"
+            results_dir, f"witness_sweep_numxt{args.num_x_t}_seed{args.seed}_{methods_tag}_alpha_sweep.csv"
         )
         alpha_df = pd.DataFrame(alpha_metrics_rows)
         alpha_df.to_csv(alpha_csv_path, index=False)
@@ -489,7 +494,7 @@ def main():
                                 "ess_raw": h["ess_raw"],
                             })
         scenario_df = pd.DataFrame(scenario_rows)
-        scenario_path = os.path.join(results_dir, f"witness_diagnostics_numxt{args.num_x_t}_seed{args.seed}.csv")
+        scenario_path = os.path.join(results_dir, f"witness_diagnostics_numxt{args.num_x_t}_seed{args.seed}_{methods_tag}.csv")
         scenario_df.to_csv(scenario_path, index=False)
         print(f"[Results] Saved witness scenario diagnostics to {scenario_path}")
 
@@ -576,7 +581,7 @@ def main():
             grad_var_df["variance_ratio"] = grad_var_df.apply(_ratio, axis=1)
             grad_var_df["variance_ratio_vs_ref"] = grad_var_df.apply(_ratio_vs_ref, axis=1)
 
-        grad_var_path = os.path.join(results_dir, f"gradient_variance_numxt{args.num_x_t}_seed{args.seed}.csv")
+        grad_var_path = os.path.join(results_dir, f"gradient_variance_numxt{args.num_x_t}_seed{args.seed}_{methods_tag}.csv")
         grad_var_df.to_csv(grad_var_path, index=False)
         print(f"[Results] Saved gradient-variance diagnostics to {grad_var_path}")
         if not grad_var_df.empty:

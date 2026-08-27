@@ -29,9 +29,16 @@ def optimize_LGD(model_uncond, model_cond, mog_means, mog_variances, weights, mu
                  backsel_replacement=False,  # <-- NEW: sample the backsel_k indices with/without replacement
                  backsel_generator=None,     # <-- NEW: optional torch.Generator for reproducible selection
                  return_history=False,       # <-- NEW: also return per-step diagnostics
-                 diag_steps=None):           # <-- NEW: list of t-values at which to log the extra
+                 diag_steps=None,            # <-- NEW: list of t-values at which to log the extra
                                              #     gradient-error / witness-scenario diagnostics below
                                              #     (requires return_history=True; ignored otherwise)
+                 grad_ref_n=2000):           # <-- NEW: sample size for the TRUE/population reference
+                                             #     gradient at diag_steps, drawn from the exact analytic
+                                             #     conditional GMM (mu_list/Sigma_list/alpha -- known
+                                             #     ground truth, not model_cond's approximation). Cheap:
+                                             #     closed-form reparameterized Gaussian sampling, no
+                                             #     network forward, so grad_ref_n can be large without
+                                             #     real cost.
 
     mmd_loss = MMDLoss(kernel=RBF())
     best_mmd_loss = float("inf")
@@ -63,6 +70,7 @@ def optimize_LGD(model_uncond, model_cond, mog_means, mog_variances, weights, mu
 
         losses = []
         losses_full = [] if (diag_this_step and backsel_k is not None) else None
+        losses_ref = [] if diag_this_step else None
         step_backsel_info = None
         scenario_stats_list = [] if diag_this_step else None
         for j in range(num_x_t):
@@ -80,6 +88,34 @@ def optimize_LGD(model_uncond, model_cond, mog_means, mog_variances, weights, mu
             if diag_this_step:
                 scores_diag = compute_witness_scores(target_samples.detach(), mog_samples)
                 scenario_stats_list.append(witness_scenario_stats(scores_diag))
+
+                # TRUE/population reference gradient: sample from the EXACT
+                # analytic conditional GMM given this x0_sample (known
+                # mu_list/Sigma_list/alpha -- the actual ground truth this
+                # experiment was built from, not model_cond's learned
+                # approximation of it), differentiably w.r.t. x0_sample (hence
+                # x_t) via compute_conditionals/compute_alpha + the
+                # reparameterized generate_mog_samples. No network forward is
+                # involved, so grad_ref_n can be large (near-zero MC noise)
+                # basically for free -- this is what "the real gradient" means
+                # here: not another finite-n approximation, but (up to
+                # grad_ref_n's own already-small MC noise) the true one.
+                condi_mu, condi_sigma = dist_utils.compute_conditionals(
+                    mu_list, Sigma_list, x0_sample.view(-1)
+                )
+                condi_mu = condi_mu.squeeze(-1)  # compute_conditionals leaves a spurious
+                                                  # trailing dim of 1 from an internal reshape;
+                                                  # harmless for this repo's 1D-target
+                                                  # experiments (sample_univariate_gaussian
+                                                  # squeezes internally too) but generate_mog_
+                                                  # samples' is_multivariate check looks at
+                                                  # xi.shape[-1], so drop it explicitly here.
+                condi_alpha = dist_utils.compute_alpha(mu_list, Sigma_list, alpha, x0_sample.view(-1))
+                ref_samples = generate_mog_samples(
+                    grad_ref_n, condi_mu, condi_sigma, condi_alpha, device=device
+                )
+                loss_val_ref = mmd_loss(ref_samples, mog_samples)
+                losses_ref.append(-loss_val_ref)
 
             # Backprop-subsampling: target_samples are already fully generated
             # (forward cost is fixed regardless of backsel_k here -- unlike the SD
@@ -112,19 +148,32 @@ def optimize_LGD(model_uncond, model_cond, mog_means, mog_variances, weights, mu
 
         log_mean_exp_loss = -torch.logsumexp(torch.stack(losses), dim=0) + math.log(num_x_t)
 
+        # Three SEPARATE autograd.grad calls (never one call over a list of
+        # outputs, which would sum their gradients together): the actual
+        # (possibly subsampled) update; the same-n full-batch comparison
+        # (only when backsel_k is not None); the TRUE population reference
+        # (only at diag_steps). All three come from the SAME underlying random
+        # draws at this step -- only *what's fed to the loss* differs, so
+        # differences in the resulting gradients isolate the selection effect.
+        need_full = losses_full is not None
+        need_ref = losses_ref is not None
+        grad = torch.autograd.grad(log_mean_exp_loss, x_t, retain_graph=(need_full or need_ref))[0]
+
         grad_norm_error = None
-        if losses_full is not None:
-            # Two SEPARATE autograd.grad calls (not one call over a list of
-            # outputs, which would sum the two losses' gradients together): one
-            # for the actual (subsampled) update, one for the full-batch
-            # reference, both from the SAME underlying random target_samples/
-            # mog_samples draws at this step.
+        grad_full = None
+        if need_full:
             log_mean_exp_loss_full = -torch.logsumexp(torch.stack(losses_full), dim=0) + math.log(num_x_t)
-            grad = torch.autograd.grad(log_mean_exp_loss, x_t, retain_graph=True)[0]
-            grad_full = torch.autograd.grad(log_mean_exp_loss_full, x_t, retain_graph=False)[0]
+            grad_full = torch.autograd.grad(log_mean_exp_loss_full, x_t, retain_graph=need_ref)[0]
             grad_norm_error = (grad - grad_full).norm().item()
-        else:
-            grad = torch.autograd.grad(log_mean_exp_loss, x_t, retain_graph=False)[0]
+
+        grad_norm_error_vs_ref = None
+        grad_full_norm_error_vs_ref = None
+        if need_ref:
+            log_mean_exp_loss_ref = -torch.logsumexp(torch.stack(losses_ref), dim=0) + math.log(num_x_t)
+            grad_ref = torch.autograd.grad(log_mean_exp_loss_ref, x_t, retain_graph=False)[0]
+            grad_norm_error_vs_ref = (grad - grad_ref).norm().item()
+            if grad_full is not None:
+                grad_full_norm_error_vs_ref = (grad_full - grad_ref).norm().item()
 
         if return_history:
             entry = {
@@ -137,12 +186,16 @@ def optimize_LGD(model_uncond, model_cond, mog_means, mog_variances, weights, mu
             }
             if diag_this_step:
                 # Average the per-j (num_x_t) scenario stats for a single
-                # per-step number; grad_norm_error is already a single value
-                # (computed on the combined log-mean-exp loss across all j's).
+                # per-step number; the grad_norm_error* fields are already
+                # single values (computed on the combined log-mean-exp loss
+                # across all j's).
                 for key in ("witness_std", "witness_skew_proxy", "ess_raw"):
                     entry[key] = sum(s[key] for s in scenario_stats_list) / len(scenario_stats_list)
                 if grad_norm_error is not None:
                     entry["grad_norm_error"] = grad_norm_error
+                entry["grad_norm_error_vs_ref"] = grad_norm_error_vs_ref
+                if grad_full_norm_error_vs_ref is not None:
+                    entry["grad_full_norm_error_vs_ref"] = grad_full_norm_error_vs_ref
             history.append(entry)
         with torch.no_grad():
             x_t = x_t_minus_1.detach().clone() - zeta * grad

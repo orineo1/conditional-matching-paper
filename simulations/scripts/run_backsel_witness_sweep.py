@@ -34,14 +34,38 @@ Two optional diagnostic axes, off by default (no extra cost unless requested):
         heterogeneity at this step for importance sampling to exploit" --
         witness_std small / ess_raw close to n means no, regardless of how
         witness sampling is configured.
-      gradient_variance_*.csv  (method, n, k_frac, rule, alpha, step, seed,
-        grad_norm_error, variance_ratio) -- grad_norm_error is
-        ||grad_subsampled - grad_full|| for that seed (both computed from the
-        SAME underlying random draw at that step, so it isolates the effect of
-        *which* samples were selected); variance_ratio is
-        mean_seeds(grad_norm_error_uniform^2) / mean_seeds(grad_norm_error_rule^2)
-        at matching (method, n, k_frac, step[, alpha]) -- >1 means that rule/alpha
-        reduced the gradient estimation error relative to uniform.
+      gradient_variance_*.csv  (method, n, k_frac, rule in {full, uniform,
+        witness}, alpha, step, seed, grad_norm_error, grad_norm_error_vs_ref,
+        variance_ratio, variance_ratio_vs_ref):
+          grad_norm_error is ||grad_subsampled - grad_full_same_n|| for that
+            seed (both from the SAME underlying random draw at that step, so it
+            isolates the effect of *which* samples were selected). NaN for
+            rule='full' rows (they ARE that same-n baseline).
+          grad_norm_error_vs_ref is ||grad_actual - grad_TRUE||, where grad_TRUE
+            is the analytic population reference gradient (see --grad_ref_n
+            below) -- defined for all three rule categories (full/uniform/
+            witness), so THIS is what actually answers "which is closest to the
+            real gradient", not just "which beat uniform".
+          variance_ratio = mean_seeds(grad_norm_error_uniform^2) /
+            mean_seeds(grad_norm_error_rule^2) at matching (n, k_frac, step[,
+            alpha]) -- >1 means that rule/alpha reduced the gradient error
+            relative to uniform (using the same-n full-batch gradient as ground
+            truth, i.e. the ORIGINAL, cheaper notion of "helped").
+          variance_ratio_vs_ref = mean_seeds(grad_norm_error_vs_ref_full^2) /
+            mean_seeds(grad_norm_error_vs_ref_rule^2) -- >1 means that rule/
+            alpha's gradient was closer to the TRUE gradient than plain full-n
+            backprop was. This can differ from variance_ratio: a full-n
+            gradient at small n is itself noisy relative to the truth, so
+            subsampling isn't automatically worse by this measure even when it
+            looks worse relative to variance_ratio's same-n baseline.
+
+  --grad_ref_n N   Sample size for the TRUE/population reference gradient
+    logged at --diag_steps (only matters if --diag_steps is set). Drawn from
+    the EXACT analytic conditional GMM (known mu_list/Sigma_list/alpha -- the
+    actual ground truth this experiment was built from), not model_cond's
+    learned approximation of it -- pure closed-form reparameterized Gaussian
+    sampling, no network forward pass, so this can be large (default 2000)
+    without real added cost.
 
   --alpha_list A1 A2 ...   Sweeps witness_floor over these values for rule=
     'witness' (uniform doesn't use a floor). --witness_floor's value is always
@@ -107,6 +131,15 @@ def parse_args():
                         "= no diagnostics (matches the original, cheaper behavior). Typical use: "
                         "5 steps spread across the trajectory, e.g. --diag_steps 99 75 50 25 1 "
                         "for a DIFFUSION_STEPS=100 experiment.")
+    p.add_argument("--grad_ref_n", type=int, default=2000,
+                   help="Sample size for the TRUE/population reference gradient logged at "
+                        "--diag_steps (only used if --diag_steps is set). Drawn from the exact "
+                        "analytic conditional GMM (known mu_list/Sigma_list/alpha), not "
+                        "model_cond's learned approximation -- pure closed-form reparameterized "
+                        "Gaussian sampling, no network forward pass, so this can be large "
+                        "without real cost. Lets gradient_variance.csv compare regular (full n) / "
+                        "uniform / witness gradients against the actual true gradient, not just "
+                        "against each other.")
     p.add_argument("--methods", nargs="+", choices=["LGD", "LGD-CM"], default=["LGD", "LGD-CM"])
     p.add_argument("--n_runs", type=int, default=25)
     p.add_argument("--seed", type=int, default=42)
@@ -119,7 +152,7 @@ def parse_args():
 def run_grid_point(model_uncond, cond_model, CM_flag, num_x_t, nsamples, backsel_k, backsel_rule,
                    witness_floor, backsel_replacement, n_runs, global_seed, device,
                    mu_list, Sigma_list, alpha, mog_means, mog_variances, weights, x_star, label,
-                   diag_steps=None):
+                   diag_steps=None, grad_ref_n=2000):
     """
     Returns (metrics, diag) where metrics = {"final_loss", "l2_gmm", "l2_x", "times"} (unchanged
     from before diagnostics existed -- this is what feeds the JSON/summary CSV/plots), and
@@ -142,7 +175,7 @@ def run_grid_point(model_uncond, cond_model, CM_flag, num_x_t, nsamples, backsel
             backsel_k=backsel_k, backsel_rule=backsel_rule,
             witness_floor=witness_floor, backsel_replacement=backsel_replacement,
             backsel_generator=backsel_generator,
-            return_history=diag_steps is not None, diag_steps=diag_steps,
+            return_history=diag_steps is not None, diag_steps=diag_steps, grad_ref_n=grad_ref_n,
         )
         if diag_steps is not None:
             best_x_t, _, final_loss, hist = result
@@ -299,7 +332,7 @@ def main():
                 args.num_x_t, n, None, "uniform", args.witness_floor, args.backsel_replacement,
                 args.n_runs, args.seed, device,
                 mu_list, Sigma_list, alpha, mog_means, mog_variances, weights, x_star,
-                label=f"{method}-full", diag_steps=args.diag_steps,
+                label=f"{method}-full", diag_steps=args.diag_steps, grad_ref_n=args.grad_ref_n,
             )
             for rule in rules:
                 results[method][n][rule] = {}
@@ -322,6 +355,7 @@ def main():
                                 args.n_runs, args.seed, device,
                                 mu_list, Sigma_list, alpha, mog_means, mog_variances, weights, x_star,
                                 label=f"{method}-witness-alpha{a}", diag_steps=args.diag_steps,
+                                grad_ref_n=args.grad_ref_n,
                             )
                             diag_history[method][n][rule][kf][a] = diag_a
                             if a == canonical_alpha:
@@ -339,6 +373,7 @@ def main():
                             args.n_runs, args.seed, device,
                             mu_list, Sigma_list, alpha, mog_means, mog_variances, weights, x_star,
                             label=f"{method}-{rule}", diag_steps=args.diag_steps,
+                            grad_ref_n=args.grad_ref_n,
                         )
 
     out = {
@@ -355,6 +390,7 @@ def main():
             "alpha_list": alpha_list,
             "backsel_replacement": args.backsel_replacement,
             "diag_steps": args.diag_steps,
+            "grad_ref_n": args.grad_ref_n,
             "methods": methods,
             "x_star": x_star.detach().cpu().tolist() if isinstance(x_star, torch.Tensor) else x_star,
         },
@@ -457,18 +493,41 @@ def main():
         scenario_df.to_csv(scenario_path, index=False)
         print(f"[Results] Saved witness scenario diagnostics to {scenario_path}")
 
-        # gradient_variance.csv: per-seed ||grad_sub - grad_full|| at each diag step, for every
-        # subsampled (kf < 1.0) grid point across both rules and every swept alpha, plus a
-        # variance_ratio column. Using the MSE-based definition offered as the equivalent
-        # alternative to "variance across seeds" (mean_seeds(grad_norm_error^2) per rule), since
-        # grad_norm_error is already computed per-seed inside optimize_LGD without needing to
-        # serialize full gradient vectors through the whole sweep.
+        # gradient_variance.csv: per-seed gradient errors at each diag step, for every subsampled
+        # (kf < 1.0) grid point, PLUS a "full" (regular, no-subsampling) row category duplicated
+        # across every kf so all three -- full/regular, uniform, witness -- sit in the same
+        # (method, n, k_frac, step) group for direct comparison. Two error columns:
+        #   grad_norm_error         = ||grad_actual - grad_full_same_n|| (subsampled vs. what full
+        #                             backprop through the SAME small n would have given; NaN for
+        #                             "full" rows, which ARE that same-n baseline).
+        #   grad_norm_error_vs_ref  = ||grad_actual - grad_TRUE|| where grad_TRUE is the analytic
+        #                             population reference (see optimize_LGD's grad_ref_n) --
+        #                             defined for all three rule categories, so this is what
+        #                             actually answers "which is closest to the real gradient".
+        # variance_ratio (existing): mse_uniform / mse_rule using grad_norm_error (same-n baseline).
+        # variance_ratio_vs_ref (new): mse_full / mse_rule using grad_norm_error_vs_ref (true-
+        #   reference baseline) -- >1 means that rule/alpha's gradient was CLOSER to the true
+        #   gradient than plain full-n backprop was; can be true even where variance_ratio isn't,
+        #   since small-n "full" gradients carry their own MC noise relative to the truth.
         raw_rows = []
         for method in methods:
             for n in nsamples_list:
+                full_diag = diag_history[method][n]["full"]
+                full_ref_by_step_seed = {}
+                for seed, hist in zip(full_diag["seeds"], full_diag["history"]):
+                    for h in hist:
+                        if "grad_norm_error_vs_ref" in h:
+                            full_ref_by_step_seed[(seed, h["t"])] = h["grad_norm_error_vs_ref"]
+
                 for kf in k_fracs:
                     if kf >= 1.0:
                         continue
+                    for (seed, step), err in full_ref_by_step_seed.items():
+                        raw_rows.append({
+                            "method": method, "n": n, "k_frac": kf, "rule": "full", "alpha": np.nan,
+                            "step": step, "seed": seed,
+                            "grad_norm_error": np.nan, "grad_norm_error_vs_ref": err,
+                        })
                     for rule in rules:
                         for a, d in diag_history[method][n][rule][kf].items():
                             if rule == "uniform" and a != canonical_alpha:
@@ -481,45 +540,53 @@ def main():
                                             "alpha": (a if rule == "witness" else np.nan),
                                             "step": h["t"], "seed": seed,
                                             "grad_norm_error": h["grad_norm_error"],
+                                            "grad_norm_error_vs_ref": h.get("grad_norm_error_vs_ref", np.nan),
                                         })
         grad_var_df = pd.DataFrame(raw_rows)
         if not grad_var_df.empty:
-            grad_var_df["sq_error"] = grad_var_df["grad_norm_error"] ** 2
-            mse = (grad_var_df.groupby(["method", "n", "k_frac", "rule", "step"], dropna=False)["sq_error"]
-                  .mean().reset_index(name="mse"))
-            mse_lookup = {
-                (row.method, row.n, row.k_frac, row.rule, row.step): row.mse
-                for row in mse.itertuples()
-            }
-            # witness rows keyed with alpha need their own per-alpha mse; recompute including alpha
-            mse_w = (grad_var_df[grad_var_df["rule"] == "witness"]
-                    .groupby(["method", "n", "k_frac", "alpha", "step"])["sq_error"]
-                    .mean().reset_index(name="mse"))
-            mse_w_lookup = {
-                (row.method, row.n, row.k_frac, row.alpha, row.step): row.mse
-                for row in mse_w.itertuples()
-            }
+            def _mse_lookup(value_col, extra_group=()):
+                grp = grad_var_df.dropna(subset=[value_col]).copy()
+                grp["_sq"] = grp[value_col] ** 2
+                cols = ["method", "n", "k_frac", "rule", "step", *extra_group]
+                out = grp.groupby(cols, dropna=False)["_sq"].mean().reset_index(name="mse")
+                return {tuple(row[c] for c in cols): row["mse"] for _, row in out.iterrows()}
 
-            def _variance_ratio(row):
-                mse_u = mse_lookup.get((row["method"], row["n"], row["k_frac"], "uniform", row["step"]))
+            mse_same_n = _mse_lookup("grad_norm_error")
+            mse_same_n_w = _mse_lookup("grad_norm_error", extra_group=("alpha",))
+            mse_ref = _mse_lookup("grad_norm_error_vs_ref")
+            mse_ref_w = _mse_lookup("grad_norm_error_vs_ref", extra_group=("alpha",))
+
+            def _ratio(row):
+                mse_u = mse_same_n.get((row["method"], row["n"], row["k_frac"], "uniform", row["step"]))
+                mse_rule = (mse_same_n_w.get((row["method"], row["n"], row["k_frac"], "witness", row["step"], row["alpha"]))
+                           if row["rule"] == "witness" else
+                           mse_same_n.get((row["method"], row["n"], row["k_frac"], "uniform", row["step"])))
+                return mse_u / mse_rule if mse_u and mse_rule else np.nan
+
+            def _ratio_vs_ref(row):
+                mse_full = mse_ref.get((row["method"], row["n"], row["k_frac"], "full", row["step"]))
                 if row["rule"] == "witness":
-                    mse_w_val = mse_w_lookup.get((row["method"], row["n"], row["k_frac"], row["alpha"], row["step"]))
+                    mse_rule = mse_ref_w.get((row["method"], row["n"], row["k_frac"], "witness", row["step"], row["alpha"]))
+                elif row["rule"] == "uniform":
+                    mse_rule = mse_ref.get((row["method"], row["n"], row["k_frac"], "uniform", row["step"]))
                 else:
-                    mse_w_val = mse_w_lookup.get((row["method"], row["n"], row["k_frac"], canonical_alpha, row["step"]))
-                if not mse_u or not mse_w_val:
-                    return np.nan
-                return mse_u / mse_w_val
+                    mse_rule = mse_full
+                return mse_full / mse_rule if mse_full and mse_rule else np.nan
 
-            grad_var_df["variance_ratio"] = grad_var_df.apply(_variance_ratio, axis=1)
-            grad_var_df = grad_var_df.drop(columns=["sq_error"])
+            grad_var_df["variance_ratio"] = grad_var_df.apply(_ratio, axis=1)
+            grad_var_df["variance_ratio_vs_ref"] = grad_var_df.apply(_ratio_vs_ref, axis=1)
 
         grad_var_path = os.path.join(results_dir, f"gradient_variance_numxt{args.num_x_t}_seed{args.seed}.csv")
         grad_var_df.to_csv(grad_var_path, index=False)
         print(f"[Results] Saved gradient-variance diagnostics to {grad_var_path}")
         if not grad_var_df.empty:
-            var_summary = grad_var_df.groupby(["method", "n", "k_frac", "rule", "alpha"], dropna=False)["variance_ratio"].mean()
-            print("[Results] Mean variance_ratio (var_uniform / var_witness; >1 means witness reduced "
-                  "gradient error) by (method, n, k_frac, rule, alpha):")
+            var_summary = grad_var_df.groupby(["method", "n", "k_frac", "rule", "alpha"], dropna=False)[
+                ["variance_ratio", "variance_ratio_vs_ref"]
+            ].mean()
+            print("[Results] Mean variance_ratio (vs. same-n full; >1 means the rule beat plain "
+                  "full-n backprop's OWN MC noise) and variance_ratio_vs_ref (vs. the TRUE analytic "
+                  "gradient; >1 means the rule was closer to truth than full-n backprop was) by "
+                  "(method, n, k_frac, rule, alpha):")
             print(var_summary.to_string())
 
     make_curve_plots(results, methods, nsamples_list, k_fracs, rules, plots_dir, args.experiment, args.num_x_t)

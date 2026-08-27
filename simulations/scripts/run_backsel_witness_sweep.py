@@ -22,9 +22,37 @@ Writes out, per experiment:
   - PNG heatmaps of (witness - uniform) delta over the (nsamples, k_frac) grid,
     one per metric -- negative (for loss-type metrics) = witness helped
 
+Two optional diagnostic axes, off by default (no extra cost unless requested):
+
+  --diag_steps T1 T2 ...   At these diffusion t-values, additionally logs (per
+    seed, folded into two extra CSVs instead of the main JSON/plots, which are
+    unaffected either way):
+      witness_diagnostics_*.csv  (method, n, step, seed, witness_std,
+        witness_skew_proxy, ess_raw) -- computed on the FULL n samples before
+        any subsampling, from the "full" baseline run only (so it's inherently
+        independent of rule/k_frac/alpha). Answers "is there even any per-sample
+        heterogeneity at this step for importance sampling to exploit" --
+        witness_std small / ess_raw close to n means no, regardless of how
+        witness sampling is configured.
+      gradient_variance_*.csv  (method, n, k_frac, rule, alpha, step, seed,
+        grad_norm_error, variance_ratio) -- grad_norm_error is
+        ||grad_subsampled - grad_full|| for that seed (both computed from the
+        SAME underlying random draw at that step, so it isolates the effect of
+        *which* samples were selected); variance_ratio is
+        mean_seeds(grad_norm_error_uniform^2) / mean_seeds(grad_norm_error_rule^2)
+        at matching (method, n, k_frac, step[, alpha]) -- >1 means that rule/alpha
+        reduced the gradient estimation error relative to uniform.
+
+  --alpha_list A1 A2 ...   Sweeps witness_floor over these values for rule=
+    'witness' (uniform doesn't use a floor). --witness_floor's value is always
+    included (it's the "canonical" alpha that feeds the main JSON/plots/summary,
+    so those stay well-defined regardless of what else is swept). Writes an
+    extra *_alpha_sweep.csv when more than one value is given.
+
 Example:
     python run_backsel_witness_sweep.py --experiment 5D_cond_1D --num_x_t 3 \
-        --n_runs 25 --nsamples_list 50 100 250 500 --k_fracs 0.1 0.2 0.5 1.0
+        --n_runs 25 --nsamples_list 50 100 250 500 --k_fracs 0.1 0.2 0.5 1.0 \
+        --diag_steps 99 75 50 25 1 --alpha_list 0.0 0.15 0.3 0.5
 """
 
 import os
@@ -62,9 +90,23 @@ def parse_args():
                         "nsamples and shared across rules).")
     p.add_argument("--rules", nargs="+", choices=["uniform", "witness"], default=["uniform", "witness"])
     p.add_argument("--witness_floor", type=float, default=0.3,
-                   help="Defensive-mixture floor for rule='witness' (see witness_utils.py)")
+                   help="Defensive-mixture floor for rule='witness' (see witness_utils.py). Also "
+                        "the canonical alpha used for plots/JSON/summary when --alpha_list is not "
+                        "given (or is given but doesn't otherwise include this value -- it's always "
+                        "added to the swept set).")
+    p.add_argument("--alpha_list", type=float, nargs="+", default=None,
+                   help="Sweep witness_floor over these values (rule='witness' only -- 'uniform' "
+                        "doesn't use a floor). Defaults to just [--witness_floor], i.e. no extra "
+                        "sweep. --witness_floor's value is always included even if you list others.")
     p.add_argument("--backsel_replacement", action="store_true",
                    help="Sample the backsel_k indices with replacement (default: without)")
+    p.add_argument("--diag_steps", type=int, nargs="+", default=None,
+                   help="Diffusion timesteps (t-values) at which to log the extra "
+                        "gradient-error / witness-scenario diagnostics (see "
+                        "witness_diagnostics.csv / gradient_variance.csv below). None (default) "
+                        "= no diagnostics (matches the original, cheaper behavior). Typical use: "
+                        "5 steps spread across the trajectory, e.g. --diag_steps 99 75 50 25 1 "
+                        "for a DIFFUSION_STEPS=100 experiment.")
     p.add_argument("--methods", nargs="+", choices=["LGD", "LGD-CM"], default=["LGD", "LGD-CM"])
     p.add_argument("--n_runs", type=int, default=25)
     p.add_argument("--seed", type=int, default=42)
@@ -76,14 +118,23 @@ def parse_args():
 
 def run_grid_point(model_uncond, cond_model, CM_flag, num_x_t, nsamples, backsel_k, backsel_rule,
                    witness_floor, backsel_replacement, n_runs, global_seed, device,
-                   mu_list, Sigma_list, alpha, mog_means, mog_variances, weights, x_star, label):
+                   mu_list, Sigma_list, alpha, mog_means, mog_variances, weights, x_star, label,
+                   diag_steps=None):
+    """
+    Returns (metrics, diag) where metrics = {"final_loss", "l2_gmm", "l2_x", "times"} (unchanged
+    from before diagnostics existed -- this is what feeds the JSON/summary CSV/plots), and
+    diag = {"seeds": [...], "history": [...]} (one optimize_LGD history list per seed) when
+    diag_steps is given, else None. Kept as a separate return value (not merged into metrics) so
+    the existing JSON/plot code paths are completely unaffected when diag_steps is not requested.
+    """
     final_loss_list, l2_gmm_list, l2_x_list, times = [], [], [], []
+    diag_seeds, diag_histories = [], []
     for i in range(n_runs):
         run_seed = experiment_utils.set_run_seed(global_seed, i)
         backsel_generator = torch.Generator().manual_seed(run_seed)
 
         start_time = time.time()
-        best_x_t, _, final_loss = Optimization.optimize_LGD(
+        result = Optimization.optimize_LGD(
             model_uncond, cond_model, mog_means, mog_variances, weights,
             mu_list, Sigma_list, alpha,
             nsamples=nsamples, loss="MMD", device=device,
@@ -91,7 +142,14 @@ def run_grid_point(model_uncond, cond_model, CM_flag, num_x_t, nsamples, backsel
             backsel_k=backsel_k, backsel_rule=backsel_rule,
             witness_floor=witness_floor, backsel_replacement=backsel_replacement,
             backsel_generator=backsel_generator,
+            return_history=diag_steps is not None, diag_steps=diag_steps,
         )
+        if diag_steps is not None:
+            best_x_t, _, final_loss, hist = result
+            diag_seeds.append(run_seed)
+            diag_histories.append(hist)
+        else:
+            best_x_t, _, final_loss = result
         elapsed = time.time() - start_time
         best_x_t = best_x_t.reshape(-1, 1)
 
@@ -110,7 +168,9 @@ def run_grid_point(model_uncond, cond_model, CM_flag, num_x_t, nsamples, backsel
               f"seed={run_seed} | L2 GMM: {l2_gmm:.6f} | L2 to x*: {l2_x:.6f} "
               f"| MMD: {final_loss.item():.6f} | time: {elapsed:.2f}s", flush=True)
 
-    return {"final_loss": final_loss_list, "l2_gmm": l2_gmm_list, "l2_x": l2_x_list, "times": times}
+    metrics = {"final_loss": final_loss_list, "l2_gmm": l2_gmm_list, "l2_x": l2_x_list, "times": times}
+    diag = {"seeds": diag_seeds, "history": diag_histories} if diag_steps is not None else None
+    return metrics, diag
 
 
 METRICS = [("l2_gmm", "L2 GMM"), ("l2_x", "L2 to x*"), ("final_loss", "MMD")]
@@ -217,33 +277,69 @@ def main():
     nsamples_list = args.nsamples_list
     k_fracs = sorted(set(args.k_fracs) | {1.0})  # always include the 1.0 baseline point
     rules = args.rules
+    # alpha sweep (witness rule only): witness_floor's own value is always included, so
+    # plots/JSON/summary (which key off a single "canonical" witness result per kf) stay
+    # well-defined even if --alpha_list doesn't happen to list it.
+    alpha_list = sorted(set(args.alpha_list or [args.witness_floor]) | {args.witness_floor})
+    canonical_alpha = args.witness_floor
 
     results = {}
+    diag_history = {}  # only populated when args.diag_steps is set; kept separate from
+                        # `results` so the JSON/plot code paths below are unaffected either way
+    alpha_metrics_rows = []  # every (method, n, kf, alpha) witness point's summary stats,
+                             # captured inline as they're computed -- feeds the alpha-sweep CSV
     for method in methods:
         results[method] = {}
+        diag_history[method] = {}
         for n in nsamples_list:
             results[method][n] = {"full": None}
-            results[method][n]["full"] = run_grid_point(
+            diag_history[method][n] = {}
+            results[method][n]["full"], diag_history[method][n]["full"] = run_grid_point(
                 model_uncond, method_models[method]["cond_model"], method_models[method]["CM_flag"],
                 args.num_x_t, n, None, "uniform", args.witness_floor, args.backsel_replacement,
                 args.n_runs, args.seed, device,
                 mu_list, Sigma_list, alpha, mog_means, mog_variances, weights, x_star,
-                label=f"{method}-full",
+                label=f"{method}-full", diag_steps=args.diag_steps,
             )
             for rule in rules:
                 results[method][n][rule] = {}
+                diag_history[method][n][rule] = {}
                 for kf in k_fracs:
                     if kf >= 1.0:
                         results[method][n][rule][kf] = results[method][n]["full"]
+                        diag_history[method][n][rule][kf] = {canonical_alpha: diag_history[method][n]["full"]}
                         continue
                     k = max(1, round(kf * n))
-                    results[method][n][rule][kf] = run_grid_point(
-                        model_uncond, method_models[method]["cond_model"], method_models[method]["CM_flag"],
-                        args.num_x_t, n, k, rule, args.witness_floor, args.backsel_replacement,
-                        args.n_runs, args.seed, device,
-                        mu_list, Sigma_list, alpha, mog_means, mog_variances, weights, x_star,
-                        label=f"{method}-{rule}",
-                    )
+                    diag_history[method][n][rule][kf] = {}
+                    if rule == "witness":
+                        # Sweep alpha_list for witness; the canonical alpha's result is what
+                        # feeds the existing JSON/summary/plots (unchanged when alpha_list is
+                        # just [witness_floor], i.e. the default).
+                        for a in alpha_list:
+                            metrics_a, diag_a = run_grid_point(
+                                model_uncond, method_models[method]["cond_model"], method_models[method]["CM_flag"],
+                                args.num_x_t, n, k, "witness", a, args.backsel_replacement,
+                                args.n_runs, args.seed, device,
+                                mu_list, Sigma_list, alpha, mog_means, mog_variances, weights, x_star,
+                                label=f"{method}-witness-alpha{a}", diag_steps=args.diag_steps,
+                            )
+                            diag_history[method][n][rule][kf][a] = diag_a
+                            if a == canonical_alpha:
+                                results[method][n][rule][kf] = metrics_a
+                            alpha_metrics_rows.append({
+                                "method": method, "nsamples": n, "k_frac": kf, "alpha": a,
+                                "L2_GMM_mean": np.mean(metrics_a["l2_gmm"]), "L2_GMM_std": np.std(metrics_a["l2_gmm"]),
+                                "L2_x_mean": np.mean(metrics_a["l2_x"]), "L2_x_std": np.std(metrics_a["l2_x"]),
+                                "MMD_mean": np.mean(metrics_a["final_loss"]), "MMD_std": np.std(metrics_a["final_loss"]),
+                            })
+                    else:
+                        results[method][n][rule][kf], diag_history[method][n][rule][kf][canonical_alpha] = run_grid_point(
+                            model_uncond, method_models[method]["cond_model"], method_models[method]["CM_flag"],
+                            args.num_x_t, n, k, rule, args.witness_floor, args.backsel_replacement,
+                            args.n_runs, args.seed, device,
+                            mu_list, Sigma_list, alpha, mog_means, mog_variances, weights, x_star,
+                            label=f"{method}-{rule}", diag_steps=args.diag_steps,
+                        )
 
     out = {
         "experiment": args.experiment,
@@ -256,7 +352,9 @@ def main():
             "k_fracs": k_fracs,
             "rules": rules,
             "witness_floor": args.witness_floor,
+            "alpha_list": alpha_list,
             "backsel_replacement": args.backsel_replacement,
+            "diag_steps": args.diag_steps,
             "methods": methods,
             "x_star": x_star.detach().cpu().tolist() if isinstance(x_star, torch.Tensor) else x_star,
         },
@@ -324,6 +422,105 @@ def main():
     csv_path = os.path.join(results_dir, f"witness_sweep_numxt{args.num_x_t}_seed{args.seed}_summary.csv")
     summary_df.to_csv(csv_path, index=False)
     print(f"[Results] Saved summary CSV to {csv_path}")
+
+    # Alpha sweep (witness_floor), only meaningful when --alpha_list listed more than one value.
+    # alpha_metrics_rows was captured inline in the grid-building loop above, as each
+    # (method, n, kf, alpha) witness point was computed.
+    if "witness" in rules and len(alpha_list) > 1:
+        alpha_csv_path = os.path.join(
+            results_dir, f"witness_sweep_numxt{args.num_x_t}_seed{args.seed}_alpha_sweep.csv"
+        )
+        alpha_df = pd.DataFrame(alpha_metrics_rows)
+        alpha_df.to_csv(alpha_csv_path, index=False)
+        print(f"[Results] Saved alpha-sweep summary to {alpha_csv_path}")
+
+    # ── Gradient-variance / witness-scenario diagnostics (only when --diag_steps given) ────────
+    if args.diag_steps:
+        # witness_diagnostics.csv: scenario stats from the "full" (no-subsampling) run only --
+        # computed on the full n before any subsampling, so it's independent of rule/k_frac/alpha
+        # by construction (see witness_utils.witness_scenario_stats).
+        scenario_rows = []
+        for method in methods:
+            for n in nsamples_list:
+                d = diag_history[method][n]["full"]
+                for seed, hist in zip(d["seeds"], d["history"]):
+                    for h in hist:
+                        if "witness_std" in h:
+                            scenario_rows.append({
+                                "method": method, "n": n, "step": h["t"], "seed": seed,
+                                "witness_std": h["witness_std"],
+                                "witness_skew_proxy": h["witness_skew_proxy"],
+                                "ess_raw": h["ess_raw"],
+                            })
+        scenario_df = pd.DataFrame(scenario_rows)
+        scenario_path = os.path.join(results_dir, f"witness_diagnostics_numxt{args.num_x_t}_seed{args.seed}.csv")
+        scenario_df.to_csv(scenario_path, index=False)
+        print(f"[Results] Saved witness scenario diagnostics to {scenario_path}")
+
+        # gradient_variance.csv: per-seed ||grad_sub - grad_full|| at each diag step, for every
+        # subsampled (kf < 1.0) grid point across both rules and every swept alpha, plus a
+        # variance_ratio column. Using the MSE-based definition offered as the equivalent
+        # alternative to "variance across seeds" (mean_seeds(grad_norm_error^2) per rule), since
+        # grad_norm_error is already computed per-seed inside optimize_LGD without needing to
+        # serialize full gradient vectors through the whole sweep.
+        raw_rows = []
+        for method in methods:
+            for n in nsamples_list:
+                for kf in k_fracs:
+                    if kf >= 1.0:
+                        continue
+                    for rule in rules:
+                        for a, d in diag_history[method][n][rule][kf].items():
+                            if rule == "uniform" and a != canonical_alpha:
+                                continue  # uniform has no alpha dependence; avoid duplicate rows
+                            for seed, hist in zip(d["seeds"], d["history"]):
+                                for h in hist:
+                                    if "grad_norm_error" in h:
+                                        raw_rows.append({
+                                            "method": method, "n": n, "k_frac": kf, "rule": rule,
+                                            "alpha": (a if rule == "witness" else np.nan),
+                                            "step": h["t"], "seed": seed,
+                                            "grad_norm_error": h["grad_norm_error"],
+                                        })
+        grad_var_df = pd.DataFrame(raw_rows)
+        if not grad_var_df.empty:
+            grad_var_df["sq_error"] = grad_var_df["grad_norm_error"] ** 2
+            mse = (grad_var_df.groupby(["method", "n", "k_frac", "rule", "step"], dropna=False)["sq_error"]
+                  .mean().reset_index(name="mse"))
+            mse_lookup = {
+                (row.method, row.n, row.k_frac, row.rule, row.step): row.mse
+                for row in mse.itertuples()
+            }
+            # witness rows keyed with alpha need their own per-alpha mse; recompute including alpha
+            mse_w = (grad_var_df[grad_var_df["rule"] == "witness"]
+                    .groupby(["method", "n", "k_frac", "alpha", "step"])["sq_error"]
+                    .mean().reset_index(name="mse"))
+            mse_w_lookup = {
+                (row.method, row.n, row.k_frac, row.alpha, row.step): row.mse
+                for row in mse_w.itertuples()
+            }
+
+            def _variance_ratio(row):
+                mse_u = mse_lookup.get((row["method"], row["n"], row["k_frac"], "uniform", row["step"]))
+                if row["rule"] == "witness":
+                    mse_w_val = mse_w_lookup.get((row["method"], row["n"], row["k_frac"], row["alpha"], row["step"]))
+                else:
+                    mse_w_val = mse_w_lookup.get((row["method"], row["n"], row["k_frac"], canonical_alpha, row["step"]))
+                if not mse_u or not mse_w_val:
+                    return np.nan
+                return mse_u / mse_w_val
+
+            grad_var_df["variance_ratio"] = grad_var_df.apply(_variance_ratio, axis=1)
+            grad_var_df = grad_var_df.drop(columns=["sq_error"])
+
+        grad_var_path = os.path.join(results_dir, f"gradient_variance_numxt{args.num_x_t}_seed{args.seed}.csv")
+        grad_var_df.to_csv(grad_var_path, index=False)
+        print(f"[Results] Saved gradient-variance diagnostics to {grad_var_path}")
+        if not grad_var_df.empty:
+            var_summary = grad_var_df.groupby(["method", "n", "k_frac", "rule", "alpha"], dropna=False)["variance_ratio"].mean()
+            print("[Results] Mean variance_ratio (var_uniform / var_witness; >1 means witness reduced "
+                  "gradient error) by (method, n, k_frac, rule, alpha):")
+            print(var_summary.to_string())
 
     make_curve_plots(results, methods, nsamples_list, k_fracs, rules, plots_dir, args.experiment, args.num_x_t)
     if "witness" in rules and "uniform" in rules:

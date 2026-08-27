@@ -16,7 +16,7 @@ import math
 import torch
 from torch import optim
 from tqdm import tqdm
-from witness_utils import apply_backsel
+from witness_utils import apply_backsel, compute_witness_scores, witness_scenario_stats
 # Optimize LGD using Monte Carlo-based guidance
 def optimize_LGD(model_uncond, model_cond, mog_means, mog_variances, weights, mu_list, Sigma_list, alpha,
                  nsamples=250, num_x_t=3, loss="MMD", CM=False, device="cuda", FLAG=False,
@@ -28,7 +28,10 @@ def optimize_LGD(model_uncond, model_cond, mog_means, mog_variances, weights, mu
                  witness_floor=0.3,      # <-- NEW: defensive-mixture floor for backsel_rule='witness'
                  backsel_replacement=False,  # <-- NEW: sample the backsel_k indices with/without replacement
                  backsel_generator=None,     # <-- NEW: optional torch.Generator for reproducible selection
-                 return_history=False):      # <-- NEW: also return per-step diagnostics
+                 return_history=False,       # <-- NEW: also return per-step diagnostics
+                 diag_steps=None):           # <-- NEW: list of t-values at which to log the extra
+                                             #     gradient-error / witness-scenario diagnostics below
+                                             #     (requires return_history=True; ignored otherwise)
 
     mmd_loss = MMDLoss(kernel=RBF())
     best_mmd_loss = float("inf")
@@ -56,8 +59,12 @@ def optimize_LGD(model_uncond, model_cond, mog_means, mog_variances, weights, mu
                 x_t = x_t_minus_1.detach().clone()
             continue
 
+        diag_this_step = return_history and diag_steps is not None and t in diag_steps
+
         losses = []
+        losses_full = [] if (diag_this_step and backsel_k is not None) else None
         step_backsel_info = None
+        scenario_stats_list = [] if diag_this_step else None
         for j in range(num_x_t):
             x0_sample = pred_x0 + r_t * torch.randn_like(pred_x0)
             condition = x0_sample.view(1, -1).repeat(nsamples, 1)
@@ -67,6 +74,13 @@ def optimize_LGD(model_uncond, model_cond, mog_means, mog_variances, weights, mu
 
             mog_samples = generate_mog_samples_not_differentiable(nsamples, mog_means, mog_variances, weights)
 
+            # Witness-scenario diagnostics: computed on the FULL n target_samples,
+            # before any subsampling, regardless of backsel_rule -- characterizes
+            # how heterogeneous this step's mismatch is (see witness_utils.py).
+            if diag_this_step:
+                scores_diag = compute_witness_scores(target_samples.detach(), mog_samples)
+                scenario_stats_list.append(witness_scenario_stats(scores_diag))
+
             # Backprop-subsampling: target_samples are already fully generated
             # (forward cost is fixed regardless of backsel_k here -- unlike the SD
             # pipeline there's no per-sample generation cost to save), so this
@@ -74,6 +88,13 @@ def optimize_LGD(model_uncond, model_cond, mog_means, mog_variances, weights, mu
             # gradient on guidance quality. backsel_k=None (default) keeps every
             # row differentiable, identical to the original behavior.
             if backsel_k is not None:
+                # Gradient-error diagnostic: the loss computed on the SAME raw
+                # target_samples draw, before subsampling -- gives grad_full, the
+                # "what would the full-batch gradient have been" reference to
+                # compare the actual (subsampled) grad against.
+                if diag_this_step:
+                    loss_val_full = mmd_loss(target_samples, mog_samples)
+                    losses_full.append(-loss_val_full)
                 target_samples, step_backsel_info = apply_backsel(
                     target_samples, mog_samples, backsel_k, rule=backsel_rule,
                     witness_floor=witness_floor, generator=backsel_generator,
@@ -90,18 +111,39 @@ def optimize_LGD(model_uncond, model_cond, mog_means, mog_variances, weights, mu
                 best_x0_sample = x0_sample.detach().clone()
 
         log_mean_exp_loss = -torch.logsumexp(torch.stack(losses), dim=0) + math.log(num_x_t)
-        log_mean_exp_loss.backward()
 
-        grad = x_t.grad.clone()
+        grad_norm_error = None
+        if losses_full is not None:
+            # Two SEPARATE autograd.grad calls (not one call over a list of
+            # outputs, which would sum the two losses' gradients together): one
+            # for the actual (subsampled) update, one for the full-batch
+            # reference, both from the SAME underlying random target_samples/
+            # mog_samples draws at this step.
+            log_mean_exp_loss_full = -torch.logsumexp(torch.stack(losses_full), dim=0) + math.log(num_x_t)
+            grad = torch.autograd.grad(log_mean_exp_loss, x_t, retain_graph=True)[0]
+            grad_full = torch.autograd.grad(log_mean_exp_loss_full, x_t, retain_graph=False)[0]
+            grad_norm_error = (grad - grad_full).norm().item()
+        else:
+            grad = torch.autograd.grad(log_mean_exp_loss, x_t, retain_graph=False)[0]
+
         if return_history:
-            history.append({
+            entry = {
                 "t": t,
                 "grad_norm": grad.norm().item(),
                 "log_mean_exp_loss": log_mean_exp_loss.item(),
                 "best_mmd_so_far": best_mmd_loss,
                 "n_selected": int(step_backsel_info["mask"].sum().item())
                               if step_backsel_info is not None else nsamples,
-            })
+            }
+            if diag_this_step:
+                # Average the per-j (num_x_t) scenario stats for a single
+                # per-step number; grad_norm_error is already a single value
+                # (computed on the combined log-mean-exp loss across all j's).
+                for key in ("witness_std", "witness_skew_proxy", "ess_raw"):
+                    entry[key] = sum(s[key] for s in scenario_stats_list) / len(scenario_stats_list)
+                if grad_norm_error is not None:
+                    entry["grad_norm_error"] = grad_norm_error
+            history.append(entry)
         with torch.no_grad():
             x_t = x_t_minus_1.detach().clone() - zeta * grad
 

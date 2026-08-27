@@ -12,6 +12,48 @@ import torch
 from LossFunctions import RBF
 
 
+def witness_scenario_stats(scores):
+    """
+    Per-step scenario diagnostics on witness scores, independent of any
+    subsampling rule/floor -- characterizes how heterogeneous the mismatch
+    between generated and target samples is at this step. If scores are nearly
+    flat (small witness_std, ess_raw close to n), there's nothing for importance
+    sampling to exploit at this step regardless of how it's configured -- a real,
+    useful negative result, not a bug.
+
+    Args:
+        scores: [n] signed witness scores, from compute_witness_scores.
+
+    Returns:
+        dict with:
+          witness_std:         std of the raw signed scores.
+          witness_skew_proxy:  max(|w|) / mean(|w|) -- a crude peakedness proxy
+                                (1.0 = perfectly flat |w|; large = one dominant
+                                outlier carries most of the signal).
+          ess_raw:              effective sample size of the PURE |w|-proportional
+                                distribution (no defensive floor, i.e. alpha=0):
+                                ESS = (sum p)^2 / sum(p^2) = 1/sum(p^2) once p is
+                                normalized to sum to 1. Ranges from 1 (fully
+                                peaked on one sample) to n (flat/uniform). This is
+                                the *best-case* achievable heterogeneity signal --
+                                the actual runtime sampling distribution (mixed
+                                with witness_floor > 0) has ESS bounded above this.
+          n:                    len(scores), for convenience when aggregating.
+    """
+    with torch.no_grad():
+        n = scores.shape[0]
+        abs_scores = scores.abs().double()
+        mean_abs = abs_scores.mean().clamp_min(1e-12)
+        p = abs_scores / abs_scores.sum().clamp_min(1e-12)
+        ess = 1.0 / (p ** 2).sum().clamp_min(1e-12)
+        return {
+            "witness_std": scores.std().item(),
+            "witness_skew_proxy": (abs_scores.max() / mean_abs).item(),
+            "ess_raw": ess.item(),
+            "n": n,
+        }
+
+
 def compute_witness_scores(X, Y, kernel=None):
     """
     Per-sample MMD witness function w(x_l) = mean_i k(x_l, x_i) - mean_j k(x_l, y_j).

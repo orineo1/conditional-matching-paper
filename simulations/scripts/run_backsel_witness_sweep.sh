@@ -25,14 +25,39 @@ K_FRACS="0.1 0.2 0.5 1.0"      # the "proportion" axis (backsel_k / nsamples); 1
                                 # is always included automatically as the "full"
                                 # (no-subsampling) baseline even if you omit it
 RULES="uniform witness"        # any of: uniform witness
-WITNESS_FLOOR=0.3              # defensive-mixture floor for rule=witness (0.3-0.5 recommended)
+WITNESS_FLOOR=0.3              # defensive-mixture floor for rule=witness (0.3-0.5 recommended);
+                                # also the "canonical" alpha that feeds the main JSON/plots/summary
+                                # regardless of what ALPHA_LIST below sweeps
 BACKSEL_REPLACEMENT=false      # true = sample backsel_k indices with replacement
 FORCE_RETRAIN=false            # true | false — true always retrains and overwrites the saved checkpoints
 
+# ── Diagnostics: WHY witness sampling wins or loses, not just whether it does ──
+# On by default (small fixed per-run overhead: 5 extra timesteps' worth of
+# bookkeeping, not a new multiplicative grid dimension) -- writes
+# gradient_variance_*.csv (per-seed ||grad_subsampled - grad_full|| + a
+# variance_ratio vs. uniform) and witness_diagnostics_*.csv (per-step scenario
+# heterogeneity: witness_std, ess_raw -- tells you whether THIS experiment/
+# conditioning even produces enough per-sample mismatch for witness sampling to
+# have anything to exploit, independent of the final downstream metric).
+# Recommended: inspect these BEFORE trusting/expanding the main grid below --
+# if ess_raw stays close to nsamples everywhere, that's a real answer (no
+# heterogeneity here for any rule to exploit), not a bug.
+DIAG_STEPS="99 75 50 25 1"     # empty string = disable (matches the original,
+                                # diagnostics-free behavior)
+
+# Alpha sweep (witness_floor) -- cheap, but OFF by default here (single value =
+# WITNESS_FLOOR above) to keep the default grid size unchanged. Set e.g.
+# ALPHA_LIST="0.0 0.15 0.3 0.5" to sweep it -- multiplies the witness side of
+# the grid by len(ALPHA_LIST); do this on a small targeted run first (few
+# nsamples/k_fracs), not the full grid, per the diagnostics-first workflow
+# above. Writes an extra *_alpha_sweep.csv when more than one value is set.
+ALPHA_LIST=""                  # empty string = just WITNESS_FLOOR, no sweep
+
 # NOTE: the grid runs len(NSAMPLES_LIST) x len(K_FRACS) x len(RULES) x len(METHODS)
 # points (with the k_frac=1.0 point computed once per (method, nsamples) and
-# reused across rules, since there's nothing to select from at k_frac=1.0), each
-# with N_RUNS seeded optimize_LGD calls. Trim the lists above or raise --time if
+# reused across rules, since there's nothing to select from at k_frac=1.0),
+# times len(ALPHA_LIST) for the witness side if you set it above, each with
+# N_RUNS seeded optimize_LGD calls. Trim the lists above or raise --time if
 # that's too slow for your cluster.
 
 # ── Misc ──────────────────────────────────────────────────────────────────────
@@ -81,6 +106,8 @@ echo "    k_fracs              : $K_FRACS"
 echo "    rules                : $RULES"
 echo "    witness_floor        : $WITNESS_FLOOR"
 echo "    backsel_replacement  : $BACKSEL_REPLACEMENT"
+echo "    diag_steps           : ${DIAG_STEPS:-(disabled)}"
+echo "    alpha_list           : ${ALPHA_LIST:-(just witness_floor)}"
 echo "    force_retrain        : $FORCE_RETRAIN"
 python -c "import torch; print(f'GPU available: {torch.cuda.is_available()}')"
 echo "============================================"
@@ -110,6 +137,8 @@ CMD="python run_backsel_witness_sweep.py \
 
 [ "$BACKSEL_REPLACEMENT" = "true" ] && CMD="$CMD --backsel_replacement"
 [ "$FORCE_RETRAIN" = "true" ] && CMD="$CMD --force_retrain"
+[ -n "$DIAG_STEPS" ] && CMD="$CMD --diag_steps $DIAG_STEPS"
+[ -n "$ALPHA_LIST" ] && CMD="$CMD --alpha_list $ALPHA_LIST"
 
 echo "Running: $CMD"
 eval $CMD

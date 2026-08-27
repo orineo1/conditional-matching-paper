@@ -35,6 +35,10 @@ WITNESS_FLOOR=0.3              # defensive-mixture floor for rule=witness (0.3-0
                                 # also the "canonical" alpha that feeds the main JSON/plots/summary
                                 # regardless of what ALPHA_LIST below sweeps
 BACKSEL_REPLACEMENT=false      # true = sample backsel_k indices with replacement
+NORMALIZE_BY_K_FRAC=false      # true = rescale the applied gradient by 1/k_frac (k_frac =
+                                # backsel_k/nsamples) so gradient magnitude is comparable
+                                # across k_frac values instead of scaling ~linearly with it
+                                # (MMDLoss averages, not sums). No-op at k_frac=1.0.
 FORCE_RETRAIN=false            # true | false — true always retrains and overwrites the saved checkpoints
 
 # ── Diagnostics: WHY witness sampling wins or loses, not just whether it does ──
@@ -119,6 +123,7 @@ echo "    k_fracs              : $K_FRACS"
 echo "    rules                : $RULES"
 echo "    witness_floor        : $WITNESS_FLOOR"
 echo "    backsel_replacement  : $BACKSEL_REPLACEMENT"
+echo "    normalize_by_k_frac  : $NORMALIZE_BY_K_FRAC"
 echo "    diag_steps           : ${DIAG_STEPS:-(disabled)}"
 echo "    grad_ref_n           : $GRAD_REF_N"
 echo "    alpha_list           : ${ALPHA_LIST:-(just witness_floor)}"
@@ -150,6 +155,7 @@ CMD="python run_backsel_witness_sweep.py \
     --witness_floor        $WITNESS_FLOOR"
 
 [ "$BACKSEL_REPLACEMENT" = "true" ] && CMD="$CMD --backsel_replacement"
+[ "$NORMALIZE_BY_K_FRAC" = "true" ] && CMD="$CMD --normalize_by_k_frac"
 [ "$FORCE_RETRAIN" = "true" ] && CMD="$CMD --force_retrain"
 [ -n "$DIAG_STEPS" ] && CMD="$CMD --diag_steps $DIAG_STEPS --grad_ref_n $GRAD_REF_N"
 [ -n "$ALPHA_LIST" ] && CMD="$CMD --alpha_list $ALPHA_LIST"

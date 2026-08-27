@@ -28,6 +28,14 @@ def optimize_LGD(model_uncond, model_cond, mog_means, mog_variances, weights, mu
                  witness_floor=0.3,      # <-- NEW: defensive-mixture floor for backsel_rule='witness'
                  backsel_replacement=False,  # <-- NEW: sample the backsel_k indices with/without replacement
                  backsel_generator=None,     # <-- NEW: optional torch.Generator for reproducible selection
+                 normalize_by_k_frac=False,  # <-- NEW: rescale the applied gradient by 1/k_frac (k_frac =
+                                             #     backsel_k/nsamples, Horvitz-Thompson-style) so gradient
+                                             #     magnitude is comparable across different k_frac settings
+                                             #     instead of scaling ~linearly with k_frac (MMDLoss averages,
+                                             #     not sums, so each differentiable row otherwise contributes
+                                             #     a roughly fixed amount regardless of how many others are
+                                             #     attached). No-op when backsel_k is None. Default False
+                                             #     preserves original (unnormalized) behavior.
                  return_history=False,       # <-- NEW: also return per-step diagnostics
                  diag_steps=None,            # <-- NEW: list of t-values at which to log the extra
                                              #     gradient-error / witness-scenario diagnostics below
@@ -158,6 +166,17 @@ def optimize_LGD(model_uncond, model_cond, mog_means, mog_variances, weights, mu
         need_full = losses_full is not None
         need_ref = losses_ref is not None
         grad = torch.autograd.grad(log_mean_exp_loss, x_t, retain_graph=(need_full or need_ref))[0]
+
+        # Horvitz-Thompson-style rescaling: with backsel_k differentiable rows out
+        # of nsamples, the raw grad above scales roughly linearly with k_frac (see
+        # the module-level note on normalize_by_k_frac). Dividing by k_frac makes
+        # its magnitude comparable across different k_frac choices -- applied here,
+        # before the diagnostics below, so grad_norm_error* reflect the normalized
+        # gradient (the one actually used for the x_t update) against grad_full /
+        # grad_ref, which are never subsampled and so are never rescaled.
+        if normalize_by_k_frac and backsel_k is not None:
+            k_frac = min(int(backsel_k), nsamples) / nsamples
+            grad = grad / max(k_frac, 1e-12)
 
         grad_norm_error = None
         grad_full = None

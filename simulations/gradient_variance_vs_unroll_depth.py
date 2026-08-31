@@ -10,9 +10,10 @@ Design (isolates the inner sampler only -- no outer diffusion loop, no
 optimization, nothing about x is ever updated):
   - One model, one checkpoint: the pretrained *conditional* diffusion model
     model_cond (P(Y|X=x)), trained for the given synthetic experiment.
-  - One fixed conditioning point x (defaults to the experiment's x_star).
-  - One fixed target sample set, drawn once from the analytic ground-truth
-    conditional at x and reused for every trial and every K.
+  - One or more fixed conditioning points x (--x_conds; defaults to just the
+    experiment's x_star), each analyzed independently and reported separately.
+  - For each x, one fixed target sample set, drawn once from the analytic
+    ground-truth conditional at that x and reused for every trial and every K.
   - For each K in K_VALUES, run the inner MMD-guidance estimator 100 times:
     each run redraws only the sampler's internal noise (the initial Gaussian
     state of the K-step DDIM chain), computes y-samples via a K-step
@@ -87,8 +88,11 @@ def main():
                     help="Number of fixed target samples (defaults to --nsamples)")
     p.add_argument("--seed", type=int, default=42,
                     help="Global seed; also selects which pretrained checkpoint file to load")
-    p.add_argument("--x_star", type=float, nargs="*", default=None,
-                    help="Override the fixed conditioning point x (defaults to the saved x_star)")
+    p.add_argument("--x_conds", action="append", nargs="+", type=float, default=None,
+                    help="A conditioning point x to analyze -- pass this flag once per point "
+                         "to sweep several (e.g. --x_conds -5 --x_conds 0 --x_conds 5 for a "
+                         "1D-conditioning experiment). Each occurrence needs exactly "
+                         "condition_on values. Defaults to just the experiment's saved x_star.")
     p.add_argument("--output_dir", type=str, default=None)
     args = p.parse_args()
 
@@ -130,13 +134,14 @@ def main():
     condition_on = ARCH["condition_on"]
     nfeatures_full = mu_list[0].shape[0]  # model_cond denoises the full (x, y) vector jointly
 
-    if args.x_star is not None:
-        x_fixed = torch.tensor(args.x_star, dtype=torch.float32)
-        if x_fixed.numel() != condition_on:
-            raise ValueError(f"--x_star must have {condition_on} value(s), got {x_fixed.numel()}")
+    if args.x_conds is not None:
+        x_fixed_list = [torch.tensor(x, dtype=torch.float32) for x in args.x_conds]
+        for xf in x_fixed_list:
+            if xf.numel() != condition_on:
+                raise ValueError(f"--x_conds must have {condition_on} value(s) per occurrence, got {xf.numel()}")
     else:
-        x_fixed = x_star.float().view(-1)
-    print(f"[GradVar] fixed conditioning point x = {x_fixed.tolist()}")
+        x_fixed_list = [x_star.float().view(-1)]
+    print(f"[GradVar] conditioning points to analyze: {[xf.tolist() for xf in x_fixed_list]}")
 
     # ── pretrained conditional diffusion model P(Y|X=x) ─────────────────────
     model_cond = Diffusion.DiffusionModel(
@@ -155,73 +160,78 @@ def main():
     model_cond.to(device)
     model_cond.eval()
 
-    # ── fixed target samples: drawn once from the analytic ground-truth conditional at x_fixed ──
-    mu_cond, Sigma_cond = dist_utils.compute_conditionals(mu_list, Sigma_list, x_fixed)
-    w_cond = dist_utils.compute_alpha(mu_list, Sigma_list, alpha, x_fixed)
-    target_samples = dist_utils.generate_mog_samples_not_differentiable(
-        n_target, mu_cond, Sigma_cond, w_cond
-    ).float().to(device)
-
     mmd_loss = MMDLoss(kernel=RBF())
-    condition_x = x_fixed.view(1, -1).repeat(args.nsamples, 1)
 
-    results = {}
-    for K in K_values:
-        grads = []
-        actual_steps = None
-        for trial in range(args.n_trials):
-            experiment_utils.set_run_seed(args.seed, trial)  # only the sampler's noise draw changes across trials
+    results_by_x = {}
+    for x_fixed in x_fixed_list:
+        x_key = "_".join(f"{v:.4g}" for v in x_fixed.tolist())
+        print(f"[GradVar] === conditioning point x = {x_fixed.tolist()} ===")
 
-            x_leaf = x_fixed.clone().detach().to(device).requires_grad_(True)
-            cond = x_leaf.view(1, -1).repeat(args.nsamples, 1)
+        # fixed target samples: drawn once from the analytic ground-truth conditional at x_fixed
+        mu_cond, Sigma_cond = dist_utils.compute_conditionals(mu_list, Sigma_list, x_fixed)
+        w_cond = dist_utils.compute_alpha(mu_list, Sigma_list, alpha, x_fixed)
+        target_samples = dist_utils.generate_mog_samples_not_differentiable(
+            n_target, mu_cond, Sigma_cond, w_cond
+        ).float().to(device)
 
-            _, y_samples, actual_steps = ddim_sample_kstep(model_cond, args.nsamples, cond, K, device)
-            loss = mmd_loss(y_samples, target_samples)
-            loss.backward()
+        results_by_K = {}
+        for K in K_values:
+            grads = []
+            actual_steps = None
+            for trial in range(args.n_trials):
+                experiment_utils.set_run_seed(args.seed, trial)  # only the sampler's noise draw changes across trials
 
-            grads.append(x_leaf.grad.detach().cpu().numpy().copy())
+                x_leaf = x_fixed.clone().detach().to(device).requires_grad_(True)
+                cond = x_leaf.view(1, -1).repeat(args.nsamples, 1)
 
-        grads = np.stack(grads, axis=0)  # [n_trials, condition_on]
-        mean_grad = grads.mean(axis=0)
-        centered = grads - mean_grad
-        variance_trace = float(np.mean(np.sum(centered ** 2, axis=1)))  # E[||g - ḡ||^2]
-        mean_grad_norm_sq = float(np.sum(mean_grad ** 2))
-        normalized_variance = variance_trace / (mean_grad_norm_sq + 1e-12)
+                _, y_samples, actual_steps = ddim_sample_kstep(model_cond, args.nsamples, cond, K, device)
+                loss = mmd_loss(y_samples, target_samples)
+                loss.backward()
 
-        results[K] = {
-            "K_requested": K,
-            "K_actual_steps": actual_steps,
-            "mean_grad": mean_grad.tolist(),
-            "mean_grad_norm": float(np.sqrt(mean_grad_norm_sq)),
-            "variance_trace": variance_trace,
-            "normalized_variance": normalized_variance,
-            "grads": grads.tolist(),
-        }
-        print(f"  K={K:>3} (actual {actual_steps:>3} steps) | "
-              f"||ḡ||={results[K]['mean_grad_norm']:.6f} | "
-              f"Var(g)={variance_trace:.6e} | "
-              f"Var(g)/||ḡ||^2={normalized_variance:.6e}")
+                grads.append(x_leaf.grad.detach().cpu().numpy().copy())
+
+            grads = np.stack(grads, axis=0)  # [n_trials, condition_on]
+            mean_grad = grads.mean(axis=0)
+            centered = grads - mean_grad
+            variance_trace = float(np.mean(np.sum(centered ** 2, axis=1)))  # E[||g - ḡ||^2]
+            mean_grad_norm_sq = float(np.sum(mean_grad ** 2))
+            normalized_variance = variance_trace / (mean_grad_norm_sq + 1e-12)
+
+            results_by_K[K] = {
+                "K_requested": K,
+                "K_actual_steps": actual_steps,
+                "mean_grad": mean_grad.tolist(),
+                "mean_grad_norm": float(np.sqrt(mean_grad_norm_sq)),
+                "variance_trace": variance_trace,
+                "normalized_variance": normalized_variance,
+                "grads": grads.tolist(),
+            }
+            print(f"  x={x_fixed.tolist()} | K={K:>3} (actual {actual_steps:>3} steps) | "
+                  f"||ḡ||={results_by_K[K]['mean_grad_norm']:.6f} | "
+                  f"Var(g)={variance_trace:.6e} | "
+                  f"Var(g)/||ḡ||^2={normalized_variance:.6e}")
+
+        Ks_sorted = sorted(results_by_K.keys())
+        nv = [results_by_K[k]["normalized_variance"] for k in Ks_sorted]
+        monotonic_nondecreasing = all(nv[i] <= nv[i + 1] * 1.0 for i in range(len(nv) - 1))
+        print(f"[GradVar] x={x_fixed.tolist()} | normalized variance by K: {list(zip(Ks_sorted, nv))}")
+        print(f"[GradVar] x={x_fixed.tolist()} | strictly nondecreasing across the full K sweep: {monotonic_nondecreasing}")
+
+        results_by_x[x_key] = {"x_fixed": x_fixed.tolist(), "results_by_K": results_by_K}
 
     out = {
         "experiment": args.experiment_name,
-        "x_fixed": x_fixed.tolist(),
         "n_trials": args.n_trials,
         "nsamples": args.nsamples,
         "n_target": n_target,
         "seed": args.seed,
-        "results_by_K": results,
+        "results_by_x": results_by_x,
     }
 
     out_path = os.path.join(RESULTS_DIR, f"{args.experiment_name}_gradient_variance_seed{args.seed}.json")
     with open(out_path, "w") as f:
         json.dump(out, f, indent=2)
     print(f"[GradVar] Saved results to {out_path}")
-
-    Ks_sorted = sorted(results.keys())
-    nv = [results[k]["normalized_variance"] for k in Ks_sorted]
-    monotonic_nondecreasing = all(nv[i] <= nv[i + 1] * 1.0 for i in range(len(nv) - 1))
-    print(f"[GradVar] Normalized variance by K: {list(zip(Ks_sorted, nv))}")
-    print(f"[GradVar] Strictly nondecreasing across the full K sweep: {monotonic_nondecreasing}")
 
 
 if __name__ == "__main__":

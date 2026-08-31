@@ -18,6 +18,11 @@
 #   export ENV_PATH=/path/to/your/conda/or/venv/env   # dir containing bin/python
 #   export REPO_ROOT=/path/to/conditional-matching-paper
 #   export EXPERIMENT_NAME=10D_cond_1D                # optional, defaults to 2D_cond_1D
+#   export X_CONDS="-5|0|5"                           # optional, sweep several x points
+#                                                      # instead of just the saved x_star
+#                                                      # (pipe-separated; each may itself be
+#                                                      # space-separated for multi-dim x, e.g.
+#                                                      # X_CONDS="1.0 2.0|3.0 4.0")
 #   sbatch simulations/submit_gradient_variance.sh
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -26,6 +31,7 @@ K_VALUES="10,25,40,60,80,100"
 N_TRIALS=100
 NSAMPLES=250
 SEED=42
+X_CONDS="${X_CONDS:-}"                             # empty = just the saved x_star
 
 export ENV_PATH="${ENV_PATH:?ENV_PATH is not set. Export it before submitting (dir containing bin/python).}"
 PYTHON="$ENV_PATH/bin/python"
@@ -38,10 +44,20 @@ cd "$REPO_ROOT/simulations"
 export PYTHONPATH="$REPO_ROOT/simulations/src:$PYTHONPATH"
 mkdir -p logs
 
+# X_CONDS="-5|0|5" -> XCOND_ARGS=(--x_conds -5 --x_conds 0 --x_conds 5)
+XCOND_ARGS=()
+if [ -n "$X_CONDS" ]; then
+    IFS='|' read -ra XCOND_POINTS <<< "$X_CONDS"
+    for point in "${XCOND_POINTS[@]}"; do
+        XCOND_ARGS+=(--x_conds $point)
+    done
+fi
+
 echo "=== JOB ${SLURM_JOB_ID} ON $(hostname) ==="
 echo "    experiment : $EXPERIMENT_NAME"
 echo "    K_values   : $K_VALUES"
 echo "    n_trials   : $N_TRIALS"
+echo "    x_conds    : ${X_CONDS:-(experiment's saved x_star)}"
 "$PYTHON" -c "import torch; print(f'GPU available: {torch.cuda.is_available()}')"
 echo "============================================"
 
@@ -50,7 +66,8 @@ echo "============================================"
     --k_values         "$K_VALUES" \
     --n_trials          "$N_TRIALS" \
     --nsamples          "$NSAMPLES" \
-    --seed              "$SEED"
+    --seed              "$SEED" \
+    "${XCOND_ARGS[@]}"
 
 EXIT_CODE=$?
 echo "=== JOB ${SLURM_JOB_ID} FINISHED (exit ${EXIT_CODE}) ==="

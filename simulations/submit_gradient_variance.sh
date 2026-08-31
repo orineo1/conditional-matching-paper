@@ -31,7 +31,7 @@ K_VALUES="10,25,40,60,80,100"
 N_TRIALS=100
 NSAMPLES=250
 SEED=42
-X_CONDS="${X_CONDS:-}"                             # empty = just the saved x_star
+X_CONDS="${X_CONDS:--2|0|2}"                       # empty = just the saved x_star
 
 export ENV_PATH="${ENV_PATH:?ENV_PATH is not set. Export it before submitting (dir containing bin/python).}"
 PYTHON="$ENV_PATH/bin/python"

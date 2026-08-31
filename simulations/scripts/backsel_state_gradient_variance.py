@@ -255,7 +255,14 @@ def main():
             "n_states": len(state_results),
         }
 
-        out_path = os.path.join(results_dir, f"{args.experiment}_backsel_state_variance_{method}_seed{args.seed}.json")
+        # nsamples and k_frac are included so that two runs differing only in either (e.g.
+        # comparing nsamples=250 vs nsamples=500) land in separate files instead of the second
+        # overwriting the first.
+        out_path = os.path.join(
+            results_dir,
+            f"{args.experiment}_backsel_state_variance_{method}_n{args.nsamples}_"
+            f"kfrac{args.k_frac:g}_seed{args.seed}.json",
+        )
         with open(out_path, "w") as f:
             json.dump(out, f, indent=2)
         print(f"[StateVar] {method}: saved {out_path}")

@@ -97,6 +97,8 @@ export REPO_ROOT=/path/to/conditional-matching-paper
 sbatch simulations/scripts/run_backsel_state_variance.sh
 ```
 
-Output: `results/<experiment>/<experiment>_backsel_state_variance_<method>_seed<seed>.json`,
+Output: `results/<experiment>/<experiment>_backsel_state_variance_<method>_n<nsamples>_kfrac<k_frac>_seed<seed>.json`
+(nsamples and k_frac are in the filename so runs that only differ in either
+don't overwrite each other),
 containing every state's captured `x0_sample`/`t`, both rules' raw per-redraw
 gradients and summary stats, and the cross-state `averaged` block.

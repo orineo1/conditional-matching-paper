@@ -20,33 +20,22 @@ from witness_utils import apply_backsel, compute_witness_scores, witness_scenari
 # Optimize LGD using Monte Carlo-based guidance
 def optimize_LGD(model_uncond, model_cond, mog_means, mog_variances, weights, mu_list, Sigma_list, alpha,
                  nsamples=250, num_x_t=3, loss="MMD", CM=False, device="cuda", FLAG=False,
-                 zeta=1.0,               # <-- guidance strength (ζ)
-                 backsel_k=None,         # <-- NEW: of `nsamples` target_samples, how many to backprop
-                                         #     through for the guidance loss (None = all, original behavior)
-                 backsel_rule="uniform", # <-- NEW: 'uniform' | 'witness' (MMD witness-function importance
-                                         #     sampling against this step's mog_samples; see witness_utils.py)
-                 witness_floor=0.3,      # <-- NEW: defensive-mixture floor for backsel_rule='witness'
-                 backsel_replacement=False,  # <-- NEW: sample the backsel_k indices with/without replacement
-                 backsel_generator=None,     # <-- NEW: optional torch.Generator for reproducible selection
-                 normalize_by_k_frac=False,  # <-- NEW: rescale the applied gradient by 1/k_frac (k_frac =
-                                             #     backsel_k/nsamples, Horvitz-Thompson-style) so gradient
-                                             #     magnitude is comparable across different k_frac settings
-                                             #     instead of scaling ~linearly with k_frac (MMDLoss averages,
-                                             #     not sums, so each differentiable row otherwise contributes
-                                             #     a roughly fixed amount regardless of how many others are
-                                             #     attached). No-op when backsel_k is None. Default False
-                                             #     preserves original (unnormalized) behavior.
-                 return_history=False,       # <-- NEW: also return per-step diagnostics
-                 diag_steps=None,            # <-- NEW: list of t-values at which to log the extra
-                                             #     gradient-error / witness-scenario diagnostics below
-                                             #     (requires return_history=True; ignored otherwise)
-                 grad_ref_n=2000):           # <-- NEW: sample size for the TRUE/population reference
-                                             #     gradient at diag_steps, drawn from the exact analytic
-                                             #     conditional GMM (mu_list/Sigma_list/alpha -- known
-                                             #     ground truth, not model_cond's approximation). Cheap:
-                                             #     closed-form reparameterized Gaussian sampling, no
-                                             #     network forward, so grad_ref_n can be large without
-                                             #     real cost.
+                 zeta=1.0,               # guidance strength (ζ)
+                 backsel_k=None,         # of `nsamples` target_samples, how many to backprop
+                                         # through for the guidance loss (None = all)
+                 backsel_rule="uniform", # 'uniform' | 'witness' (see witness_utils.py)
+                 witness_floor=0.3,      # defensive-mixture floor for backsel_rule='witness'
+                 backsel_replacement=False,  # sample backsel_k indices with/without replacement
+                 backsel_generator=None,     # optional torch.Generator for reproducible selection
+                 normalize_by_k_frac=False,  # rescale the applied gradient by 1/k_frac so its
+                                             # magnitude is comparable across k_frac settings
+                                             # (MMDLoss averages, so raw grad otherwise scales
+                                             # ~linearly with k_frac); no-op when backsel_k is None
+                 return_history=False,       # also return per-step diagnostics
+                 diag_steps=None,            # t-values at which to log the extra gradient-error /
+                                             # witness-scenario diagnostics (needs return_history=True)
+                 grad_ref_n=2000):           # sample size for the analytic population reference
+                                             # gradient at diag_steps (no network forward -- cheap)
 
     mmd_loss = MMDLoss(kernel=RBF())
     best_mmd_loss = float("inf")

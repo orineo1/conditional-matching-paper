@@ -39,6 +39,9 @@ NORMALIZE_BY_K_FRAC=false      # true = rescale the applied gradient by 1/k_frac
                                 # backsel_k/nsamples) so gradient magnitude is comparable
                                 # across k_frac values instead of scaling ~linearly with it
                                 # (MMDLoss averages, not sums). No-op at k_frac=1.0.
+USE_INV_SQRT_ALPHA_SCALE=false # true = scale the guidance gradient by 1/sqrt(alpha_t)
+                                # instead of the constant ZETA (zeta hardcoded to 1.0 in
+                                # optimize_LGD's default; not exposed as a sweep param here)
 FORCE_RETRAIN=false            # true | false — true always retrains and overwrites the saved checkpoints
 
 # ── Diagnostics: WHY witness sampling wins or loses, not just whether it does ──
@@ -124,6 +127,7 @@ echo "    rules                : $RULES"
 echo "    witness_floor        : $WITNESS_FLOOR"
 echo "    backsel_replacement  : $BACKSEL_REPLACEMENT"
 echo "    normalize_by_k_frac  : $NORMALIZE_BY_K_FRAC"
+echo "    use_inv_sqrt_alpha   : $USE_INV_SQRT_ALPHA_SCALE"
 echo "    diag_steps           : ${DIAG_STEPS:-(disabled)}"
 echo "    grad_ref_n           : $GRAD_REF_N"
 echo "    alpha_list           : ${ALPHA_LIST:-(just witness_floor)}"
@@ -156,6 +160,7 @@ CMD="python run_backsel_witness_sweep.py \
 
 [ "$BACKSEL_REPLACEMENT" = "true" ] && CMD="$CMD --backsel_replacement"
 [ "$NORMALIZE_BY_K_FRAC" = "true" ] && CMD="$CMD --normalize_by_k_frac"
+[ "$USE_INV_SQRT_ALPHA_SCALE" = "true" ] && CMD="$CMD --use_inv_sqrt_alpha_scale"
 [ "$FORCE_RETRAIN" = "true" ] && CMD="$CMD --force_retrain"
 [ -n "$DIAG_STEPS" ] && CMD="$CMD --diag_steps $DIAG_STEPS --grad_ref_n $GRAD_REF_N"
 [ -n "$ALPHA_LIST" ] && CMD="$CMD --alpha_list $ALPHA_LIST"

@@ -53,9 +53,5 @@ echo "============================================"
     --seed              "$SEED"
 
 EXIT_CODE=$?
-if [ $EXIT_CODE -eq 0 ]; then
-    "$PYTHON" plot_gradient_variance.py --experiment_name "$EXPERIMENT_NAME" --seed "$SEED"
-fi
-
 echo "=== JOB ${SLURM_JOB_ID} FINISHED (exit ${EXIT_CODE}) ==="
 exit $EXIT_CODE

@@ -82,7 +82,6 @@ here; only the estimator's spread around its own mean).
 
 ```bash
 python gradient_variance_vs_unroll_depth.py --experiment_name 2D_cond_1D
-python plot_gradient_variance.py --experiment_name 2D_cond_1D
 
 # or on a SLURM cluster:
 export ENV_PATH=/path/to/your/env

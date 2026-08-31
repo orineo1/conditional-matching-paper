@@ -16,7 +16,7 @@
 EXPERIMENT="5D_cond_1D"
 
 # ── Shared hyperparameters ────────────────────────────────────────────────────
-NUM_X_T=3                     # fixed, not swept
+NUM_X_T=1                     # fixed, not swept
 N_RUNS=25
 SEED=42
 # any of: LGD LGD-CM. Overridable via env so you can submit LGD and LGD-CM as

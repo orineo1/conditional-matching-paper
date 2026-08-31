@@ -35,6 +35,9 @@ EXPERIMENT_NAME="${EXPERIMENT_NAME:-2D_cond_1D}"   # 2D_cond_1D | 5D_cond_1D | 1
 K_VALUES="10,25,40,60,80,100"
 N_TRIALS=100
 NSAMPLES=250
+GRAD_REF_N=2000                                    # sample size for the TRUE/population
+                                                    # reference gradient at each x (closed-form,
+                                                    # no network forward -- cheap even here)
 SEED=42
 X_CONDS="${X_CONDS:-}"                             # fixed points; empty = use N_RANDOM_CONDS instead
 N_RANDOM_CONDS="${N_RANDOM_CONDS:-5}"              # random x points from the GMM's own marginal;
@@ -84,6 +87,7 @@ echo "============================================"
     --k_values         "$K_VALUES" \
     --n_trials          "$N_TRIALS" \
     --nsamples          "$NSAMPLES" \
+    --grad_ref_n        "$GRAD_REF_N" \
     --seed              "$SEED" \
     "${XCOND_ARGS[@]}"
 

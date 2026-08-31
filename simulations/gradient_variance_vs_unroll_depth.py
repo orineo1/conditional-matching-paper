@@ -21,12 +21,20 @@ optimization, nothing about x is ever updated):
     fixed target samples, and backpropagates to get grad = d(loss)/dx.
   - Report Var(grad) (trace of the empirical covariance across the 100
     gradient draws) normalized by ||mean(grad)||^2, for each K.
+  - Also compute the TRUE/population reference gradient at each x: the
+    exact analytic conditional GMM at x (differentiable w.r.t. x via
+    compute_conditionals/compute_alpha), sampled at --grad_ref_n and scored
+    by MMD against the SAME fixed target samples -- no network forward, so
+    this is cheap even at grad_ref_n >> nsamples. ||mean(grad) - grad_ref||
+    at each K then tells you whether the estimator's mean is actually near
+    the true gradient, or has instead plateaued near zero (or some other
+    wrong value) as K grows -- distinguishing "high variance but roughly
+    right on average" from "the estimator itself is biased/collapsed".
 
-If normalized variance rises with K, deeper unrolled chains do inject more
-noise into the guidance signal -- directly, without any confound from
-whether a given K is a more or less *accurate* sampler (accuracy plays no
-role in this measurement: we never compare to ground truth, only to the
-estimator's own spread across noise draws for a fixed x).
+Var(grad)/||mean(grad)||^2 answers "is deeper unrolling noisier"; distance
+to the true reference gradient answers the separate question "is deeper
+unrolling's *mean* estimate even correct" -- both matter and neither implies
+the other (a low-variance estimator can still be consistently wrong).
 
 Usage:
     python gradient_variance_vs_unroll_depth.py --experiment_name 2D_cond_1D
@@ -101,6 +109,12 @@ def main():
                          "hand-picking points, and is what makes a 2D/5D/10D comparison fair "
                          "(the same fixed-point choice doesn't generalize across dimensions). "
                          "Mutually exclusive with --x_conds.")
+    p.add_argument("--grad_ref_n", type=int, default=2000,
+                    help="Sample size for the TRUE/population reference gradient computed at "
+                         "each x (closed-form differentiable sampling from the exact analytic "
+                         "conditional GMM, no network forward -- cheap even at this size). Used "
+                         "to report each K's distance to the true gradient, not just its own "
+                         "spread across trials.")
     p.add_argument("--output_dir", type=str, default=None)
     args = p.parse_args()
 
@@ -196,6 +210,21 @@ def main():
             n_target, mu_cond, Sigma_cond, w_cond
         ).float().to(device)
 
+        # TRUE/population reference gradient at this x: differentiate MMD(ref_samples(x),
+        # target_samples) w.r.t. x, where ref_samples(x) is a large, differentiable draw from
+        # the EXACT analytic conditional GMM at x (not model_cond's learned approximation).
+        # Independent of K -- computed once per x, not once per K.
+        x_ref_leaf = x_fixed.clone().detach().to(device).requires_grad_(True)
+        condi_mu, condi_sigma = dist_utils.compute_conditionals(mu_list, Sigma_list, x_ref_leaf)
+        condi_mu = condi_mu.squeeze(-1)  # drop a spurious trailing dim; generate_mog_samples'
+                                          # is_multivariate check looks at xi.shape[-1]
+        condi_alpha = dist_utils.compute_alpha(mu_list, Sigma_list, alpha, x_ref_leaf)
+        ref_samples = dist_utils.generate_mog_samples(args.grad_ref_n, condi_mu, condi_sigma, condi_alpha, device=device)
+        loss_ref = mmd_loss(ref_samples, target_samples)
+        grad_ref = torch.autograd.grad(loss_ref, x_ref_leaf)[0].detach().cpu().numpy()
+        grad_ref_norm = float(np.linalg.norm(grad_ref))
+        print(f"  x={x_fixed.tolist()} | TRUE reference grad: ||grad_ref||={grad_ref_norm:.6f}")
+
         results_by_K = {}
         for K in K_values:
             grads = []
@@ -219,6 +248,13 @@ def main():
             mean_grad_norm_sq = float(np.sum(mean_grad ** 2))
             normalized_variance = variance_trace / (mean_grad_norm_sq + 1e-12)
 
+            # Distance from the estimator's mean to the TRUE reference gradient: separates
+            # "did the estimate collapse near zero" (mean_grad_norm -> 0 while grad_ref_norm
+            # stays large, so dist_to_ref_normalized -> 1) from "did it converge to the real
+            # value" (dist_to_ref_normalized -> 0), which normalized_variance alone can't tell.
+            dist_to_ref = float(np.linalg.norm(mean_grad - grad_ref))
+            dist_to_ref_normalized = dist_to_ref / (grad_ref_norm + 1e-12)
+
             results_by_K[K] = {
                 "K_requested": K,
                 "K_actual_steps": actual_steps,
@@ -226,12 +262,15 @@ def main():
                 "mean_grad_norm": float(np.sqrt(mean_grad_norm_sq)),
                 "variance_trace": variance_trace,
                 "normalized_variance": normalized_variance,
+                "dist_to_ref": dist_to_ref,
+                "dist_to_ref_normalized": dist_to_ref_normalized,
                 "grads": grads.tolist(),
             }
             print(f"  x={x_fixed.tolist()} | K={K:>3} (actual {actual_steps:>3} steps) | "
                   f"||ḡ||={results_by_K[K]['mean_grad_norm']:.6f} | "
                   f"Var(g)={variance_trace:.6e} | "
-                  f"Var(g)/||ḡ||^2={normalized_variance:.6e}")
+                  f"Var(g)/||ḡ||^2={normalized_variance:.6e} | "
+                  f"||ḡ-grad_ref||={dist_to_ref:.6f} (normalized {dist_to_ref_normalized:.4f})")
 
         Ks_sorted = sorted(results_by_K.keys())
         nv = [results_by_K[k]["normalized_variance"] for k in Ks_sorted]
@@ -239,13 +278,19 @@ def main():
         print(f"[GradVar] x={x_fixed.tolist()} | normalized variance by K: {list(zip(Ks_sorted, nv))}")
         print(f"[GradVar] x={x_fixed.tolist()} | strictly nondecreasing across the full K sweep: {monotonic_nondecreasing}")
 
-        results_by_x[x_key] = {"x_fixed": x_fixed.tolist(), "results_by_K": results_by_K}
+        results_by_x[x_key] = {
+            "x_fixed": x_fixed.tolist(),
+            "grad_ref": grad_ref.tolist(),
+            "grad_ref_norm": grad_ref_norm,
+            "results_by_K": results_by_K,
+        }
 
     out = {
         "experiment": args.experiment_name,
         "n_trials": args.n_trials,
         "nsamples": args.nsamples,
         "n_target": n_target,
+        "grad_ref_n": args.grad_ref_n,
         "seed": args.seed,
         "results_by_x": results_by_x,
     }

@@ -77,8 +77,18 @@ sampler's internal noise each time. It reports `Var(grad)` (trace of the
 empirical covariance across the 100 draws) normalized by `||mean(grad)||^2`
 for each `(x, K)` — if that quantity rises with `K`, deeper unrolling injects
 more gradient noise, independent of whether a given `K` is a more or less
-accurate sampler (accuracy is never measured here; only the estimator's
-spread around its own mean).
+accurate sampler.
+
+It also computes the TRUE/population reference gradient at each `x` (the
+exact analytic conditional GMM, differentiated w.r.t. `x`, scored against
+the same fixed target samples via `--grad_ref_n` closed-form samples — no
+network forward, so this is cheap even at `grad_ref_n >> nsamples`), and
+reports each `K`'s `dist_to_ref`/`dist_to_ref_normalized`: the distance from
+that `K`'s mean gradient to the true one. This answers a different question
+than `normalized_variance` does — whether the estimator's mean is actually
+converging toward the true gradient as `K` grows, or has instead plateaued
+near zero (or some other wrong value): a low-variance estimator can still be
+consistently wrong, and `normalized_variance` alone can't tell you which.
 
 Conditioning points can be chosen two ways:
 - `--n_random_conds N` (recommended, and the sbatch default) — draw `N`

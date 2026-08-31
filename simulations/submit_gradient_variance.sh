@@ -18,11 +18,16 @@
 #   export ENV_PATH=/path/to/your/conda/or/venv/env   # dir containing bin/python
 #   export REPO_ROOT=/path/to/conditional-matching-paper
 #   export EXPERIMENT_NAME=10D_cond_1D                # optional, defaults to 2D_cond_1D
-#   export X_CONDS="-5|0|5"                           # optional, sweep several x points
-#                                                      # instead of just the saved x_star
+#   export N_RANDOM_CONDS=5                           # optional, default: sample this many x
+#                                                      # points at random from the GMM's own
+#                                                      # marginal over x, instead of hand-picking
+#                                                      # them -- the only choice that stays fair
+#                                                      # across 2D/5D/10D. Set to "" to disable.
+#   export X_CONDS="-5|0|5"                           # optional: fixed points instead of random
 #                                                      # (pipe-separated; each may itself be
 #                                                      # space-separated for multi-dim x, e.g.
-#                                                      # X_CONDS="1.0 2.0|3.0 4.0")
+#                                                      # X_CONDS="1.0 2.0|3.0 4.0"). Overrides
+#                                                      # N_RANDOM_CONDS when set.
 #   sbatch simulations/submit_gradient_variance.sh
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -31,7 +36,10 @@ K_VALUES="10,25,40,60,80,100"
 N_TRIALS=100
 NSAMPLES=250
 SEED=42
-X_CONDS="${X_CONDS:--2|0|2}"                       # empty = just the saved x_star
+X_CONDS="${X_CONDS:-}"                             # fixed points; empty = use N_RANDOM_CONDS instead
+N_RANDOM_CONDS="${N_RANDOM_CONDS:-5}"              # random x points from the GMM's own marginal;
+                                                    # ignored when X_CONDS is set; "" = neither
+                                                    # (falls back to just the saved x_star)
 
 export ENV_PATH="${ENV_PATH:?ENV_PATH is not set. Export it before submitting (dir containing bin/python).}"
 PYTHON="$ENV_PATH/bin/python"
@@ -44,6 +52,8 @@ cd "$REPO_ROOT/simulations"
 export PYTHONPATH="$REPO_ROOT/simulations/src:$PYTHONPATH"
 mkdir -p logs
 
+# X_CONDS takes priority when set (fixed points); otherwise N_RANDOM_CONDS (random from the
+# marginal); otherwise neither, and the script falls back to just the saved x_star.
 # X_CONDS="-5|0|5" -> XCOND_ARGS=(--x_conds -5 --x_conds 0 --x_conds 5)
 XCOND_ARGS=()
 if [ -n "$X_CONDS" ]; then
@@ -51,13 +61,21 @@ if [ -n "$X_CONDS" ]; then
     for point in "${XCOND_POINTS[@]}"; do
         XCOND_ARGS+=(--x_conds $point)
     done
+elif [ -n "$N_RANDOM_CONDS" ]; then
+    XCOND_ARGS=(--n_random_conds "$N_RANDOM_CONDS")
 fi
 
 echo "=== JOB ${SLURM_JOB_ID} ON $(hostname) ==="
 echo "    experiment : $EXPERIMENT_NAME"
 echo "    K_values   : $K_VALUES"
 echo "    n_trials   : $N_TRIALS"
-echo "    x_conds    : ${X_CONDS:-(experiment's saved x_star)}"
+if [ -n "$X_CONDS" ]; then
+    echo "    x_conds    : $X_CONDS (fixed)"
+elif [ -n "$N_RANDOM_CONDS" ]; then
+    echo "    x_conds    : $N_RANDOM_CONDS random points from the GMM's marginal over x"
+else
+    echo "    x_conds    : (experiment's saved x_star)"
+fi
 "$PYTHON" -c "import torch; print(f'GPU available: {torch.cuda.is_available()}')"
 echo "============================================"
 

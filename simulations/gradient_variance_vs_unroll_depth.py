@@ -92,7 +92,15 @@ def main():
                     help="A conditioning point x to analyze -- pass this flag once per point "
                          "to sweep several (e.g. --x_conds -5 --x_conds 0 --x_conds 5 for a "
                          "1D-conditioning experiment). Each occurrence needs exactly "
-                         "condition_on values. Defaults to just the experiment's saved x_star.")
+                         "condition_on values. Mutually exclusive with --n_random_conds. "
+                         "Defaults to just the experiment's saved x_star.")
+    p.add_argument("--n_random_conds", type=int, default=None,
+                    help="Instead of fixed --x_conds, draw this many conditioning points "
+                         "at random from the GMM's own marginal distribution over x (the "
+                         "first condition_on coordinates of a joint draw) -- avoids "
+                         "hand-picking points, and is what makes a 2D/5D/10D comparison fair "
+                         "(the same fixed-point choice doesn't generalize across dimensions). "
+                         "Mutually exclusive with --x_conds.")
     p.add_argument("--output_dir", type=str, default=None)
     args = p.parse_args()
 
@@ -134,11 +142,25 @@ def main():
     condition_on = ARCH["condition_on"]
     nfeatures_full = mu_list[0].shape[0]  # model_cond denoises the full (x, y) vector jointly
 
+    if args.x_conds is not None and args.n_random_conds is not None:
+        raise ValueError("--x_conds and --n_random_conds are mutually exclusive.")
+
     if args.x_conds is not None:
         x_fixed_list = [torch.tensor(x, dtype=torch.float32) for x in args.x_conds]
         for xf in x_fixed_list:
             if xf.numel() != condition_on:
                 raise ValueError(f"--x_conds must have {condition_on} value(s) per occurrence, got {xf.numel()}")
+    elif args.n_random_conds is not None:
+        # Sample from the GMM's own marginal over x: a joint draw's first condition_on
+        # coordinates (the joint GMM already puts x in the leading coordinates -- same
+        # convention as target_samples[:, model_cond.condition_on:] elsewhere). This is
+        # the actual distribution x is drawn from during real guidance, unlike a hand-picked
+        # point -- and is what makes a 2D/5D/10D comparison meaningful, since a fixed choice
+        # like x=0 doesn't mean the same thing (same density, same "difficulty") in each.
+        joint_samples = dist_utils.generate_mog_samples_not_differentiable(
+            args.n_random_conds, mu_list, Sigma_list, alpha
+        ).float()
+        x_fixed_list = [joint_samples[i, :condition_on] for i in range(args.n_random_conds)]
     else:
         x_fixed_list = [x_star.float().view(-1)]
     print(f"[GradVar] conditioning points to analyze: {[xf.tolist() for xf in x_fixed_list]}")

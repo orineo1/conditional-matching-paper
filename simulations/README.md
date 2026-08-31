@@ -69,31 +69,43 @@ To force retraining from scratch for any notebook, set `FORCE_RETRAIN = True` in
 `gradient_variance_vs_unroll_depth.py` directly tests the claim that unrolling
 deeper diffusion chains injects more noise into the guidance gradient. It
 isolates the inner conditional sampler only (`model_cond`, i.e. the pretrained
-`Diffusion_cond` checkpoint used by the LGD baseline) at one or more fixed
-conditioning points `x` (`--x_conds`; defaults to just the experiment's
-`x_star`), each against its own fixed set of target samples, and for each
-unroll depth `K` in `{10, 25, 40, 60, 80, 100}` runs the inner MMD-guidance
-gradient estimator 100 times per `x`, redrawing only the sampler's internal
-noise each time. It reports `Var(grad)` (trace of the empirical covariance
-across the 100 draws) normalized by `||mean(grad)||^2` for each `(x, K)` — if
-that quantity rises with `K`, deeper unrolling injects more gradient noise,
-independent of whether a given `K` is a more or less accurate sampler
-(accuracy is never measured here; only the estimator's spread around its own
-mean). Sweeping several `x_conds` checks whether that effect holds uniformly
-or only near particular conditioning points.
+`Diffusion_cond` checkpoint used by the LGD baseline) at one or more
+conditioning points `x`, each against its own fixed set of target samples,
+and for each unroll depth `K` in `{10, 25, 40, 60, 80, 100}` runs the inner
+MMD-guidance gradient estimator 100 times per `x`, redrawing only the
+sampler's internal noise each time. It reports `Var(grad)` (trace of the
+empirical covariance across the 100 draws) normalized by `||mean(grad)||^2`
+for each `(x, K)` — if that quantity rises with `K`, deeper unrolling injects
+more gradient noise, independent of whether a given `K` is a more or less
+accurate sampler (accuracy is never measured here; only the estimator's
+spread around its own mean).
+
+Conditioning points can be chosen two ways:
+- `--n_random_conds N` (recommended, and the sbatch default) — draw `N`
+  points at random from the GMM's own marginal over `x`, instead of
+  hand-picking them. This is the only choice that stays comparable across
+  2D/5D/10D: a fixed point like `x=0` isn't the same "difficulty" in each.
+- `--x_conds` (repeatable) — fixed points instead, e.g. `--x_conds -5
+  --x_conds 0 --x_conds 5` for a 1D-conditioning experiment.
 
 ```bash
-python gradient_variance_vs_unroll_depth.py --experiment_name 2D_cond_1D
+python gradient_variance_vs_unroll_depth.py --experiment_name 2D_cond_1D \
+    --n_random_conds 5
 
-# sweep several conditioning points instead of just x_star (repeat the flag):
+# or fixed points instead:
 python gradient_variance_vs_unroll_depth.py --experiment_name 2D_cond_1D \
     --x_conds -5 --x_conds 0 --x_conds 5
+
+# same command works for 5D/10D (condition_on is 4/9 there, so --x_conds
+# would need that many values per point -- --n_random_conds needs no changes):
+python gradient_variance_vs_unroll_depth.py --experiment_name 5D_cond_1D --n_random_conds 5
+python gradient_variance_vs_unroll_depth.py --experiment_name 10D_cond_1D --n_random_conds 5
 
 # or on a SLURM cluster:
 export ENV_PATH=/path/to/your/env
 export REPO_ROOT=/path/to/conditional-matching-paper
-export X_CONDS="-5|0|5"     # optional; omit to just use x_star
-sbatch simulations/submit_gradient_variance.sh
+export EXPERIMENT_NAME=5D_cond_1D   # or 10D_cond_1D
+sbatch simulations/submit_gradient_variance.sh   # N_RANDOM_CONDS=5 by default
 ```
 
 Requires the `Diffusion_cond` checkpoint for the chosen experiment (not

@@ -17,9 +17,11 @@ instead of unroll depth):
     this is what a real guidance loop's frozen point looks like independent
     of the choice under test.
   - At each state independently: freeze x0_sample (and t) completely, then
-    redraw --n_redraws times, for both 'uniform' and 'witness' backsel:
+    redraw --n_redraws times, for 'uniform', 'witness', AND 'full' (no
+    subsampling -- the baseline both rules should be compared against):
     fresh target_samples from model_cond, fresh mog_samples, a fresh backsel
-    subsample, and the resulting gradient d(MMD loss)/d(x0_sample).
+    subsample (skipped for 'full'), and the resulting gradient
+    d(MMD loss)/d(x0_sample).
   - Report, per state and per rule: mean_grad, Var(grad) (trace of the
     empirical covariance across the redraws), and Var(grad)/||mean_grad||^2.
   - Average those normalized-variance numbers across all states too, but the
@@ -83,8 +85,11 @@ def grad_stats_for_rule(x0_sample, model_cond, CM, mog_means, mog_variances, wei
                          base_seed, mmd_loss):
     """
     Redraw the sampling + backsel pipeline n_redraws times at this ONE frozen
-    x0_sample, for one backsel rule. Returns (grads [n_redraws, condition_on],
-    mean_grad, variance_trace, normalized_variance).
+    x0_sample, for one rule ('uniform' | 'witness' | 'full' -- 'full' skips
+    backsel entirely, using every row of target_samples, as the no-
+    subsampling baseline both rules should be compared against). Returns
+    (grads [n_redraws, condition_on], mean_grad, variance_trace,
+    normalized_variance).
     """
     grads = []
     for r in range(n_redraws):
@@ -98,11 +103,14 @@ def grad_stats_for_rule(x0_sample, model_cond, CM, mog_means, mog_variances, wei
             target_samples = target_samples[:, model_cond.condition_on:]
         mog_samples = generate_mog_samples_not_differentiable(nsamples, mog_means, mog_variances, weights)
 
-        subsampled, _ = apply_backsel(
-            target_samples, mog_samples, backsel_k, rule=rule,
-            witness_floor=witness_floor, generator=generator, replacement=False,
-        )
-        loss = mmd_loss(subsampled, mog_samples)
+        if rule == "full":
+            batch = target_samples
+        else:
+            batch, _ = apply_backsel(
+                target_samples, mog_samples, backsel_k, rule=rule,
+                witness_floor=witness_floor, generator=generator, replacement=False,
+            )
+        loss = mmd_loss(batch, mog_samples)
         loss.backward()
         grads.append(x_leaf.grad.detach().cpu().numpy().copy())
 
@@ -186,24 +194,26 @@ def main():
         print(f"[StateVar] {method}: captured {len(states)} states "
               f"({len(args.state_seeds)} seeds x {len(set(round(f, 6) for f in args.step_fracs))} step_fracs)")
 
+        RULE_SEED_OFFSET = {"uniform": 0, "witness": 500, "full": 1000}
         state_results = []
-        per_rule_normalized_variances = {"uniform": [], "witness": []}
+        per_rule_normalized_variances = {"uniform": [], "witness": [], "full": []}
         for si, state in enumerate(states):
             entry = {"state_index": si, "state_seed": state["state_seed"], "t": state["t"],
                      "x0_sample": state["x0_sample"].tolist(), "rules": {}}
             base_seed = args.seed * args.redraw_seed_offset + si
-            for rule in ("uniform", "witness"):
+            for rule in ("uniform", "witness", "full"):
                 stats = grad_stats_for_rule(
                     state["x0_sample"], cond_model, CM_flag, mog_means, mog_variances, weights,
                     args.nsamples, backsel_k, rule, args.witness_floor, args.n_redraws, device,
-                    base_seed + (0 if rule == "uniform" else 500), mmd_loss,
+                    base_seed + RULE_SEED_OFFSET[rule], mmd_loss,
                 )
                 entry["rules"][rule] = stats
                 per_rule_normalized_variances[rule].append(stats["normalized_variance"])
             state_results.append(entry)
             print(f"  [{method}] state {si} (seed={state['state_seed']} t={state['t']}) | "
                   f"norm_var uniform={entry['rules']['uniform']['normalized_variance']:.6e} "
-                  f"witness={entry['rules']['witness']['normalized_variance']:.6e}")
+                  f"witness={entry['rules']['witness']['normalized_variance']:.6e} "
+                  f"full={entry['rules']['full']['normalized_variance']:.6e}")
 
         averaged = {
             rule: {
@@ -213,9 +223,17 @@ def main():
             }
             for rule, vals in per_rule_normalized_variances.items()
         }
-        witness_better_count = sum(
+        witness_vs_uniform_better_count = sum(
             1 for s in state_results
             if s["rules"]["witness"]["normalized_variance"] < s["rules"]["uniform"]["normalized_variance"]
+        )
+        witness_vs_full_better_count = sum(
+            1 for s in state_results
+            if s["rules"]["witness"]["normalized_variance"] < s["rules"]["full"]["normalized_variance"]
+        )
+        uniform_vs_full_better_count = sum(
+            1 for s in state_results
+            if s["rules"]["uniform"]["normalized_variance"] < s["rules"]["full"]["normalized_variance"]
         )
 
         out = {
@@ -231,7 +249,9 @@ def main():
             "step_fracs": args.step_fracs,
             "states": state_results,
             "averaged": averaged,
-            "witness_better_count": witness_better_count,
+            "witness_vs_uniform_better_count": witness_vs_uniform_better_count,
+            "witness_vs_full_better_count": witness_vs_full_better_count,
+            "uniform_vs_full_better_count": uniform_vs_full_better_count,
             "n_states": len(state_results),
         }
 
@@ -239,9 +259,13 @@ def main():
         with open(out_path, "w") as f:
             json.dump(out, f, indent=2)
         print(f"[StateVar] {method}: saved {out_path}")
-        print(f"[StateVar] {method}: mean normalized variance -- uniform={averaged['uniform']['mean_normalized_variance']:.6e} "
+        print(f"[StateVar] {method}: mean normalized variance -- "
+              f"uniform={averaged['uniform']['mean_normalized_variance']:.6e} "
               f"witness={averaged['witness']['mean_normalized_variance']:.6e} "
-              f"(witness better at {witness_better_count}/{len(state_results)} states)")
+              f"full={averaged['full']['mean_normalized_variance']:.6e} "
+              f"(witness < uniform at {witness_vs_uniform_better_count}/{len(state_results)} states; "
+              f"witness < full at {witness_vs_full_better_count}/{len(state_results)}; "
+              f"uniform < full at {uniform_vs_full_better_count}/{len(state_results)})")
 
 
 if __name__ == "__main__":

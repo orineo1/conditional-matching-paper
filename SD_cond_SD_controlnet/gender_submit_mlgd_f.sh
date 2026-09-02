@@ -36,20 +36,15 @@ cd "$REPO"
 OUTPUT_DIR="$REPO/output/mlgd_f_${SLURM_JOB_ID}"
 mkdir -p "$OUTPUT_DIR"
 
-# Backprop-subsampling (--backsel_k / --backsel_rule): with e.g. num_variations=100
-# and backsel_k=20, the loss still sees 100 fresh Sprinter samples/step but gradient
-# only flows through 20 of them each step — cuts backward-pass cost ~5x for the same
-# loss fidelity. Leave --backsel_k unset (or >= num_variations) to backprop through
-# all of them (original behavior). Two selection rules:
-#   uniform (default) — the 20 are picked with no extra cost.
-#   witness           — scores all 100 first (one cheap extra no_grad forward pass),
-#                        then backprops through the 20 with the largest |MMD witness
-#                        score| (samples in the region of biggest mismatch to target)
-#                        for a lower-variance gradient at the same k.
-# Uncomment one of the lines below to enable it:
-# BACKSEL_ARGS="--backsel_k 20 --backsel_rule uniform"
-# BACKSEL_ARGS="--backsel_k 20 --backsel_rule witness --witness_floor 0.1"
-BACKSEL_ARGS=""
+# Toggles below (defaults in parens; see run_mlgd_f.py --help for full detail):
+#   backsel_k=(None=all) N     -- backprop only N of num_variations fresh
+#                                 samples/step (loss still sees all of them)
+#   backsel_rule=(uniform) | witness  -- witness scores samples first, backprops
+#                                 the highest-|score| N for a lower-variance grad
+#   witness_floor=(0.3, 0.3-0.5 recommended) -- only used by rule=witness
+#   witness_replacement=(off) -- add --witness_replacement to enable
+#   use_adam=(off, uses zeta_i*grad) -- add --use_adam (+ --adam_lr/--adam_beta1/
+#                                 --adam_beta2/--adam_eps, default 0.01/0.9/0.999/1e-8)
 
 # ── 5. Run ────────────────────────────────────────────────────────────────────
 python scripts/run_mlgd_f.py \
@@ -60,7 +55,9 @@ python scripts/run_mlgd_f.py \
     --start_step 15 \
     --num_variations 6 \
     --reuse_frac 0.0 \
-    $BACKSEL_ARGS \
+    --backsel_k 20 \
+    --backsel_rule uniform \
+    --witness_floor 0.3 \
     --base_zeta 5.0 \
     --guidance_scale 0.0 \
     --controlnet_scale 0.5 \

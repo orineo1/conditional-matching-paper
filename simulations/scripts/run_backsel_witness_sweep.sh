@@ -44,11 +44,27 @@ USE_INV_SQRT_ALPHA_SCALE=false # true = scale the guidance gradient by 1/sqrt(al
                                 # optimize_LGD's default; not exposed as a sweep param here)
 FORCE_RETRAIN=false            # true | false — true always retrains and overwrites the saved checkpoints
 
-# For per-step gradient-variance diagnostics (uniform vs. witness vs. full, at
-# a handful of frozen trajectory states, redrawn 200+ times each), use the
-# separate scripts/run_backsel_state_variance.sh instead -- it's a much
-# cheaper, more targeted diagnostic than logging per-step gradient errors
-# inline during this full end-to-end grid.
+# ── Diagnostics: WHY witness sampling wins or loses, not just whether it does ──
+# On by default (small fixed per-run overhead: a handful of extra timesteps'
+# worth of bookkeeping, not a new multiplicative grid dimension) -- writes:
+#   gradient_variance_*.csv    RAW per-seed ||grad_subsampled - grad_full_same_n||
+#     AND ||grad_actual - grad_TRUE|| (grad_TRUE = the exact analytic
+#     population gradient, see GRAD_REF_N below), for all three of
+#     full/uniform/witness. One sample per (rule, step, seed) from inside the
+#     N_RUNS grid -- no variance/variance-ratio summary computed here (that's
+#     a different, dedicated pipeline: see run_backsel_state_variance.sh).
+#   witness_diagnostics_*.csv  per-step scenario heterogeneity: witness_std,
+#     ess_raw -- tells you whether THIS experiment/conditioning even produces
+#     enough per-sample mismatch for witness sampling to have anything to
+#     exploit, independent of the final downstream metric.
+# Recommended: inspect these BEFORE trusting/expanding the main grid below --
+# if ess_raw stays close to nsamples everywhere, that's a real answer (no
+# heterogeneity here for any rule to exploit), not a bug.
+DIAG_STEPS="99 75 50 25 1"     # empty string = disable (matches the original,
+                                # diagnostics-free behavior)
+GRAD_REF_N=2000                 # sample size for the true/population reference
+                                # gradient (closed-form analytic sampling, no
+                                # network forward -- cheap even at this size)
 
 # Alpha sweep (witness_floor) -- cheap, but OFF by default here (single value =
 # WITNESS_FLOOR above) to keep the default grid size unchanged. Set e.g.
@@ -113,6 +129,8 @@ echo "    witness_floor        : $WITNESS_FLOOR"
 echo "    backsel_replacement  : $BACKSEL_REPLACEMENT"
 echo "    normalize_by_k_frac  : $NORMALIZE_BY_K_FRAC"
 echo "    use_inv_sqrt_alpha   : $USE_INV_SQRT_ALPHA_SCALE"
+echo "    diag_steps           : ${DIAG_STEPS:-(disabled)}"
+echo "    grad_ref_n           : $GRAD_REF_N"
 echo "    alpha_list           : ${ALPHA_LIST:-(just witness_floor)}"
 echo "    force_retrain        : $FORCE_RETRAIN"
 python -c "import torch; print(f'GPU available: {torch.cuda.is_available()}')"
@@ -145,6 +163,7 @@ CMD="python run_backsel_witness_sweep.py \
 [ "$NORMALIZE_BY_K_FRAC" = "true" ] && CMD="$CMD --normalize_by_k_frac"
 [ "$USE_INV_SQRT_ALPHA_SCALE" = "true" ] && CMD="$CMD --use_inv_sqrt_alpha_scale"
 [ "$FORCE_RETRAIN" = "true" ] && CMD="$CMD --force_retrain"
+[ -n "$DIAG_STEPS" ] && CMD="$CMD --diag_steps $DIAG_STEPS --grad_ref_n $GRAD_REF_N"
 [ -n "$ALPHA_LIST" ] && CMD="$CMD --alpha_list $ALPHA_LIST"
 
 echo "Running: $CMD"

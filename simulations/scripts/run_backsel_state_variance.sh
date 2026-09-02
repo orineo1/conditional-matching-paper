@@ -24,7 +24,7 @@ STATE_SEEDS="1 2 3"            # trajectory seeds to capture states from (2-3 re
 STEP_FRACS="0.1 0.5 0.9"       # early/mid/late positions along the denoising trajectory
                                 # (0.0=earliest/noisiest, 1.0=latest/cleanest)
 NSAMPLES=250
-K_FRAC=0.2                     # backsel_k / nsamples, held fixed for this diagnostic
+K_FRAC=0.5                     # backsel_k / nsamples, held fixed for this diagnostic
 WITNESS_FLOOR=0.3
 N_REDRAWS=200                  # independent redraws per state per rule
 SEED=42

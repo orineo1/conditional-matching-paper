@@ -51,13 +51,15 @@ def compute_witness_scores(X, Y, kernel=None):
     return scores
 
 
-def select_backsel_mask(scores, k, rule="uniform", witness_floor=0.3, generator=None,
-                        replacement=False):
+def select_backsel_mask(scores, k, rule="uniform", witness_floor=0.3, witness_temperature=1.0,
+                        generator=None, replacement=False):
     """Choose which of len(scores) rows to keep differentiable.
 
     rule='uniform': k uniformly-random rows. rule='witness': sample proportional
-    to |scores|, blended with witness_floor toward uniform (defensive mixture
-    p_i = floor/n + (1-floor)*|w_i|/sum|w|). replacement=False (default) draws k
+    to |scores|^(1/T) (T=witness_temperature; T=1 is plain |w|, T>1 flattens
+    toward uniform, T<1 sharpens toward the top-|score| rows), blended with
+    witness_floor toward uniform (defensive mixture p_i = floor/n +
+    (1-floor)*|w_i|^(1/T)/sum|w|^(1/T)). replacement=False (default) draws k
     distinct rows; True allows repeats, tracked in `counts`.
 
     Returns (mask, counts, probs): mask[n] bool = kept at least once; counts[n]
@@ -70,6 +72,8 @@ def select_backsel_mask(scores, k, rule="uniform", witness_floor=0.3, generator=
         probs = torch.full((n,), 1.0 / n, dtype=torch.float64)
     elif rule == "witness":
         p = scores.abs().double()
+        if witness_temperature != 1.0:
+            p = p.clamp_min(1e-12) ** (1.0 / witness_temperature)
         p = (1.0 - witness_floor) * p / p.sum().clamp_min(1e-12) + witness_floor / n
         probs = p / p.sum()
     else:
@@ -88,12 +92,12 @@ def select_backsel_mask(scores, k, rule="uniform", witness_floor=0.3, generator=
 
 
 def apply_backsel(samples, target_samples_for_scoring, k, rule="uniform",
-                  witness_floor=0.3, generator=None, replacement=False):
+                  witness_floor=0.3, witness_temperature=1.0, generator=None, replacement=False):
     """Build the differentiable-subsample batch for the guidance loss: unselected
     rows are individually detached (zero gradient, still counted in the loss
     VALUE), selected rows keep gradient (duplicated if drawn >1x with
     replacement -- autograd sums across reuses). See select_backsel_mask for
-    k/rule/witness_floor/generator/replacement.
+    k/rule/witness_floor/witness_temperature/generator/replacement.
 
     Returns (batch, info): batch is samples' rows reassembled per selection
     (grows beyond n only with replacement duplicates); info has
@@ -103,7 +107,7 @@ def apply_backsel(samples, target_samples_for_scoring, k, rule="uniform",
     scores = compute_witness_scores(samples, target_samples_for_scoring) \
         if rule == "witness" else torch.zeros(n)
     mask, counts, probs = select_backsel_mask(
-        scores, k, rule=rule, witness_floor=witness_floor,
+        scores, k, rule=rule, witness_floor=witness_floor, witness_temperature=witness_temperature,
         generator=generator, replacement=replacement,
     )
 

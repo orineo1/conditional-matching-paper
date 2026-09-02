@@ -120,6 +120,10 @@ def parse_args():
                    help="Sweep witness_floor over these values (rule='witness' only -- 'uniform' "
                         "doesn't use a floor). Defaults to just [--witness_floor], i.e. no extra "
                         "sweep. --witness_floor's value is always included even if you list others.")
+    p.add_argument("--witness_temperature", type=float, default=1.0,
+                   help="Reshapes |score|^(1/T) before the witness_floor blend (rule='witness' "
+                        "only). T=1 (default) is plain |w|; T>1 flattens the selection "
+                        "distribution toward uniform; T<1 sharpens it toward the top-|score| rows.")
     p.add_argument("--backsel_replacement", action="store_true",
                    help="Sample the backsel_k indices with replacement (default: without)")
     p.add_argument("--normalize_by_k_frac", action="store_true",
@@ -160,7 +164,7 @@ def run_grid_point(model_uncond, cond_model, CM_flag, num_x_t, nsamples, backsel
                    witness_floor, backsel_replacement, n_runs, global_seed, device,
                    mu_list, Sigma_list, alpha, mog_means, mog_variances, weights, x_star, label,
                    diag_steps=None, grad_ref_n=2000, normalize_by_k_frac=False,
-                   use_inv_sqrt_alpha_scale=False):
+                   use_inv_sqrt_alpha_scale=False, witness_temperature=1.0):
     """
     Returns (metrics, diag) where metrics = {"final_loss", "l2_gmm", "l2_x", "times"} (unchanged
     from before diagnostics existed -- this is what feeds the JSON/summary CSV/plots), and
@@ -181,7 +185,8 @@ def run_grid_point(model_uncond, cond_model, CM_flag, num_x_t, nsamples, backsel
             nsamples=nsamples, loss="MMD", device=device,
             num_x_t=num_x_t, CM=CM_flag,
             backsel_k=backsel_k, backsel_rule=backsel_rule,
-            witness_floor=witness_floor, backsel_replacement=backsel_replacement,
+            witness_floor=witness_floor, witness_temperature=witness_temperature,
+            backsel_replacement=backsel_replacement,
             backsel_generator=backsel_generator, normalize_by_k_frac=normalize_by_k_frac,
             use_inv_sqrt_alpha_scale=use_inv_sqrt_alpha_scale,
             return_history=diag_steps is not None, diag_steps=diag_steps, grad_ref_n=grad_ref_n,
@@ -349,6 +354,7 @@ def main():
                 label=f"{method}-full", diag_steps=args.diag_steps, grad_ref_n=args.grad_ref_n,
                 normalize_by_k_frac=args.normalize_by_k_frac,
                 use_inv_sqrt_alpha_scale=args.use_inv_sqrt_alpha_scale,
+                witness_temperature=args.witness_temperature,
             )
             for rule in rules:
                 results[method][n][rule] = {}
@@ -373,6 +379,7 @@ def main():
                                 label=f"{method}-witness-alpha{a}", diag_steps=args.diag_steps,
                                 grad_ref_n=args.grad_ref_n, normalize_by_k_frac=args.normalize_by_k_frac,
                                 use_inv_sqrt_alpha_scale=args.use_inv_sqrt_alpha_scale,
+                                witness_temperature=args.witness_temperature,
                             )
                             diag_history[method][n][rule][kf][a] = diag_a
                             if a == canonical_alpha:
@@ -392,6 +399,7 @@ def main():
                             label=f"{method}-{rule}", diag_steps=args.diag_steps,
                             grad_ref_n=args.grad_ref_n, normalize_by_k_frac=args.normalize_by_k_frac,
                             use_inv_sqrt_alpha_scale=args.use_inv_sqrt_alpha_scale,
+                            witness_temperature=args.witness_temperature,
                         )
 
     out = {
@@ -405,6 +413,7 @@ def main():
             "k_fracs": k_fracs,
             "rules": rules,
             "witness_floor": args.witness_floor,
+            "witness_temperature": args.witness_temperature,
             "alpha_list": alpha_list,
             "backsel_replacement": args.backsel_replacement,
             "normalize_by_k_frac": args.normalize_by_k_frac,

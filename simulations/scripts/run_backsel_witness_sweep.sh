@@ -29,6 +29,8 @@ K_FRACS="0.1 0.2 0.5 1.0"      # the "proportion" axis (backsel_k / nsamples);
                                 # 1.0 (full baseline) is always included
 RULES="uniform witness"        # any of: uniform witness
 WITNESS_FLOOR=0.3              # defensive-mixture floor for rule=witness (0.3-0.5)
+WITNESS_TEMPERATURE=1.0        # |score|^(1/T) before the floor blend; T>1 flattens
+                                # toward uniform, T<1 sharpens toward top-|score| rows
 BACKSEL_REPLACEMENT=false      # true = sample backsel_k indices with replacement
 NORMALIZE_BY_K_FRAC=false      # true = rescale grad by 1/k_frac (magnitude-normalize
                                 # across k_frac); no-op at k_frac=1.0
@@ -83,6 +85,7 @@ echo "    nsamples_list        : $NSAMPLES_LIST"
 echo "    k_fracs              : $K_FRACS"
 echo "    rules                : $RULES"
 echo "    witness_floor        : $WITNESS_FLOOR"
+echo "    witness_temperature  : $WITNESS_TEMPERATURE"
 echo "    backsel_replacement  : $BACKSEL_REPLACEMENT"
 echo "    normalize_by_k_frac  : $NORMALIZE_BY_K_FRAC"
 echo "    use_inv_sqrt_alpha   : $USE_INV_SQRT_ALPHA_SCALE"
@@ -114,7 +117,8 @@ CMD="python run_backsel_witness_sweep.py \
     --nsamples_list        $NSAMPLES_LIST \
     --k_fracs               $K_FRACS \
     --rules                 $RULES \
-    --witness_floor        $WITNESS_FLOOR"
+    --witness_floor        $WITNESS_FLOOR \
+    --witness_temperature   $WITNESS_TEMPERATURE"
 
 [ "$BACKSEL_REPLACEMENT" = "true" ] && CMD="$CMD --backsel_replacement"
 [ "$NORMALIZE_BY_K_FRAC" = "true" ] && CMD="$CMD --normalize_by_k_frac"

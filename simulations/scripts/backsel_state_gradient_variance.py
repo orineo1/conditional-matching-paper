@@ -82,7 +82,7 @@ def capture_states(model_uncond, seed, step_fracs, device):
 
 def grad_stats_for_rule(x0_sample, model_cond, CM, mog_means, mog_variances, weights,
                          nsamples, backsel_k, rule, witness_floor, n_redraws, device,
-                         base_seed, mmd_loss):
+                         base_seed, mmd_loss, witness_temperature=1.0):
     """
     Redraw the sampling + backsel pipeline n_redraws times at this ONE frozen
     x0_sample, for one rule ('uniform' | 'witness' | 'full' -- 'full' skips
@@ -108,7 +108,8 @@ def grad_stats_for_rule(x0_sample, model_cond, CM, mog_means, mog_variances, wei
         else:
             batch, _ = apply_backsel(
                 target_samples, mog_samples, backsel_k, rule=rule,
-                witness_floor=witness_floor, generator=generator, replacement=False,
+                witness_floor=witness_floor, witness_temperature=witness_temperature,
+                generator=generator, replacement=False,
             )
         loss = mmd_loss(batch, mog_samples)
         loss.backward()
@@ -142,6 +143,9 @@ def main():
     p.add_argument("--nsamples", type=int, default=250)
     p.add_argument("--k_frac", type=float, default=0.2, help="backsel_k / nsamples for both rules.")
     p.add_argument("--witness_floor", type=float, default=0.3)
+    p.add_argument("--witness_temperature", type=float, default=1.0,
+                   help="Reshapes |score|^(1/T) before the witness_floor blend. T=1 default; "
+                        "T>1 flattens toward uniform, T<1 sharpens toward top-|score| rows.")
     p.add_argument("--n_redraws", type=int, default=200,
                    help="Independent redraws of the sampling+backsel pipeline per state per rule.")
     p.add_argument("--seed", type=int, default=42, help="Global seed / checkpoint selector.")
@@ -206,6 +210,7 @@ def main():
                     state["x0_sample"], cond_model, CM_flag, mog_means, mog_variances, weights,
                     args.nsamples, backsel_k, rule, args.witness_floor, args.n_redraws, device,
                     base_seed + RULE_SEED_OFFSET[rule], mmd_loss,
+                    witness_temperature=args.witness_temperature,
                 )
                 entry["rules"][rule] = stats
                 per_rule_normalized_variances[rule].append(stats["normalized_variance"])
@@ -244,6 +249,7 @@ def main():
             "k_frac": args.k_frac,
             "backsel_k": backsel_k,
             "witness_floor": args.witness_floor,
+            "witness_temperature": args.witness_temperature,
             "n_redraws": args.n_redraws,
             "state_seeds": args.state_seeds,
             "step_fracs": args.step_fracs,

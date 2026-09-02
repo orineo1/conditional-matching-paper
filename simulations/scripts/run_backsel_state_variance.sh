@@ -26,6 +26,8 @@ STEP_FRACS="0.1 0.5 0.9"       # early/mid/late positions along the denoising tr
 NSAMPLES=250
 K_FRAC=0.5                     # backsel_k / nsamples, held fixed for this diagnostic
 WITNESS_FLOOR=0.3
+WITNESS_TEMPERATURE=1.0        # |score|^(1/T) before the floor blend; T>1 flattens
+                                # toward uniform, T<1 sharpens toward top-|score| rows
 N_REDRAWS=200                  # independent redraws per state per rule
 SEED=42
 FORCE_RETRAIN=false
@@ -62,6 +64,7 @@ echo "    methods       : $METHODS"
 echo "    state_seeds   : $STATE_SEEDS"
 echo "    step_fracs    : $STEP_FRACS"
 echo "    k_frac        : $K_FRAC"
+echo "    witness_temp  : $WITNESS_TEMPERATURE"
 echo "    n_redraws     : $N_REDRAWS"
 python -c "import torch; print(f'GPU available: {torch.cuda.is_available()}')"
 echo "============================================"
@@ -80,6 +83,7 @@ CMD="python backsel_state_gradient_variance.py \
     --nsamples            $NSAMPLES \
     --k_frac               $K_FRAC \
     --witness_floor          $WITNESS_FLOOR \
+    --witness_temperature     $WITNESS_TEMPERATURE \
     --n_redraws               $N_REDRAWS \
     --seed                     $SEED"
 

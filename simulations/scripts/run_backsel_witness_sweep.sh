@@ -9,7 +9,10 @@
 #SBATCH --partition=YOUR_PARTITION   # <-- change to your cluster partition
 
 # ══════════════════════════════════════════════════════════════════════════════
-# CONFIGURE YOUR RUN HERE
+# End-to-end L2/MMD grid: nsamples x k_frac x rule (uniform/witness) vs. the
+# full (no-subsampling) baseline. See run_backsel_witness_sweep.py's docstring
+# for full details. For gradient-variance diagnostics instead, use the
+# separate run_backsel_state_variance.sh.
 # ══════════════════════════════════════════════════════════════════════════════
 
 # Which experiment?  2D_cond_1D | 5D_cond_1D | 10D_cond_1D
@@ -19,67 +22,28 @@ EXPERIMENT="5D_cond_1D"
 NUM_X_T=1                     # fixed, not swept
 N_RUNS=25
 SEED=42
-# any of: LGD LGD-CM. Overridable via env so you can submit LGD and LGD-CM as
-# TWO SEPARATE jobs (e.g. on two different machines) instead of one job doing
-# both sequentially -- their analyses/plots are already independent per method
-# (curves_LGD.png vs curves_LGD-CM.png etc.), and output filenames now include
-# the methods run, so two jobs writing to the same results_dir won't clobber
-# each other. See the "SPLITTING INTO TWO JOBS" note below 5. before doing this.
-METHODS="${METHODS:-LGD LGD-CM}"
+METHODS="${METHODS:-LGD LGD-CM}"  # any of: LGD LGD-CM; overridable via env (see
+                                   # "SPLITTING INTO TWO JOBS" below)
 NSAMPLES_LIST="50 100 250 500" # the "n" axis
-K_FRACS="0.1 0.2 0.5 1.0"      # the "proportion" axis (backsel_k / nsamples); 1.0
-                                # is always included automatically as the "full"
-                                # (no-subsampling) baseline even if you omit it
+K_FRACS="0.1 0.2 0.5 1.0"      # the "proportion" axis (backsel_k / nsamples);
+                                # 1.0 (full baseline) is always included
 RULES="uniform witness"        # any of: uniform witness
-WITNESS_FLOOR=0.3              # defensive-mixture floor for rule=witness (0.3-0.5 recommended);
-                                # also the "canonical" alpha that feeds the main JSON/plots/summary
-                                # regardless of what ALPHA_LIST below sweeps
+WITNESS_FLOOR=0.3              # defensive-mixture floor for rule=witness (0.3-0.5)
 BACKSEL_REPLACEMENT=false      # true = sample backsel_k indices with replacement
-NORMALIZE_BY_K_FRAC=false      # true = rescale the applied gradient by 1/k_frac (k_frac =
-                                # backsel_k/nsamples) so gradient magnitude is comparable
-                                # across k_frac values instead of scaling ~linearly with it
-                                # (MMDLoss averages, not sums). No-op at k_frac=1.0.
-USE_INV_SQRT_ALPHA_SCALE=false # true = scale the guidance gradient by 1/sqrt(alpha_t)
-                                # instead of the constant ZETA (zeta hardcoded to 1.0 in
-                                # optimize_LGD's default; not exposed as a sweep param here)
-FORCE_RETRAIN=false            # true | false — true always retrains and overwrites the saved checkpoints
+NORMALIZE_BY_K_FRAC=false      # true = rescale grad by 1/k_frac (magnitude-normalize
+                                # across k_frac); no-op at k_frac=1.0
+USE_INV_SQRT_ALPHA_SCALE=false # true = scale grad by 1/sqrt(alpha_t) instead of zeta
+FORCE_RETRAIN=false            # true = always retrain, overwriting saved checkpoints
 
-# ── Diagnostics: WHY witness sampling wins or loses, not just whether it does ──
-# On by default (small fixed per-run overhead: a handful of extra timesteps'
-# worth of bookkeeping, not a new multiplicative grid dimension) -- writes:
-#   gradient_variance_*.csv    RAW per-seed ||grad_subsampled - grad_full_same_n||
-#     AND ||grad_actual - grad_TRUE|| (grad_TRUE = the exact analytic
-#     population gradient, see GRAD_REF_N below), for all three of
-#     full/uniform/witness. One sample per (rule, step, seed) from inside the
-#     N_RUNS grid -- no variance/variance-ratio summary computed here (that's
-#     a different, dedicated pipeline: see run_backsel_state_variance.sh).
-#   witness_diagnostics_*.csv  per-step scenario heterogeneity: witness_std,
-#     ess_raw -- tells you whether THIS experiment/conditioning even produces
-#     enough per-sample mismatch for witness sampling to have anything to
-#     exploit, independent of the final downstream metric.
-# Recommended: inspect these BEFORE trusting/expanding the main grid below --
-# if ess_raw stays close to nsamples everywhere, that's a real answer (no
-# heterogeneity here for any rule to exploit), not a bug.
-DIAG_STEPS="99 75 50 25 1"     # empty string = disable (matches the original,
-                                # diagnostics-free behavior)
-GRAD_REF_N=2000                 # sample size for the true/population reference
-                                # gradient (closed-form analytic sampling, no
-                                # network forward -- cheap even at this size)
-
-# Alpha sweep (witness_floor) -- cheap, but OFF by default here (single value =
-# WITNESS_FLOOR above) to keep the default grid size unchanged. Set e.g.
-# ALPHA_LIST="0.0 0.15 0.3 0.5" to sweep it -- multiplies the witness side of
-# the grid by len(ALPHA_LIST); do this on a small targeted run first (few
-# nsamples/k_fracs), not the full grid, per the diagnostics-first workflow
-# above. Writes an extra *_alpha_sweep.csv when more than one value is set.
-ALPHA_LIST=""                  # empty string = just WITNESS_FLOOR, no sweep
-
-# NOTE: the grid runs len(NSAMPLES_LIST) x len(K_FRACS) x len(RULES) x len(METHODS)
-# points (with the k_frac=1.0 point computed once per (method, nsamples) and
-# reused across rules, since there's nothing to select from at k_frac=1.0),
-# times len(ALPHA_LIST) for the witness side if you set it above, each with
-# N_RUNS seeded optimize_LGD calls. Trim the lists above or raise --time if
-# that's too slow for your cluster.
+# ── Diagnostics (see run_backsel_witness_sweep.py's docstring for detail) ──────
+DIAG_STEPS="99 75 50 25 1"     # t-values to log grad_norm_error(_vs_ref) at;
+                                # empty = disabled. RAW per-seed values only, not
+                                # a variance analysis (use run_backsel_state_
+                                # variance.sh for that)
+GRAD_REF_N=2000                # sample size for the true/population reference
+                                # gradient used by grad_norm_error_vs_ref
+ALPHA_LIST=""                  # sweep witness_floor over these values; empty =
+                                # just WITNESS_FLOOR
 
 # ── Misc ──────────────────────────────────────────────────────────────────────
 SMOKE_TEST=false               # true = 2 runs / tiny grid only, for quick debug
@@ -87,29 +51,22 @@ SMOKE_TEST=false               # true = 2 runs / tiny grid only, for quick debug
 # ══════════════════════════════════════════════════════════════════════════════
 # 1. Environment
 # ══════════════════════════════════════════════════════════════════════════════
-# Activate your conda/venv environment:
-source "${ENV_PATH}/bin/activate"   # set ENV_PATH before submitting, e.g.:
-                                    #   export ENV_PATH=/path/to/your/env
+source "${ENV_PATH}/bin/activate"   # set ENV_PATH before submitting
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 2. Caches  (optional — avoids re-downloading HF checkpoints every run)
+# 2. Caches
 # ══════════════════════════════════════════════════════════════════════════════
 export HF_HOME="${HF_HOME:-$HOME/.cache/huggingface}"
 export MPLCONFIGDIR="${MPLCONFIGDIR:-$HOME/.config/matplotlib}"
 mkdir -p "$HF_HOME" "$MPLCONFIGDIR"
-
-# Optional — only needed if the HuggingFace checkpoint repo requires auth:
 export HF_TOKEN="${HF_TOKEN:-}"
-
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export CUBLAS_WORKSPACE_CONFIG=":4096:8"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 3. Repo root & directories
 # ══════════════════════════════════════════════════════════════════════════════
-# REPO_ROOT should point to the root of this repository.
 export REPO_ROOT="${REPO_ROOT:?REPO_ROOT is not set. Export it before submitting.}"
-
 mkdir -p "$REPO_ROOT/simulations/checkpoints/${EXPERIMENT}"
 mkdir -p "$REPO_ROOT/simulations/results/${EXPERIMENT}"
 
@@ -176,25 +133,14 @@ exit $EXIT_CODE
 # ══════════════════════════════════════════════════════════════════════════════
 # SPLITTING INTO TWO JOBS (LGD on one machine, LGD-CM on another)
 # ══════════════════════════════════════════════════════════════════════════════
-# Safe to do -- results/plots/output filenames are already per-method -- with
-# ONE catch: load_or_train_models() always loads/trains ALL THREE models
-# (model_uncond, model_cond for LGD, model_cm for LGD-CM) regardless of which
-# --methods you pass, since it doesn't know in advance which you'll need. If
-# NEITHER job has cached checkpoints yet and both start at the same moment,
-# they'll race to train/write the SAME checkpoint files.
-#
-# Fix: run ONE small warm-up job first to populate the checkpoint cache, THEN
-# submit the two real jobs (they'll each just load the cached checkpoints, no
-# training, no race):
+# Safe -- outputs are per-method already -- but load_or_train_models() always
+# loads/trains all three models regardless of --methods, so two jobs starting
+# simultaneously with no cached checkpoints would race. Fix: run one small
+# warm-up job first, then the two real jobs:
 #
 #   export REPO_ROOT=... ENV_PATH=...
 #   METHODS="LGD LGD-CM" sbatch --job-name=warmup \
 #       --export=ALL,SMOKE_TEST=true run_backsel_witness_sweep.sh
-#   # wait for it to finish (or use --dependency=afterok:<warmup_jobid> below),
-#   # then:
+#   # wait for it to finish, then:
 #   METHODS="LGD"    sbatch --job-name=witness-LGD    run_backsel_witness_sweep.sh
 #   METHODS="LGD-CM" sbatch --job-name=witness-LGD-CM run_backsel_witness_sweep.sh
-#
-# (SMOKE_TEST=true in the warm-up keeps it fast: tiny grid, but
-# load_or_train_models still runs its full training/loading path for all three
-# models exactly as a real run would, so the cache it leaves behind is valid.)

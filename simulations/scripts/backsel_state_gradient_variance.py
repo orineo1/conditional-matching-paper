@@ -46,7 +46,7 @@ if SRC_DIR not in sys.path:
 if SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, SCRIPTS_DIR)
 
-from witness_sweep_common import EXPERIMENT_CONFIGS, load_or_generate_gmm_params, load_or_train_models
+from gmm_experiment_setup import EXPERIMENT_CONFIGS, load_or_generate_gmm_params, load_or_train_models
 import experiment_utils
 from LossFunctions import MMDLoss, RBF
 from dist_utils import generate_mog_samples_not_differentiable

@@ -1,6 +1,8 @@
 """
-Shared setup code for run_backsel_witness_sweep.py: per-experiment architecture
-configs, GMM parameter loading/generation, and model loading/training.
+Shared setup code for the backsel/witness-analysis scripts in this directory
+(run_backsel_witness_sweep.py, backsel_state_gradient_variance.py): per-
+experiment architecture configs, GMM parameter loading/generation, and model
+loading/training.
 
 This mirrors the model-loading boilerplate used by the reuse_frac/momentum grid
 scripts elsewhere in the repo (same functions, same on-disk formats via

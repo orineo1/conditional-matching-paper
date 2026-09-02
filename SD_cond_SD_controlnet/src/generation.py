@@ -258,70 +258,34 @@ def run_dps_step_clip(
                                step (one step old), or None on the first step / when unused.
         reuse_frac:           fraction of num_variations reused from prev_variation_clip
                                instead of generated fresh here (0.0 = original behavior).
-        backsel_k:            of the freshly-generated variations, how many to actually
-                               backprop through (None = all, i.e. original behavior). The
-                               rest are generated under torch.no_grad() — cheaper, and still
-                               counted in the loss for a full-N statistic, but contribute no
-                               gradient. Since every variation is an i.i.d. Sprinter draw
-                               conditioned on the same pixel_x0_norm, there is no fixed pool
-                               to pick "which" k from — only the count matters, so this is
-                               equivalent to a uniform-random subsample of an implicit N-pool.
-                               Lets `num_variations` grow for loss fidelity without growing
-                               backward-pass cost.
-        backsel_rule:          'uniform' (default) — first n_grad fresh draws are
-                               differentiable, no extra cost.
-                               'witness' — generate all n_new candidates through
-                               checkpoint (their forward cost is ~identical to
-                               no_grad — checkpoint doesn't store activations
-                               either way), score them for real with the MMD
-                               witness function (see metrics.compute_witness_scores),
-                               then keep only the n_grad highest-|score| rows
-                               attached and .detach() the rest individually before
-                               concatenating. Detaching a row structurally removes
-                               its checkpoint node from the graph, so it's never
-                               recomputed or backpropped — total cost is the same
-                               n_new + n_grad forward-equivalents as if you'd
-                               written two separate loops, but because it's the
-                               *same* checkpoint node that's kept (not a fresh
-                               regeneration), checkpoint's RNG-state preservation
-                               reproduces the exact sample that was scored when it
-                               recomputes for backward, giving a lower-variance
-                               gradient for the same k with no extra Sprinter calls
-                               versus doing it "the naive way".
-        backsel_generator:     optional torch.Generator for reproducible witness
-                               sampling.
-        witness_floor:         defensive mixture: p_i = witness_floor/n + (1 - witness_floor)
-                               * |w_i| / sum(|w|), rather than sampling purely
-                               proportional to |w|. Bounds the worst-case weight so
-                               low-|score| samples still have a nonzero chance of
-                               being selected, instead of one or two outliers
-                               dominating every step. Combined with the
-                               replacement=False draw below (never pick the same
-                               index twice within one step's n_grad), this is the
-                               standard fix for importance sampling collapsing onto
-                               a handful of samples. Default 0.3 (recommended range
-                               0.3-0.5); 0 = pure |w|-proportional, 1 = uniform.
+        backsel_k:             of the freshly-generated variations, how many to backprop
+                               through (None = all). The rest are generated under
+                               torch.no_grad() -- still counted in the loss, no gradient.
+                               All variations are i.i.d., so only the count matters.
+        backsel_rule:          'uniform' (default) -- first n_grad draws are differentiable,
+                               no extra cost. 'witness' -- generate all n_new via checkpoint
+                               (same forward cost as no_grad), score with the MMD witness
+                               function, detach all but the n_grad highest-|score| rows
+                               individually before concatenating. Detaching prunes that row's
+                               checkpoint node, so only the kept rows get recomputed+backprop'd
+                               at backward time -- and since it's the same node (not a fresh
+                               redraw), checkpoint's RNG preservation reproduces the exact
+                               sample that was scored, for a lower-variance gradient at no
+                               extra Sprinter cost.
+        backsel_generator:     optional torch.Generator for reproducible witness sampling.
+        witness_floor:         defensive mixture p_i = floor/n + (1-floor)*|w_i|/sum(|w|)
+                               instead of pure |w|-proportional -- bounds how much weight any
+                               one outlier can dominate. Default 0.3 (recommended 0.3-0.5);
+                               0 = pure importance sampling, 1 = uniform.
         witness_bandwidth_scale, witness_kernel_alpha:
                                RBF kernel params for the witness score (independent of
-                               loss_fn's own kernel settings; only used when
-                               backsel_rule='witness').
-        witness_replacement:   False (default) — draw n_grad *distinct* indices;
-                               removes the "same outlier picked repeatedly" failure
-                               mode entirely, at the cost of needing n_grad <= n_new
-                               (already true here) and being unable to concentrate
-                               more than 1x weight on any single sample. True —
-                               draw n_grad indices with replacement (standard
-                               importance-resampling); an index drawn c times is
-                               included c times in the differentiable batch (the
-                               *same* checkpoint node reused c times — autograd
-                               correctly sums its gradient across all c uses, and it
-                               is still only recomputed once), so a high-|witness|
-                               sample can end up carrying more than 1x weight. This
-                               is the textbook with-replacement importance-sampling
-                               estimator, but is more prone to concentrating on a
-                               handful of samples than the without-replacement
-                               version — watch the "duplicate draws" line in the
-                               printed diagnostics below.
+                               loss_fn's own kernel; only used when backsel_rule='witness').
+        witness_replacement:   False (default) -- draw n_grad distinct indices, avoiding
+                               repeat picks. True -- draw with replacement (standard
+                               importance-resampling); a row drawn c times is included c
+                               times (same checkpoint node, recomputed once, autograd sums
+                               its gradient across uses), so it can carry >1x weight but is
+                               more prone to concentrating on a few samples.
 
     Returns:
         (grad, loss_scaled, zeta_i, loss_norm, vl_clip_flat, new_variation_clip)
@@ -378,15 +342,12 @@ def run_dps_step_clip(
     variation_clip_list = []
 
     if backsel_rule == "witness" and 0 < n_grad < n_new:
-        # Generate every candidate ONCE via checkpoint (same forward cost as
-        # no_grad). Score them for real — their actual realized values, not a
-        # proxy — pick which n_grad to keep differentiable, and detach the rest
-        # *individually*, before concatenating. Detaching a specific row's tensor
-        # structurally removes that row's checkpoint node from the backward graph,
-        # so autograd.grad() below recomputes+backprops only through the kept
-        # n_grad rows (checkpoint's RNG-state preservation reproduces them
-        # bit-identically — this differentiates through the literal sample that
-        # was scored, not a fresh independent redraw at the same slot).
+        # Generate all candidates once via checkpoint (same cost as no_grad), score
+        # them for real, then detach all but the top-n_grad |score| rows individually
+        # before concatenating -- detaching prunes that row's checkpoint node, so
+        # autograd.grad() below only recomputes+backprops the kept rows, and because
+        # it's the same node (not a fresh redraw), it reproduces the exact sample
+        # that was scored.
         all_rows = checkpointed_forward(n_new)
         all_embs = torch.cat(all_rows, dim=0)
 
@@ -395,11 +356,9 @@ def run_dps_step_clip(
                 all_embs.detach(), all_clip_embeddings,
                 bandwidth_scale=witness_bandwidth_scale, kernel_alpha=witness_kernel_alpha,
             )
-            # Defensive mixture: blend the |score|-proportional distribution with
-            # witness_floor mass of uniform (recommended ~0.3-0.5). Pure |w|-
-            # proportional sampling can put almost all the mass on one or two
-            # outliers step after step, starving everything else; the uniform floor
-            # bounds how skewed p can get.
+            # Defensive mixture: blend |score|-proportional with witness_floor mass of
+            # uniform, bounding how skewed p can get (pure |w|-proportional can starve
+            # everything but one or two outliers step after step).
             probs = scores.abs().double()
             probs = (1.0 - witness_floor) * probs / probs.sum().clamp_min(1e-12) + witness_floor / n_new
             probs = probs / probs.sum()
@@ -407,12 +366,8 @@ def run_dps_step_clip(
             grad_idx_t = torch.multinomial(
                 probs.cpu(), n_grad, replacement=witness_replacement, generator=backsel_generator
             )
-            # Without replacement: every draw is a distinct index, count 1 each --
-            # this is what removes the "same outlier picked repeatedly" failure
-            # mode entirely (the standard fix when k isn't tiny relative to n).
-            # With replacement: draws can repeat: an index drawn c times gets
-            # count c, and is included c times in the differentiable batch below
-            # (the textbook with-replacement importance-resampling estimator).
+            # Without replacement: distinct indices, count 1 each. With replacement:
+            # an index drawn c times gets count c and is included c times below.
             unique_idx, counts = torch.unique(grad_idx_t, return_counts=True)
             grad_counts = dict(zip(unique_idx.tolist(), counts.tolist()))
 

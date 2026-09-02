@@ -112,10 +112,6 @@ def parse_args():
     p.add_argument("--eval_interval",  type=int, default=0,
                    help="Evaluate intermediate MMD every N steps (0 = auto ~5 checkpoints)")
 
-    # Hybrid sampling (see simulations/src/Optimization.py for the same idea in the toy setting)
-    p.add_argument("--reuse_frac", type=float, default=0.0,
-                   help="Fraction of num_variations reused from the previous step's fresh embeddings")
-
     # Backprop subsampling: generate num_variations samples for the loss, but only
     # backprop through a subset — cuts backward-pass cost without shrinking the loss's
     # sample size. None = differentiate through every fresh variation (original behavior).
@@ -554,7 +550,6 @@ def main():
             "steps_run":                    args.n_steps - args.start_step,
             "scheduler_type":               type(architect.scheduler).__name__,
             "num_variations":               args.num_variations,
-            "reuse_frac":                   args.reuse_frac,
             "backsel_k":                    args.backsel_k,
             "backsel_rule":                 args.backsel_rule,
             "witness_floor":                args.witness_floor,
@@ -648,7 +643,6 @@ def main():
 
     step_gradients = []
     step_vis_data  = []
-    prev_variation_clip = None   # one-step-old CLIP embeddings, used when args.reuse_frac > 0
     backsel_generator = torch.Generator().manual_seed(args.seed) if args.seed is not None else None
 
     # Persistent Adam moment buffers across the whole guidance trajectory (only
@@ -757,7 +751,7 @@ def main():
         )
         pixel_x0_norm = torch.clamp((pixel_x0 + 1.0) / 2.0, 0.0, 1.0)
 
-        grad, mmd_loss, zeta_i, loss_norm, vl_clip_flat, prev_variation_clip = run_dps_step_clip(
+        grad, mmd_loss, zeta_i, loss_norm, vl_clip_flat = run_dps_step_clip(
             latents=latents,
             latents_step=latents_step,
             noise_pred=noise_pred,
@@ -774,8 +768,6 @@ def main():
             variation_prompt=args.sprinter_variation_prompt,
             loss_fn=loss_fn,
             loss_scale=args.loss_scale,
-            prev_variation_clip=prev_variation_clip,
-            reuse_frac=args.reuse_frac,
             backsel_k=args.backsel_k,
             backsel_rule=args.backsel_rule,
             backsel_generator=backsel_generator,

@@ -54,7 +54,6 @@ python scripts/run_mlgd_f.py \
     --n_steps 30 \
     --start_step 15 \
     --num_variations 6 \
-    --reuse_frac 0.0 \
     --backsel_k 20 \
     --backsel_rule uniform \
     --witness_floor 0.3 \

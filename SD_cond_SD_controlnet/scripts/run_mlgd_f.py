@@ -131,6 +131,10 @@ def parse_args():
                         "mixture p_i = floor/n + (1-floor)*|w_i|/sum(|w|); "
                         "recommended 0.3-0.5 to bound the worst-case weight and "
                         "avoid collapsing onto the same outliers every step")
+    p.add_argument("--witness_temperature", type=float, default=1.0,
+                   help="Reshapes |score|^(1/T) before the witness_floor blend. T=1 "
+                        "(default) is plain |w|; T>1 flattens the selection distribution "
+                        "toward uniform; T<1 sharpens it toward the top-|score| rows.")
     p.add_argument("--witness_replacement", action="store_true",
                    help="Sample the backsel_k witness-selected indices WITH "
                         "replacement (a repeated index counts multiple times in "
@@ -553,6 +557,7 @@ def main():
             "backsel_k":                    args.backsel_k,
             "backsel_rule":                 args.backsel_rule,
             "witness_floor":                args.witness_floor,
+            "witness_temperature":          args.witness_temperature,
             "witness_replacement":          args.witness_replacement,
             "base_zeta":                    args.base_zeta,
             "guidance_scale":               args.guidance_scale,
@@ -772,6 +777,7 @@ def main():
             backsel_rule=args.backsel_rule,
             backsel_generator=backsel_generator,
             witness_floor=args.witness_floor,
+            witness_temperature=args.witness_temperature,
             witness_replacement=args.witness_replacement,
             witness_bandwidth_scale=args.bandwidth_scale,
             witness_kernel_alpha=args.kernel_alpha,

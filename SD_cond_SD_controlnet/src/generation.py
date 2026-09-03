@@ -235,6 +235,7 @@ def run_dps_step_clip(
     backsel_rule="uniform",
     backsel_generator=None,
     witness_floor=0.3,
+    witness_temperature=1.0,
     witness_bandwidth_scale=1.0,
     witness_kernel_alpha=1.0,
     witness_replacement=False,
@@ -267,10 +268,13 @@ def run_dps_step_clip(
                                sample that was scored, for a lower-variance gradient at no
                                extra Sprinter cost.
         backsel_generator:     optional torch.Generator for reproducible witness sampling.
-        witness_floor:         defensive mixture p_i = floor/n + (1-floor)*|w_i|/sum(|w|)
+        witness_floor:         defensive mixture p_i = floor/n + (1-floor)*|w_i|^(1/T)/sum(|w|^(1/T))
                                instead of pure |w|-proportional -- bounds how much weight any
                                one outlier can dominate. Default 0.3 (recommended 0.3-0.5);
                                0 = pure importance sampling, 1 = uniform.
+        witness_temperature:   T above. Default 1.0 (plain |w|); T>1 flattens the selection
+                               distribution toward uniform, T<1 sharpens it toward the
+                               top-|score| rows.
         witness_bandwidth_scale, witness_kernel_alpha:
                                RBF kernel params for the witness score (independent of
                                loss_fn's own kernel; only used when backsel_rule='witness').
@@ -346,10 +350,12 @@ def run_dps_step_clip(
                 all_embs.detach(), all_clip_embeddings,
                 bandwidth_scale=witness_bandwidth_scale, kernel_alpha=witness_kernel_alpha,
             )
-            # Defensive mixture: blend |score|-proportional with witness_floor mass of
-            # uniform, bounding how skewed p can get (pure |w|-proportional can starve
+            # Defensive mixture: blend |score|^(1/T)-proportional with witness_floor mass
+            # of uniform, bounding how skewed p can get (pure |w|-proportional can starve
             # everything but one or two outliers step after step).
             probs = scores.abs().double()
+            if witness_temperature != 1.0:
+                probs = probs.clamp_min(1e-12) ** (1.0 / witness_temperature)
             probs = (1.0 - witness_floor) * probs / probs.sum().clamp_min(1e-12) + witness_floor / n_new
             probs = probs / probs.sum()
             # multinomial + a CPU generator require CPU probs.

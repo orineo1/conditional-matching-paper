@@ -45,6 +45,8 @@ mkdir -p "$OUTPUT_DIR"
 #   backsel_rule=(uniform) | witness  -- witness scores samples first, backprops
 #                                 the highest-|score| N for a lower-variance grad
 #   witness_floor=(0.3, 0.3-0.5 recommended) -- only used by rule=witness
+#   witness_temperature=(1.0) -- |score|^(1/T) before the floor blend; T>1
+#                                 flattens toward uniform, T<1 sharpens
 #   witness_replacement=(off) -- add --witness_replacement to enable
 #   use_adam=(off, uses zeta_i*grad) -- add --use_adam (+ --adam_lr/--adam_beta1/
 #                                 --adam_beta2/--adam_eps, default 0.01/0.9/0.999/1e-8)
@@ -65,6 +67,7 @@ python scripts/run_mlgd_f.py \
     --backsel_k 20 \
     --backsel_rule uniform \
     --witness_floor 0.3 \
+    --witness_temperature 1.0 \
     --base_zeta 5.0 \
     --guidance_scale 0.0 \
     --controlnet_scale 0.5 \

@@ -239,6 +239,35 @@ def _witness_select_indices(scores, k, witness_floor, witness_temperature, repla
     return grad_counts, probs
 
 
+def _log_witness_selection(scores, probs, grad_counts, replacement):
+    """Print scores/probs/selected indices for one witness-selection step, so a
+    run's log shows whether selection is collapsing onto the same few indices."""
+    scores_np = scores.cpu().numpy()
+    probs_np = probs.cpu().numpy()
+    selected_sorted = sorted(grad_counts)
+    dup_counts = {i: c for i, c in grad_counts.items() if c > 1}
+    print(f"      [witness] scores={np.round(scores_np, 4).tolist()}", flush=True)
+    print(f"      [witness] probs ={np.round(probs_np, 4).tolist()}", flush=True)
+    print(
+        f"      [witness] selected_idx={selected_sorted}  "
+        f"selected_scores={np.round(scores_np[selected_sorted], 4).tolist()}  "
+        f"score_range=[{scores_np.min():.4f}, {scores_np.max():.4f}]  "
+        f"replacement={replacement}  duplicate_draws={dup_counts or 'none'}",
+        flush=True,
+    )
+
+
+def _expand_rows_by_count(rows, counts):
+    """Reassemble `rows` per a {index: count} dict: a row with count > 0 is
+    repeated that many times (autograd sums its gradient across the reuses); a
+    row with no entry is individually detached once."""
+    out = []
+    for i, row in enumerate(rows):
+        c = counts.get(i, 0)
+        out.extend([row] * c if c > 0 else [row.detach()])
+    return out
+
+
 def run_dps_step_clip(
     latents,
     latents_step,
@@ -379,35 +408,9 @@ def run_dps_step_clip(
                 scores, n_grad, witness_floor, witness_temperature,
                 witness_replacement, backsel_generator,
             )
+            _log_witness_selection(scores, probs, grad_counts, witness_replacement)
 
-            # Diagnostic: print scores/probs/selection every step so you can check
-            # across a run's log whether selection is collapsing onto the same few
-            # indices.
-            scores_np = scores.cpu().numpy()
-            probs_np = probs.cpu().numpy()
-            selected_sorted = sorted(grad_counts)
-            dup_counts = {i: c for i, c in grad_counts.items() if c > 1}
-            print(
-                f"      [witness] scores={np.round(scores_np, 4).tolist()}",
-                flush=True,
-            )
-            print(
-                f"      [witness] probs ={np.round(probs_np, 4).tolist()}",
-                flush=True,
-            )
-            print(
-                f"      [witness] selected_idx={selected_sorted}  "
-                f"selected_scores={np.round(scores_np[selected_sorted], 4).tolist()}  "
-                f"score_range=[{scores_np.min():.4f}, {scores_np.max():.4f}]  "
-                f"replacement={witness_replacement}  duplicate_draws={dup_counts or 'none'}",
-                flush=True,
-            )
-
-        rows_out = []
-        for i, row in enumerate(all_rows):
-            c = grad_counts.get(i, 0)
-            rows_out.extend([row] * c if c > 0 else [row.detach()])
-        variation_clip_list.extend(rows_out)
+        variation_clip_list.extend(_expand_rows_by_count(all_rows, grad_counts))
         # Number of distinct candidates left fully undifferentiated -- with
         # replacement this can exceed n_new - n_grad, since duplicate draws leave
         # more candidates untouched than a without-replacement draw of the same size.

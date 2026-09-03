@@ -214,6 +214,31 @@ def run_dps_step(
     return grad, mmd_loss, zeta_i, loss_norm, vl_flat
 
 
+def _witness_select_indices(scores, k, witness_floor, witness_temperature, replacement, generator):
+    """
+    Defensive-mixture importance selection from witness scores:
+    p_i = floor/n + (1-floor)*|w_i|^(1/T)/sum(|w|^(1/T)), then draw k indices from p
+    (with/without replacement).
+
+    Returns (grad_counts, probs): grad_counts maps index -> draw count (dict, only
+    entries with count > 0); probs is the [n] float tensor of selection
+    probabilities actually used (for diagnostics/logging).
+    """
+    n = scores.shape[0]
+    probs = scores.abs().double()
+    if witness_temperature != 1.0:
+        probs = probs.clamp_min(1e-12) ** (1.0 / witness_temperature)
+    probs = (1.0 - witness_floor) * probs / probs.sum().clamp_min(1e-12) + witness_floor / n
+    probs = probs / probs.sum()
+    # multinomial + a CPU generator require CPU probs.
+    idx_t = torch.multinomial(probs.cpu(), k, replacement=replacement, generator=generator)
+    # Without replacement: distinct indices, count 1 each. With replacement: an
+    # index drawn c times gets count c and is included c times downstream.
+    unique_idx, counts = torch.unique(idx_t, return_counts=True)
+    grad_counts = dict(zip(unique_idx.tolist(), counts.tolist()))
+    return grad_counts, probs
+
+
 def run_dps_step_clip(
     latents,
     latents_step,
@@ -350,22 +375,10 @@ def run_dps_step_clip(
                 all_embs.detach(), all_clip_embeddings,
                 bandwidth_scale=witness_bandwidth_scale, kernel_alpha=witness_kernel_alpha,
             )
-            # Defensive mixture: blend |score|^(1/T)-proportional with witness_floor mass
-            # of uniform, bounding how skewed p can get (pure |w|-proportional can starve
-            # everything but one or two outliers step after step).
-            probs = scores.abs().double()
-            if witness_temperature != 1.0:
-                probs = probs.clamp_min(1e-12) ** (1.0 / witness_temperature)
-            probs = (1.0 - witness_floor) * probs / probs.sum().clamp_min(1e-12) + witness_floor / n_new
-            probs = probs / probs.sum()
-            # multinomial + a CPU generator require CPU probs.
-            grad_idx_t = torch.multinomial(
-                probs.cpu(), n_grad, replacement=witness_replacement, generator=backsel_generator
+            grad_counts, probs = _witness_select_indices(
+                scores, n_grad, witness_floor, witness_temperature,
+                witness_replacement, backsel_generator,
             )
-            # Without replacement: distinct indices, count 1 each. With replacement:
-            # an index drawn c times gets count c and is included c times below.
-            unique_idx, counts = torch.unique(grad_idx_t, return_counts=True)
-            grad_counts = dict(zip(unique_idx.tolist(), counts.tolist()))
 
             # Diagnostic: print scores/probs/selection every step so you can check
             # across a run's log whether selection is collapsing onto the same few

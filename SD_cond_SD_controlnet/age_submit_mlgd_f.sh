@@ -39,6 +39,18 @@ cd "$REPO"
 OUTPUT_DIR="output/mlgd_f_age_${SLURM_JOB_ID}"
 mkdir -p "$OUTPUT_DIR"
 
+# Toggles below (defaults in parens; see run_mlgd_f.py --help for full detail):
+#   backsel_k=(None=all) N     -- backprop only N of num_variations fresh
+#                                 samples/step (loss still sees all of them)
+#   backsel_rule=(uniform) | witness  -- witness scores samples first, backprops
+#                                 the highest-|score| N for a lower-variance grad
+#   witness_floor=(0.3, 0.3-0.5 recommended) -- only used by rule=witness
+#   witness_temperature=(1.0) -- |score|^(1/T) before the floor blend; T>1
+#                                 flattens toward uniform, T<1 sharpens
+#   witness_replacement=(off) -- add --witness_replacement to enable
+#   use_adam=(off, uses zeta_i*grad) -- add --use_adam (+ --adam_lr/--adam_beta1/
+#                                 --adam_beta2/--adam_eps, default 0.01/0.9/0.999/1e-8)
+
 # ── 5. Run ────────────────────────────────────────────────────────────────────
 python scripts/run_mlgd_f.py \
     --output_dir "$OUTPUT_DIR" \
@@ -52,7 +64,10 @@ python scripts/run_mlgd_f.py \
     --n_steps 30 \
     --start_step 15 \
     --num_variations 6 \
-    --reuse_frac 0.0 \
+    --backsel_k 20 \
+    --backsel_rule uniform \
+    --witness_floor 0.3 \
+    --witness_temperature 1.0 \
     --base_zeta 5.0 \
     --guidance_scale 0.0 \
     --controlnet_scale 0.5 \

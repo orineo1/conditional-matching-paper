@@ -16,7 +16,7 @@ import gc
 import numpy as np
 import torch
 
-from metrics import compute_mmd
+from metrics import compute_mmd, compute_witness_scores
 
 
 def generate_and_store(pipe, prompt, sobel_cond_pil, num_samples, batch_size=2):
@@ -214,6 +214,60 @@ def run_dps_step(
     return grad, mmd_loss, zeta_i, loss_norm, vl_flat
 
 
+def _witness_select_indices(scores, k, witness_floor, witness_temperature, replacement, generator):
+    """
+    Defensive-mixture importance selection from witness scores:
+    p_i = floor/n + (1-floor)*|w_i|^(1/T)/sum(|w|^(1/T)), then draw k indices from p
+    (with/without replacement).
+
+    Returns (grad_counts, probs): grad_counts maps index -> draw count (dict, only
+    entries with count > 0); probs is the [n] float tensor of selection
+    probabilities actually used (for diagnostics/logging).
+    """
+    n = scores.shape[0]
+    probs = scores.abs().double()
+    if witness_temperature != 1.0:
+        probs = probs.clamp_min(1e-12) ** (1.0 / witness_temperature)
+    probs = (1.0 - witness_floor) * probs / probs.sum().clamp_min(1e-12) + witness_floor / n
+    probs = probs / probs.sum()
+    # multinomial + a CPU generator require CPU probs.
+    idx_t = torch.multinomial(probs.cpu(), k, replacement=replacement, generator=generator)
+    # Without replacement: distinct indices, count 1 each. With replacement: an
+    # index drawn c times gets count c and is included c times downstream.
+    unique_idx, counts = torch.unique(idx_t, return_counts=True)
+    grad_counts = dict(zip(unique_idx.tolist(), counts.tolist()))
+    return grad_counts, probs
+
+
+def _log_witness_selection(scores, probs, grad_counts, replacement):
+    """Print scores/probs/selected indices for one witness-selection step, so a
+    run's log shows whether selection is collapsing onto the same few indices."""
+    scores_np = scores.cpu().numpy()
+    probs_np = probs.cpu().numpy()
+    selected_sorted = sorted(grad_counts)
+    dup_counts = {i: c for i, c in grad_counts.items() if c > 1}
+    print(f"      [witness] scores={np.round(scores_np, 4).tolist()}", flush=True)
+    print(f"      [witness] probs ={np.round(probs_np, 4).tolist()}", flush=True)
+    print(
+        f"      [witness] selected_idx={selected_sorted}  "
+        f"selected_scores={np.round(scores_np[selected_sorted], 4).tolist()}  "
+        f"score_range=[{scores_np.min():.4f}, {scores_np.max():.4f}]  "
+        f"replacement={replacement}  duplicate_draws={dup_counts or 'none'}",
+        flush=True,
+    )
+
+
+def _expand_rows_by_count(rows, counts):
+    """Reassemble `rows` per a {index: count} dict: a row with count > 0 is
+    repeated that many times (autograd sums its gradient across the reuses); a
+    row with no entry is individually detached once."""
+    out = []
+    for i, row in enumerate(rows):
+        c = counts.get(i, 0)
+        out.extend([row] * c if c > 0 else [row.detach()])
+    return out
+
+
 def run_dps_step_clip(
     latents,
     latents_step,
@@ -231,13 +285,19 @@ def run_dps_step_clip(
     variation_prompt,
     loss_fn=compute_mmd,
     loss_scale=1.0,
-    prev_variation_clip=None,
-    reuse_frac=0.0,
+    backsel_k=None,
+    backsel_rule="uniform",
+    backsel_generator=None,
+    witness_floor=0.3,
+    witness_temperature=1.0,
+    witness_bandwidth_scale=1.0,
+    witness_kernel_alpha=1.0,
+    witness_replacement=False,
 ):
     """
     CLIP-space MMD/SWD DPS step — core of the MLGD-F algorithm.
 
-    Gradient flows through all freshly-generated Sprinter passes:
+    Gradient flows through the freshly-generated Sprinter passes:
         latents_step -> UNet -> pred_x0 -> VAE decode -> pixels
         -> CLIP encode -> loss (MMD or SWD) vs target embeddings
 
@@ -247,70 +307,135 @@ def run_dps_step_clip(
     Args:
         loss_fn:              callable with signature loss_fn(generated, targets) -> scalar.
         loss_scale:           multiply loss before grad to amplify weak gradients.
-        prev_variation_clip:  detached CLIP embeddings freshly generated at the *previous*
-                               step (one step old), or None on the first step / when unused.
-        reuse_frac:           fraction of num_variations reused from prev_variation_clip
-                               instead of generated fresh here (0.0 = original behavior).
+        backsel_k:             of the freshly-generated variations, how many to backprop
+                               through (None = all). The rest are generated under
+                               torch.no_grad() -- still counted in the loss, no gradient.
+                               All variations are i.i.d., so only the count matters.
+        backsel_rule:          'uniform' (default) -- first n_grad draws are differentiable,
+                               no extra cost. 'witness' -- generate all n_new via checkpoint
+                               (same forward cost as no_grad), score with the MMD witness
+                               function, detach all but the n_grad highest-|score| rows
+                               individually before concatenating. Detaching prunes that row's
+                               checkpoint node, so only the kept rows get recomputed+backprop'd
+                               at backward time -- and since it's the same node (not a fresh
+                               redraw), checkpoint's RNG preservation reproduces the exact
+                               sample that was scored, for a lower-variance gradient at no
+                               extra Sprinter cost.
+        backsel_generator:     optional torch.Generator for reproducible witness sampling.
+        witness_floor:         defensive mixture p_i = floor/n + (1-floor)*|w_i|^(1/T)/sum(|w|^(1/T))
+                               instead of pure |w|-proportional -- bounds how much weight any
+                               one outlier can dominate. Default 0.3 (recommended 0.3-0.5);
+                               0 = pure importance sampling, 1 = uniform.
+        witness_temperature:   T above. Default 1.0 (plain |w|); T>1 flattens the selection
+                               distribution toward uniform, T<1 sharpens it toward the
+                               top-|score| rows.
+        witness_bandwidth_scale, witness_kernel_alpha:
+                               RBF kernel params for the witness score (independent of
+                               loss_fn's own kernel; only used when backsel_rule='witness').
+        witness_replacement:   False (default) -- draw n_grad distinct indices, avoiding
+                               repeat picks. True -- draw with replacement (standard
+                               importance-resampling); a row drawn c times is included c
+                               times (same checkpoint node, recomputed once, autograd sums
+                               its gradient across uses), so it can carry >1x weight but is
+                               more prone to concentrating on a few samples.
 
     Returns:
-        (grad, loss_scaled, zeta_i, loss_norm, vl_clip_flat, new_variation_clip)
-        new_variation_clip is this step's freshly-generated embeddings (detached),
-        to pass back in as prev_variation_clip on the next call.
+        (grad, loss_scaled, zeta_i, loss_norm, vl_clip_flat)
     """
     from clip_utils import encode_images_clip
 
     device = pixel_x0_norm.device
     clip_model.to(device)
 
-    n_reuse = min(int(round(reuse_frac * num_variations)), prev_variation_clip.shape[0]) \
-        if prev_variation_clip is not None else 0
-    n_new = num_variations - n_reuse
+    n_new = num_variations
+
+    n_grad = n_new if backsel_k is None else min(backsel_k, n_new)
+
+    def sprinter_vae_clip_forward(ctrl):
+        var_latents = sprinter(
+            prompt=[variation_prompt] * ctrl.shape[0],
+            image=ctrl,
+            num_inference_steps=2,
+            guidance_scale=0.0,
+            controlnet_conditioning_scale=0.8,
+            output_type="latent",
+            return_dict=True,
+        ).images
+        var_pixels = vae.decode(
+            (var_latents.float() / vae_scaling_factor).to(vae.dtype)
+        ).sample
+        var_pixels = torch.clamp((var_pixels.float() + 1.0) / 2.0, 0.0, 1.0)
+        # Disable autocast around CLIP ViT to prevent fp16/fp32 mismatches
+        with torch.amp.autocast("cuda", enabled=False):
+            return encode_images_clip(var_pixels.float(), clip_model, clip_processor)
+
+    def checkpointed_forward(count):
+        """
+        Differentiable forward for `count` fresh slots, checkpointed, one row-tensor
+        per slot. Cost of *this* call is ~identical to a no_grad forward — checkpoint
+        doesn't store activations either way; the recompute-and-backward cost of a
+        row only actually happens later, at backward time, and only for rows that
+        are still attached to the loss graph then (see the 'witness' branch below).
+        """
+        rows = []
+        for start in range(0, count, variation_batch_size):
+            bs = min(variation_batch_size, count - start)
+            ctrl_batch = pixel_x0_norm[0].unsqueeze(0).repeat(bs, 1, 1, 1)
+            chunk = torch.utils.checkpoint.checkpoint(
+                sprinter_vae_clip_forward, ctrl_batch, use_reentrant=False
+            )
+            rows.extend(chunk[j:j + 1] for j in range(bs))
+        return rows
 
     variation_clip_list = []
-    for start_idx in range(0, n_new, variation_batch_size):
-        end_idx = min(start_idx + variation_batch_size, n_new)
-        bs = end_idx - start_idx
-        ctrl_batch = pixel_x0_norm[0].unsqueeze(0).repeat(bs, 1, 1, 1)
 
-        def sprinter_vae_clip_forward(ctrl):
-            var_latents = sprinter(
-                prompt=[variation_prompt] * ctrl.shape[0],
-                image=ctrl,
-                num_inference_steps=2,
-                guidance_scale=0.0,
-                controlnet_conditioning_scale=0.8,
-                output_type="latent",
-                return_dict=True,
-            ).images
-            var_pixels = vae.decode(
-                (var_latents.float() / vae_scaling_factor).to(vae.dtype)
-            ).sample
-            var_pixels = torch.clamp((var_pixels.float() + 1.0) / 2.0, 0.0, 1.0)
-            # Disable autocast around CLIP ViT to prevent fp16/fp32 mismatches
-            with torch.amp.autocast("cuda", enabled=False):
-                return encode_images_clip(var_pixels.float(), clip_model, clip_processor)
+    if backsel_rule == "witness" and 0 < n_grad < n_new:
+        # Generate all candidates once via checkpoint (same cost as no_grad), score
+        # them for real, then detach all but the top-n_grad |score| rows individually
+        # before concatenating -- detaching prunes that row's checkpoint node, so
+        # autograd.grad() below only recomputes+backprops the kept rows, and because
+        # it's the same node (not a fresh redraw), it reproduces the exact sample
+        # that was scored.
+        all_rows = checkpointed_forward(n_new)
+        all_embs = torch.cat(all_rows, dim=0)
 
-        var_clip = torch.utils.checkpoint.checkpoint(
-            sprinter_vae_clip_forward, ctrl_batch, use_reentrant=False
-        )
-        variation_clip_list.append(var_clip)
+        with torch.no_grad():
+            scores, _ = compute_witness_scores(
+                all_embs.detach(), all_clip_embeddings,
+                bandwidth_scale=witness_bandwidth_scale, kernel_alpha=witness_kernel_alpha,
+            )
+            grad_counts, probs = _witness_select_indices(
+                scores, n_grad, witness_floor, witness_temperature,
+                witness_replacement, backsel_generator,
+            )
+            _log_witness_selection(scores, probs, grad_counts, witness_replacement)
 
-    new_variation_clip = torch.cat(variation_clip_list, dim=0) if variation_clip_list else None
-    # Snapshot for the next step's reuse buffer immediately, before variation_clip_embs
-    # is handed to loss_fn/autograd — independent of anything that happens downstream.
-    new_variation_clip_detached = new_variation_clip.detach().clone() if new_variation_clip is not None else None
-    torch.cuda.empty_cache()
-
-    if n_reuse > 0:
-        reused = prev_variation_clip[:n_reuse]
-        variation_clip_embs = torch.cat([reused, new_variation_clip], dim=0) \
-            if new_variation_clip is not None else reused
+        variation_clip_list.extend(_expand_rows_by_count(all_rows, grad_counts))
+        # Number of distinct candidates left fully undifferentiated -- with
+        # replacement this can exceed n_new - n_grad, since duplicate draws leave
+        # more candidates untouched than a without-replacement draw of the same size.
+        n_nograd = n_new - len(grad_counts)
     else:
-        variation_clip_embs = new_variation_clip
+        # Differentiable slots: checkpointed forward, gradient flows to latents_step.
+        variation_clip_list.extend(checkpointed_forward(n_grad))
+
+        # Selected-out slots: plain no_grad forward — cheaper (no checkpoint
+        # recompute, no autograd graph), still included in the loss for full-N stats.
+        n_nograd = n_new - n_grad
+        if n_nograd > 0:
+            with torch.no_grad():
+                for start_idx in range(0, n_nograd, variation_batch_size):
+                    end_idx = min(start_idx + variation_batch_size, n_nograd)
+                    bs = end_idx - start_idx
+                    ctrl_batch = pixel_x0_norm[0].unsqueeze(0).repeat(bs, 1, 1, 1)
+                    variation_clip_list.append(sprinter_vae_clip_forward(ctrl_batch))
+
+    variation_clip_embs = torch.cat(variation_clip_list, dim=0)
+    torch.cuda.empty_cache()
 
     print(
         f"      var_clip_embs: shape={variation_clip_embs.shape} "
-        f"(n_new={n_new}, n_reuse={n_reuse}) "
+        f"(n_new={n_new}, n_grad={n_grad}, n_nograd={n_nograd}) "
         f"nan={torch.isnan(variation_clip_embs).sum().item()} "
         f"range=[{variation_clip_embs.min().item():.4f}, "
         f"{variation_clip_embs.max().item():.4f}] "
@@ -330,4 +455,4 @@ def run_dps_step_clip(
     vl_clip_flat = variation_clip_embs.detach().cpu().numpy()
     del variation_clip_list, variation_clip_embs
 
-    return grad, loss_scaled, zeta_i, loss_norm, vl_clip_flat, new_variation_clip_detached
+    return grad, loss_scaled, zeta_i, loss_norm, vl_clip_flat

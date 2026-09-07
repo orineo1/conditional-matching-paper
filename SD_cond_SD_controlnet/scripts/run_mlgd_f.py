@@ -168,6 +168,34 @@ def parse_args():
     p.add_argument("--architect_model_id",  type=str,
                    default="stabilityai/stable-diffusion-xl-base-1.0")
 
+    # n_cond(t) schedule -- alternative to the SDEdit-scribble init: run the whole
+    # trajectory from (near-)pure noise via --start_step 0, with an early phase
+    # guided toward a single point target (n_cond=1) before growing to the full
+    # target distribution (n_cond=N_total). Requires no change to run_dps_step_clip
+    # -- only which all_clip_embeddings/loss_fn each step passes in.
+    p.add_argument("--ncond_switch_step", type=int, default=None,
+                   help="Step index (0-based, within the run trajectory) at which "
+                        "n_cond grows from 1 (point-target) to N_total (full "
+                        "distribution). None (default) = disabled, full target "
+                        "set used from step 0 as today.")
+    p.add_argument("--ncond_point_group", type=str, default=None,
+                   help="Name of the --target_prompts group to draw the single "
+                        "point-target embedding from during the n_cond=1 phase "
+                        "(default: the last target group, e.g. the most-"
+                        "masculine anchor in a gender sweep)")
+    p.add_argument("--phase1_loss_fn", type=str, default=None, choices=["mmd", "swd"],
+                   help="Loss function for the n_cond=1 phase (default: same as "
+                        "--loss_fn). The paper's algorithm doesn't require this "
+                        "to differ -- only n_cond(t) changes -- but it's exposed "
+                        "in case a different loss is wanted for point-target steps.")
+
+    p.add_argument("--no_baseline", action="store_true",
+                   help="Skip the parallel unguided (regular) denoising path "
+                        "entirely -- no extra UNet forward pass, no unguided-MMD "
+                        "eval, no final regular-vs-MLGD-F comparison artifacts. "
+                        "Use to cut per-step time when only MLGD-F itself is "
+                        "being timed/tuned.")
+
     p.add_argument("--seed", type=int, default=None)
 
     # Mode
@@ -581,6 +609,10 @@ def main():
             "adam_beta1":                   args.adam_beta1,
             "adam_beta2":                   args.adam_beta2,
             "adam_eps":                     args.adam_eps,
+            "ncond_switch_step":            args.ncond_switch_step,
+            "ncond_point_group":            args.ncond_point_group,
+            "phase1_loss_fn":               args.phase1_loss_fn or args.loss_fn,
+            "run_baseline":                 not args.no_baseline,
         },
     )
     print(f"✅ wandb run: {run.name}", flush=True)
@@ -617,7 +649,7 @@ def main():
 
     architect.scheduler.set_timesteps(n_steps, device=device)
     timesteps         = architect.scheduler.timesteps
-    scheduler_regular = copy.deepcopy(architect.scheduler)
+    scheduler_regular = copy.deepcopy(architect.scheduler) if run_baseline else None
 
     add_time_ids = torch.tensor(
         [[height, width, 0, 0, height, width]], dtype=prompt_embeds.dtype, device=device
@@ -640,7 +672,7 @@ def main():
     alpha          = alphas_cumprod[t_start.long()].to(torch.float32)
     noise          = torch.randn_like(scribble_latent)
     latents        = ((alpha ** 0.5) * scribble_latent + ((1 - alpha) ** 0.5) * noise).to(torch.float16)
-    latents_regular = latents.detach().clone()
+    latents_regular = latents.detach().clone() if run_baseline else None
 
     timesteps_to_run = timesteps[start_step:]
     print(f"✅ Ready. Starting from step {start_step}/{n_steps}  (t={t_start.item():.0f})", flush=True)
@@ -662,11 +694,36 @@ def main():
     softmax_man_prompt   = target_groups[-1][1]   # last group (most masculine)
     softmax_woman_prompt = target_groups[0][1]    # first group (most feminine)
 
-    if args.loss_fn == "mmd":
-        loss_fn = partial(compute_mmd, bandwidth_scale=args.bandwidth_scale,
-                          kernel_alpha=args.kernel_alpha)
-    else:
-        loss_fn = LOSS_FNS[args.loss_fn]
+    def resolve_loss_fn(name):
+        if name == "mmd":
+            return partial(compute_mmd, bandwidth_scale=args.bandwidth_scale,
+                           kernel_alpha=args.kernel_alpha)
+        return LOSS_FNS[name]
+
+    loss_fn = resolve_loss_fn(args.loss_fn)
+
+    run_baseline = not args.no_baseline
+
+    # n_cond(t) schedule setup: before --ncond_switch_step, steps use a single
+    # point-target embedding + phase1_loss_fn; from it onward, the full target
+    # set + loss_fn, same as when --ncond_switch_step is unset.
+    point_target_embedding = None
+    phase1_loss_fn = loss_fn
+    if args.ncond_switch_step is not None:
+        point_group_name = args.ncond_point_group or group_names[-1]
+        if point_group_name not in clip_embs_per_group:
+            raise ValueError(
+                f"--ncond_point_group {point_group_name!r} not among target "
+                f"groups {group_names}"
+            )
+        point_target_embedding = clip_embs_per_group[point_group_name][0:1]
+        phase1_loss_name = args.phase1_loss_fn or args.loss_fn
+        if args.phase1_loss_fn:
+            phase1_loss_fn = resolve_loss_fn(args.phase1_loss_fn)
+        print(f"[n_cond schedule] steps < {args.ncond_switch_step}: n_cond=1 "
+              f"(point target from {point_group_name!r}), loss={phase1_loss_name}; "
+              f"steps >= {args.ncond_switch_step}: n_cond={N_total}, loss={args.loss_fn}",
+              flush=True)
 
     # ── Baseline visualisation (before any correction) ──────────────────────
     with torch.no_grad():
@@ -728,23 +785,29 @@ def main():
         print(f"{'='*60}", flush=True)
 
         latents_step         = latents.detach().requires_grad_(True)
-        latents_step_regular = latents_regular.detach()
+        latents_step_regular = latents_regular.detach() if run_baseline else None
 
         noise_pred = predict_noise_cfg(
             architect.unet, architect.scheduler,
             latents_step, t, cfg_encoder_states, added_cond_kwargs, args.guidance_scale,
         )
-        with torch.no_grad():
-            noise_pred_regular = predict_noise_cfg(
-                architect.unet, scheduler_regular,
-                latents_step_regular, t, cfg_encoder_states, added_cond_kwargs, args.guidance_scale,
-            )
+        if run_baseline:
+            with torch.no_grad():
+                noise_pred_regular = predict_noise_cfg(
+                    architect.unet, scheduler_regular,
+                    latents_step_regular, t, cfg_encoder_states, added_cond_kwargs, args.guidance_scale,
+                )
+        else:
+            noise_pred_regular = None
 
         pred_x0 = compute_pred_x0_direct(architect.scheduler, noise_pred, t, latents_step)
-        with torch.no_grad():
-            pred_x0_regular = compute_pred_x0_direct(
-                scheduler_regular, noise_pred_regular, t, latents_step_regular
-            )
+        if run_baseline:
+            with torch.no_grad():
+                pred_x0_regular = compute_pred_x0_direct(
+                    scheduler_regular, noise_pred_regular, t, latents_step_regular
+                )
+        else:
+            pred_x0_regular = None
 
         pred_x0_scaled = pred_x0 / architect.vae.config.scaling_factor
 
@@ -756,13 +819,22 @@ def main():
         )
         pixel_x0_norm = torch.clamp((pixel_x0 + 1.0) / 2.0, 0.0, 1.0)
 
+        if args.ncond_switch_step is not None and i < args.ncond_switch_step:
+            step_target_embeddings, step_loss_fn, n_cond_active = (
+                point_target_embedding, phase1_loss_fn, 1
+            )
+        else:
+            step_target_embeddings, step_loss_fn, n_cond_active = (
+                all_clip_embeddings, loss_fn, N_total
+            )
+
         grad, mmd_loss, zeta_i, loss_norm, vl_clip_flat = run_dps_step_clip(
             latents=latents,
             latents_step=latents_step,
             noise_pred=noise_pred,
             pixel_x0_norm=pixel_x0_norm,
             sprinter=sprinter,
-            all_clip_embeddings=all_clip_embeddings,
+            all_clip_embeddings=step_target_embeddings,
             num_variations=args.num_variations,
             variation_batch_size=1,
             base_zeta_prime=args.base_zeta,
@@ -771,7 +843,7 @@ def main():
             vae=sprinter.vae,
             vae_scaling_factor=sprinter.vae.config.scaling_factor,
             variation_prompt=args.sprinter_variation_prompt,
-            loss_fn=loss_fn,
+            loss_fn=step_loss_fn,
             loss_scale=args.loss_scale,
             backsel_k=args.backsel_k,
             backsel_rule=args.backsel_rule,
@@ -827,6 +899,7 @@ def main():
             "zeta_i":          zeta_val,
             "loss_norm":       loss_norm.item(),
             "correction_norm": correction_norm,
+            "n_cond_active":   n_cond_active,
             **({"adam_step_norm": adam_log["adam/step_norm"]} if adam_log else {}),
         })
 
@@ -836,10 +909,11 @@ def main():
             "gradient_norm":   grad_norm,
             "zeta":            zeta_val,
             "correction_norm": correction_norm,
+            "n_cond_active":   n_cond_active,
             **adam_log,
         }
 
-        if i % eval_interval == 0:
+        if run_baseline and i % eval_interval == 0:
             unguided_mmd, _, _ = evaluate_distribution_mmd(
                 pred_x0_regular.detach(), architect.vae, architect.image_processor,
                 sprinter, clip_model, clip_processor,
@@ -861,9 +935,9 @@ def main():
                 "mmd_loss":                 mmd_loss.item(),
                 "zeta_i":                   zeta_val,
                 "latents_step_cpu":         latents_step.detach().cpu(),
-                "latents_step_regular_cpu": latents_step_regular.detach().cpu(),
+                "latents_step_regular_cpu": latents_step_regular.detach().cpu() if run_baseline else None,
                 "pred_x0_cpu":              pred_x0.detach().cpu(),
-                "pred_x0_regular_cpu":      pred_x0_regular.detach().cpu(),
+                "pred_x0_regular_cpu":      pred_x0_regular.detach().cpu() if run_baseline else None,
                 "variation_clip_flat":      vl_clip_flat,
             }
             step_vis_data.append(sd)
@@ -875,10 +949,11 @@ def main():
         latents = denoise_step(
             architect.scheduler, noise_pred, t, latents_step, correction=correction
         )
-        with torch.no_grad():
-            latents_regular = denoise_step(
-                scheduler_regular, noise_pred_regular, t, latents_step_regular
-            )
+        if run_baseline:
+            with torch.no_grad():
+                latents_regular = denoise_step(
+                    scheduler_regular, noise_pred_regular, t, latents_step_regular
+                )
 
         del grad, mmd_loss, loss_norm, zeta_i, correction
         del pixel_x0, pixel_x0_norm, pred_x0, pred_x0_regular
@@ -890,13 +965,17 @@ def main():
     print(f"\n✅ MLGD-F complete! {len(step_vis_data)} steps stored.", flush=True)
 
     # ── 10. Final MMD evaluation ────────────────────────────────────────────
-    print("Computing final MMD (regular)...", flush=True)
-    regular_mmd, regular_eval_photos, _ = evaluate_distribution_mmd(
-        latents_regular, architect.vae, architect.image_processor,
-        sprinter, clip_model, clip_processor,
-        all_clip_embeddings, eval_prompt=args.sprinter_eval_prompt,
-        n_eval=n_eval, device=device,
-    )
+    if run_baseline:
+        print("Computing final MMD (regular)...", flush=True)
+        regular_mmd, regular_eval_photos, _ = evaluate_distribution_mmd(
+            latents_regular, architect.vae, architect.image_processor,
+            sprinter, clip_model, clip_processor,
+            all_clip_embeddings, eval_prompt=args.sprinter_eval_prompt,
+            n_eval=n_eval, device=device,
+        )
+        print(f"Regular MMD : {regular_mmd:.6f}", flush=True)
+    else:
+        regular_mmd, regular_eval_photos = None, []
 
     print("Computing final MMD (MLGD-F)...", flush=True)
     mlgd_f_mmd, mlgd_f_eval_photos, _ = evaluate_distribution_mmd(
@@ -905,50 +984,63 @@ def main():
         all_clip_embeddings, eval_prompt=args.sprinter_eval_prompt,
         n_eval=n_eval, device=device,
     )
-
-    print(f"Regular MMD : {regular_mmd:.6f}", flush=True)
     print(f"MLGD-F MMD  : {mlgd_f_mmd:.6f}",  flush=True)
-    print(f"Delta (↓ better for MLGD-F): {regular_mmd - mlgd_f_mmd:.6f}", flush=True)
+    if run_baseline:
+        print(f"Delta (↓ better for MLGD-F): {regular_mmd - mlgd_f_mmd:.6f}", flush=True)
 
     # ── 11. Final visualisations ────────────────────────────────────────────
     with torch.no_grad():
-        final_mlgd_f_pil  = latent_to_pil(latents,         architect.vae, architect.image_processor)
-        final_regular_pil = latent_to_pil(latents_regular, architect.vae, architect.image_processor)
+        final_mlgd_f_pil  = latent_to_pil(latents, architect.vae, architect.image_processor)
+        final_regular_pil = (
+            latent_to_pil(latents_regular, architect.vae, architect.image_processor)
+            if run_baseline else None
+        )
 
     final_mlgd_f_pil.save(os.path.join(args.output_dir, "final_scribble_mlgd_f.png"))
-    final_regular_pil.save(os.path.join(args.output_dir, "final_scribble_regular.png"))
 
-    heatmap_path = os.path.join(args.output_dir, "scribble_heatmap.png")
-    compare_scribbles_heatmap(final_mlgd_f_pil, final_regular_pil, save_path=heatmap_path)
-    print("✅ Scribble heatmap saved.", flush=True)
+    heatmap_path = None
+    if run_baseline:
+        final_regular_pil.save(os.path.join(args.output_dir, "final_scribble_regular.png"))
 
-    plot_row(regular_eval_photos, f"Regular final photos  (MMD={regular_mmd:.4f})",
-             save_path=os.path.join(args.output_dir, "final_photos_regular.png"))
+        heatmap_path = os.path.join(args.output_dir, "scribble_heatmap.png")
+        compare_scribbles_heatmap(final_mlgd_f_pil, final_regular_pil, save_path=heatmap_path)
+        print("✅ Scribble heatmap saved.", flush=True)
+
+        plot_row(regular_eval_photos, f"Regular final photos  (MMD={regular_mmd:.4f})",
+                 save_path=os.path.join(args.output_dir, "final_photos_regular.png"))
     plot_row(mlgd_f_eval_photos,  f"MLGD-F final photos   (MMD={mlgd_f_mmd:.4f})",
              save_path=os.path.join(args.output_dir, "final_photos_mlgd_f.png"))
 
-    for folder, photos in [("photos_regular", regular_eval_photos),
-                            ("photos_mlgd_f",  mlgd_f_eval_photos)]:
+    photo_folders = [("photos_mlgd_f", mlgd_f_eval_photos)]
+    if run_baseline:
+        photo_folders.append(("photos_regular", regular_eval_photos))
+    for folder, photos in photo_folders:
         photo_dir = os.path.join(args.output_dir, folder)
         os.makedirs(photo_dir, exist_ok=True)
         for idx, photo in enumerate(photos):
             photo.save(os.path.join(photo_dir, f"photo_{idx:03d}.png"))
 
     # ── 12. wandb final logs ────────────────────────────────────────────────
-    wandb.log({
-        "final_mlgd_f_mmd":         mlgd_f_mmd,
-        "final_regular_mmd":        regular_mmd,
-        "mmd_delta":                regular_mmd - mlgd_f_mmd,
-        "mmd_relative_improvement": (regular_mmd - mlgd_f_mmd) / (regular_mmd + 1e-8),
-        "final_scribble_mlgd_f":    wandb.Image(final_mlgd_f_pil),
-        "final_scribble_regular":   wandb.Image(final_regular_pil),
-        "mlgd_f_eval_photos":       [wandb.Image(p) for p in mlgd_f_eval_photos],
-        "regular_eval_photos":      [wandb.Image(p) for p in regular_eval_photos],
-        "scribble_heatmap":         wandb.Image(heatmap_path),
-    })
+    final_log = {
+        "final_mlgd_f_mmd":      mlgd_f_mmd,
+        "final_scribble_mlgd_f": wandb.Image(final_mlgd_f_pil),
+        "mlgd_f_eval_photos":    [wandb.Image(p) for p in mlgd_f_eval_photos],
+    }
+    if run_baseline:
+        final_log.update({
+            "final_regular_mmd":        regular_mmd,
+            "mmd_delta":                regular_mmd - mlgd_f_mmd,
+            "mmd_relative_improvement": (regular_mmd - mlgd_f_mmd) / (regular_mmd + 1e-8),
+            "final_scribble_regular":   wandb.Image(final_regular_pil),
+            "regular_eval_photos":      [wandb.Image(p) for p in regular_eval_photos],
+            "scribble_heatmap":         wandb.Image(heatmap_path),
+        })
+    wandb.log(final_log)
+
     wandb.summary["final_mlgd_f_mmd"]  = mlgd_f_mmd
-    wandb.summary["final_regular_mmd"] = regular_mmd
-    wandb.summary["mmd_delta"]         = regular_mmd - mlgd_f_mmd
+    if run_baseline:
+        wandb.summary["final_regular_mmd"] = regular_mmd
+        wandb.summary["mmd_delta"]         = regular_mmd - mlgd_f_mmd
     wandb.summary["final_grad_norm"]   = step_gradients[-1]["gradient_norm"]
 
     # ── Save numpy arrays ───────────────────────────────────────────────────
@@ -956,14 +1048,15 @@ def main():
     os.makedirs(npy_dir, exist_ok=True)
 
     save_image_list_npy(mlgd_f_eval_photos,  os.path.join(npy_dir, "photos_mlgd_f.npy"))
-    save_image_list_npy(regular_eval_photos, os.path.join(npy_dir, "photos_regular.npy"))
     for name, imgs in target_images_per_group.items():
         safe_name = name.lower().replace(" ", "_")
         save_image_list_npy(imgs, os.path.join(npy_dir, f"targets_{safe_name}.npy"))
     save_image_list_npy([source_image],      os.path.join(npy_dir, "source_portrait.npy"))
     save_image_list_npy([scribble_pil],      os.path.join(npy_dir, "scribble.npy"))
     save_image_list_npy([final_mlgd_f_pil],  os.path.join(npy_dir, "final_scribble_mlgd_f.npy"))
-    save_image_list_npy([final_regular_pil], os.path.join(npy_dir, "final_scribble_regular.npy"))
+    if run_baseline:
+        save_image_list_npy(regular_eval_photos, os.path.join(npy_dir, "photos_regular.npy"))
+        save_image_list_npy([final_regular_pil], os.path.join(npy_dir, "final_scribble_regular.npy"))
     print("✅ Image arrays saved to npy/", flush=True)
 
     for name, imgs in target_images_per_group.items():
@@ -988,23 +1081,24 @@ def main():
             "args":  vars(args),
             "steps": step_gradients,
             "final_mlgd_f_mmd":       mlgd_f_mmd,
-            "final_regular_mmd":      regular_mmd,
-            "mmd_delta":              regular_mmd - mlgd_f_mmd,
+            "final_regular_mmd":      regular_mmd if run_baseline else None,
+            "mmd_delta":              (regular_mmd - mlgd_f_mmd) if run_baseline else None,
             "final_mlgd_f_swd":       swd_mlgd_f,   # None — run analysis.py to compute
             "final_regular_swd":      swd_regular,  # None — run analysis.py to compute
             "swd_delta":              None,         # computed in analysis.py
+            "run_baseline":           run_baseline,
             "optimization_time_sec":  optimization_time_sec,
             "mlgd_f_gender":          mlgd_f_stats,
             "regular_gender":         regular_stats,
             "npy": {
                 "photos_mlgd_f":          "npy/photos_mlgd_f.npy",
-                "photos_regular":         "npy/photos_regular.npy",
+                **({"photos_regular": "npy/photos_regular.npy"} if run_baseline else {}),
                 **{f"targets_{n.lower().replace(' ','_')}": f"npy/targets_{n.lower().replace(' ','_')}.npy"
                    for n in target_images_per_group},
                 "source_portrait":        "npy/source_portrait.npy",
                 "scribble":               "npy/scribble.npy",
                 "final_scribble_mlgd_f":  "npy/final_scribble_mlgd_f.npy",
-                "final_scribble_regular": "npy/final_scribble_regular.npy",
+                **({"final_scribble_regular": "npy/final_scribble_regular.npy"} if run_baseline else {}),
                 # clip embeddings computed by analysis.py (run offline)
             },
         }, f, indent=2)

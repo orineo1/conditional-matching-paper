@@ -67,15 +67,17 @@ def visualize_step(
         group_names = ["Target"]
     if group_sizes is None:
         group_sizes = [target_clip_np.shape[0]]
+    has_baseline = sd.get("latents_step_regular_cpu") is not None
     with torch.no_grad():
-        img_xt_reg = latent_to_pil(
-            sd["latents_step_regular_cpu"].to(architect.device),
-            architect.vae, architect.image_processor,
-        )
-        img_x0_reg = latent_to_pil(
-            sd["pred_x0_regular_cpu"].to(architect.device),
-            architect.vae, architect.image_processor,
-        )
+        if has_baseline:
+            img_xt_reg = latent_to_pil(
+                sd["latents_step_regular_cpu"].to(architect.device),
+                architect.vae, architect.image_processor,
+            )
+            img_x0_reg = latent_to_pil(
+                sd["pred_x0_regular_cpu"].to(architect.device),
+                architect.vae, architect.image_processor,
+            )
         img_xt_dps = latent_to_pil(
             sd["latents_step_cpu"].to(architect.device),
             architect.vae, architect.image_processor,
@@ -135,10 +137,18 @@ def visualize_step(
         f"Step {i + 1}  (t={sd['timestep']:.0f})", fontsize=14, fontweight="bold"
     )
 
-    axes[0, 0].imshow(img_xt_reg)
-    axes[0, 0].set_title("Regular x_t")
-    axes[0, 1].imshow(img_x0_reg)
-    axes[0, 1].set_title("Regular pred x_0")
+    if has_baseline:
+        axes[0, 0].imshow(img_xt_reg)
+        axes[0, 0].set_title("Regular x_t")
+        axes[0, 1].imshow(img_x0_reg)
+        axes[0, 1].set_title("Regular pred x_0")
+    else:
+        for j in range(2):
+            axes[0, j].text(
+                0.5, 0.5, "baseline disabled\n(--no_baseline)",
+                ha="center", va="center", transform=axes[0, j].transAxes,
+            )
+            axes[0, j].set_facecolor("#f0f0f0")
     for j in range(2, n_cols):
         axes[0, j].text(
             0.5, 0.5, "N/A", ha="center", va="center",

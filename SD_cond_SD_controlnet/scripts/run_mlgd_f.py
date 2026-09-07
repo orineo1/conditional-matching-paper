@@ -634,6 +634,7 @@ def main():
     print("✅ Input images logged to wandb.", flush=True)
 
     # ── 8. Prepare MLGD-F loop ──────────────────────────────────────────────
+    run_baseline    = not args.no_baseline
     height, width   = 512, 512
     n_steps         = args.n_steps
     start_step      = args.start_step
@@ -708,8 +709,6 @@ def main():
         return LOSS_FNS[name]
 
     loss_fn = resolve_loss_fn(args.loss_fn)
-
-    run_baseline = not args.no_baseline
 
     # n_cond(t) schedule setup: before --ncond_switch_step, steps use a single
     # point-target embedding + phase1_loss_fn; from it onward, the full target

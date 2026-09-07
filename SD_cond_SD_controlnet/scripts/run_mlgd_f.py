@@ -49,11 +49,11 @@ from generation import (
     run_dps_step_clip,
 )
 from image_utils import build_base_image, latent_to_pil, sobel_proxy
-from metrics import compute_mmd, compute_swd, evaluate_distribution_mmd
+from metrics import compute_mmd, compute_mse, compute_swd, evaluate_distribution_mmd
 from models import load_models, setup_gradient_checkpointing
 from visualization import plot_row, visualize_step
 
-LOSS_FNS = {"mmd": compute_mmd, "swd": compute_swd}
+LOSS_FNS = {"mmd": compute_mmd, "swd": compute_swd, "mse": compute_mse}
 
 
 # ---------------------------------------------------------------------------
@@ -183,11 +183,14 @@ def parse_args():
                         "point-target embedding from during the n_cond=1 phase "
                         "(default: the last target group, e.g. the most-"
                         "masculine anchor in a gender sweep)")
-    p.add_argument("--phase1_loss_fn", type=str, default=None, choices=["mmd", "swd"],
+    p.add_argument("--phase1_loss_fn", type=str, default=None, choices=["mmd", "swd", "mse"],
                    help="Loss function for the n_cond=1 phase (default: same as "
                         "--loss_fn). The paper's algorithm doesn't require this "
-                        "to differ -- only n_cond(t) changes -- but it's exposed "
-                        "in case a different loss is wanted for point-target steps.")
+                        "to differ -- only n_cond(t) changes -- but 'mmd' "
+                        "degenerates at n=m=1 (its median-heuristic bandwidth "
+                        "self-normalizes from the single x-y distance, making "
+                        "the loss ~constant regardless of actual distance); "
+                        "'mse' (recommended for phase 1) has no such issue.")
     p.add_argument("--phase1_num_variations", type=int, default=1,
                    help="Number of generated candidates during the n_cond=1 phase "
                         "(only used when --ncond_switch_step is set). Default 1: "

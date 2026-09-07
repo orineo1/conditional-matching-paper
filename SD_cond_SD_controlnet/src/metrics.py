@@ -117,6 +117,41 @@ def compute_mmd(x, y, bandwidth=None, bandwidth_scale=1.0, kernel_alpha=1.0):
     return torch.sqrt(mmd_sq.abs() + 1e-8)
 
 
+def compute_mse(x, y):
+    """
+    Mean squared L2 distance between mean(x) and mean(y) in embedding space.
+
+    Point-target loss for backsel_rule schedules where n=m=1 (see
+    --ncond_switch_step in run_mlgd_f.py): compute_mmd's median-heuristic
+    bandwidth is derived from the single x-y pairwise distance itself, which
+    self-normalizes the kernel to a constant (k(x,y)=exp(-1)) independent of
+    the actual distance -- compute_mse has no such degeneracy and its
+    gradient never saturates.
+
+    Args:
+        x: [n, d] generated embeddings (grad flows through).
+        y: [m, d] target embeddings (detached).
+
+    Returns:
+        Scalar MSE between x.mean(0) and y.mean(0).
+    """
+    if isinstance(x, np.ndarray):
+        x = torch.from_numpy(x)
+    if isinstance(y, np.ndarray):
+        y = torch.from_numpy(y)
+
+    dev = x.device
+    x = x.float().to(dev)
+    y = y.float().to(dev).detach()
+
+    if x.dim() > 2:
+        x = x.reshape(x.shape[0], -1)
+    if y.dim() > 2:
+        y = y.reshape(y.shape[0], -1)
+
+    return ((x.mean(dim=0) - y.mean(dim=0)) ** 2).mean()
+
+
 def compute_swd(
     x,
     y,

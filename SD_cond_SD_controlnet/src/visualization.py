@@ -159,7 +159,8 @@ def visualize_step(
     axes[1, 0].imshow(img_xt_dps)
     axes[1, 0].set_title(f"MLGD-F x_t  ζ={sd['zeta_i']:.4f}")
     axes[1, 1].imshow(img_x0_dps)
-    axes[1, 1].set_title(f"MLGD-F x_0  MMD={sd['mmd_loss']:.6f}")
+    loss_label = sd.get("loss_name", "mmd").upper()
+    axes[1, 1].set_title(f"MLGD-F x_0  {loss_label}={sd['mmd_loss']:.6f}")
     for j, ci in enumerate(cond_imgs):
         axes[1, j + 2].imshow(ci)
         axes[1, j + 2].set_title(f"Cond {j + 1}")

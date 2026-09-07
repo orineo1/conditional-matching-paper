@@ -197,6 +197,15 @@ def parse_args():
                         "one generated image vs. the one fixed target image, a "
                         "true point-to-point comparison rather than many "
                         "candidates scored against a single target.")
+    p.add_argument("--phase1_base_zeta", type=float, default=None,
+                   help="base_zeta for the n_cond=1 phase (default: same as "
+                        "--base_zeta). zeta_i = base_zeta/loss with no floor, so "
+                        "it needs to be scaled to the phase's loss magnitude -- "
+                        "phase1_loss_fn='mse' on a single noisy sample is "
+                        "typically ~100-1000x smaller than phase 2's MMD, which "
+                        "inflates and destabilizes zeta_i if --base_zeta is left "
+                        "unchanged. Try --base_zeta/1000 as a starting point and "
+                        "tune from correction_norm in wandb.")
 
     p.add_argument("--no_baseline", action="store_true",
                    help="Skip the parallel unguided (regular) denoising path "
@@ -622,6 +631,8 @@ def main():
             "ncond_point_group":            args.ncond_point_group,
             "phase1_loss_fn":               args.phase1_loss_fn or args.loss_fn,
             "phase1_num_variations":        args.phase1_num_variations,
+            "phase1_base_zeta":             (args.phase1_base_zeta if args.phase1_base_zeta is not None
+                                             else args.base_zeta),
             "run_baseline":                 not args.no_baseline,
         },
     )
@@ -714,10 +725,13 @@ def main():
     loss_fn = resolve_loss_fn(args.loss_fn)
 
     # n_cond(t) schedule setup: before --ncond_switch_step, steps use a single
-    # point-target embedding + phase1_loss_fn; from it onward, the full target
-    # set + loss_fn, same as when --ncond_switch_step is unset.
+    # point-target embedding + phase1_loss_fn/phase1_base_zeta; from it onward,
+    # the full target set + loss_fn/base_zeta, same as when --ncond_switch_step
+    # is unset.
     point_target_embedding = None
-    phase1_loss_fn = loss_fn
+    phase1_loss_fn   = loss_fn
+    phase1_loss_name = args.loss_fn
+    phase1_base_zeta = args.phase1_base_zeta if args.phase1_base_zeta is not None else args.base_zeta
     if args.ncond_switch_step is not None:
         point_group_name = args.ncond_point_group or group_names[-1]
         if point_group_name not in clip_embs_per_group:
@@ -730,8 +744,10 @@ def main():
         if args.phase1_loss_fn:
             phase1_loss_fn = resolve_loss_fn(args.phase1_loss_fn)
         print(f"[n_cond schedule] steps < {args.ncond_switch_step}: n_cond=1 "
-              f"(point target from {point_group_name!r}), loss={phase1_loss_name}; "
-              f"steps >= {args.ncond_switch_step}: n_cond={N_total}, loss={args.loss_fn}",
+              f"(point target from {point_group_name!r}), loss={phase1_loss_name}, "
+              f"base_zeta={phase1_base_zeta}; "
+              f"steps >= {args.ncond_switch_step}: n_cond={N_total}, loss={args.loss_fn}, "
+              f"base_zeta={args.base_zeta}",
               flush=True)
 
     # ── Baseline visualisation (before any correction) ──────────────────────
@@ -829,12 +845,16 @@ def main():
         pixel_x0_norm = torch.clamp((pixel_x0 + 1.0) / 2.0, 0.0, 1.0)
 
         if args.ncond_switch_step is not None and i < args.ncond_switch_step:
-            step_target_embeddings, step_loss_fn, n_cond_active, step_num_variations = (
-                point_target_embedding, phase1_loss_fn, 1, args.phase1_num_variations
+            (step_target_embeddings, step_loss_fn, step_loss_name,
+             n_cond_active, step_num_variations, step_base_zeta) = (
+                point_target_embedding, phase1_loss_fn, phase1_loss_name,
+                1, args.phase1_num_variations, phase1_base_zeta
             )
         else:
-            step_target_embeddings, step_loss_fn, n_cond_active, step_num_variations = (
-                all_clip_embeddings, loss_fn, N_total, args.num_variations
+            (step_target_embeddings, step_loss_fn, step_loss_name,
+             n_cond_active, step_num_variations, step_base_zeta) = (
+                all_clip_embeddings, loss_fn, args.loss_fn,
+                N_total, args.num_variations, args.base_zeta
             )
 
         grad, mmd_loss, zeta_i, loss_norm, vl_clip_flat = run_dps_step_clip(
@@ -846,7 +866,7 @@ def main():
             all_clip_embeddings=step_target_embeddings,
             num_variations=step_num_variations,
             variation_batch_size=1,
-            base_zeta_prime=args.base_zeta,
+            base_zeta_prime=step_base_zeta,
             clip_model=clip_model,
             clip_processor=clip_processor,
             vae=sprinter.vae,
@@ -866,7 +886,8 @@ def main():
 
         grad_norm = grad.norm().item()
         zeta_val  = zeta_i.item() if isinstance(zeta_i, torch.Tensor) else zeta_i
-        print(f"  MMD={mmd_loss.item():.6f}  ζi={zeta_val:.4f}  ∥∇∥={grad_norm:.6f}", flush=True)
+        print(f"  {step_loss_name.upper()}={mmd_loss.item():.6f}  ζi={zeta_val:.4f}  "
+              f"∥∇∥={grad_norm:.6f}", flush=True)
 
         adam_log = {}
         if torch.isnan(grad).any():
@@ -904,7 +925,8 @@ def main():
             "step":            i + 1,
             "timestep":        t.item(),
             "gradient_norm":   grad_norm,
-            "mmd_loss":        mmd_loss.item(),
+            "mmd_loss":        mmd_loss.item(),   # actual loss per loss_name (may not be MMD, see below)
+            "loss_name":       step_loss_name,
             "zeta_i":          zeta_val,
             "loss_norm":       loss_norm.item(),
             "correction_norm": correction_norm,
@@ -914,7 +936,8 @@ def main():
 
         wandb_log = {
             "step":            i + 1,
-            "mmd_loss":        mmd_loss.item(),
+            "mmd_loss":        mmd_loss.item(),   # actual loss per loss_name (may not be MMD, see below)
+            "loss_name":       step_loss_name,
             "gradient_norm":   grad_norm,
             "zeta":            zeta_val,
             "correction_norm": correction_norm,
@@ -942,6 +965,7 @@ def main():
                 "step":                     i + 1,
                 "timestep":                 t.item(),
                 "mmd_loss":                 mmd_loss.item(),
+                "loss_name":                step_loss_name,
                 "zeta_i":                   zeta_val,
                 "latents_step_cpu":         latents_step.detach().cpu(),
                 "latents_step_regular_cpu": latents_step_regular.detach().cpu() if run_baseline else None,

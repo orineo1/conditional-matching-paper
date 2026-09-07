@@ -188,6 +188,12 @@ def parse_args():
                         "--loss_fn). The paper's algorithm doesn't require this "
                         "to differ -- only n_cond(t) changes -- but it's exposed "
                         "in case a different loss is wanted for point-target steps.")
+    p.add_argument("--phase1_num_variations", type=int, default=1,
+                   help="Number of generated candidates during the n_cond=1 phase "
+                        "(only used when --ncond_switch_step is set). Default 1: "
+                        "one generated image vs. the one fixed target image, a "
+                        "true point-to-point comparison rather than many "
+                        "candidates scored against a single target.")
 
     p.add_argument("--no_baseline", action="store_true",
                    help="Skip the parallel unguided (regular) denoising path "
@@ -612,6 +618,7 @@ def main():
             "ncond_switch_step":            args.ncond_switch_step,
             "ncond_point_group":            args.ncond_point_group,
             "phase1_loss_fn":               args.phase1_loss_fn or args.loss_fn,
+            "phase1_num_variations":        args.phase1_num_variations,
             "run_baseline":                 not args.no_baseline,
         },
     )
@@ -820,12 +827,12 @@ def main():
         pixel_x0_norm = torch.clamp((pixel_x0 + 1.0) / 2.0, 0.0, 1.0)
 
         if args.ncond_switch_step is not None and i < args.ncond_switch_step:
-            step_target_embeddings, step_loss_fn, n_cond_active = (
-                point_target_embedding, phase1_loss_fn, 1
+            step_target_embeddings, step_loss_fn, n_cond_active, step_num_variations = (
+                point_target_embedding, phase1_loss_fn, 1, args.phase1_num_variations
             )
         else:
-            step_target_embeddings, step_loss_fn, n_cond_active = (
-                all_clip_embeddings, loss_fn, N_total
+            step_target_embeddings, step_loss_fn, n_cond_active, step_num_variations = (
+                all_clip_embeddings, loss_fn, N_total, args.num_variations
             )
 
         grad, mmd_loss, zeta_i, loss_norm, vl_clip_flat = run_dps_step_clip(
@@ -835,7 +842,7 @@ def main():
             pixel_x0_norm=pixel_x0_norm,
             sprinter=sprinter,
             all_clip_embeddings=step_target_embeddings,
-            num_variations=args.num_variations,
+            num_variations=step_num_variations,
             variation_batch_size=1,
             base_zeta_prime=args.base_zeta,
             clip_model=clip_model,

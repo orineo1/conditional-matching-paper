@@ -54,6 +54,9 @@ def parse():
     p.add_argument("--architect_model_id", default="stabilityai/stable-diffusion-xl-base-1.0",
                    help="only its VAE is loaded, and only if the final PNGs are missing")
     p.add_argument("--save_photos", type=int, default=100, help="how many eval photos to save per path")
+    p.add_argument("--cn_scale", type=float, default=None,
+                   help="sprinter ControlNet scale for the eval calls (default: the run's "
+                        "variation_cn_scale if recorded, else 0.8)")
     return p.parse_args()
 
 
@@ -147,6 +150,8 @@ def main():
     sprinter = load_sprinter(device, args.sprinter_model_id, args.controlnet_model_id)
 
     # evaluate_distribution_mmd accepts the stored PIL scribble directly (metrics.py).
+    cn_scale = args.cn_scale if args.cn_scale is not None else run_args.get("variation_cn_scale", 0.8)
+    print(f"eval cn_scale={cn_scale}", flush=True)
     t0 = time.time()
     out = {}
     for key, scr in (("regular", scr_reg), ("mlgd_f", scr_mlgd)):
@@ -154,7 +159,7 @@ def main():
         mmd, photos, embs = evaluate_distribution_mmd(
             scr, None, None, sprinter, clip_model, clip_processor, targets, eval_prompt,
             n_eval=args.eval_n, device=device, batch_size=args.eval_batch_size,
-            seed=eval_seed, clip_batch_size=args.clip_batch_size)
+            seed=eval_seed, clip_batch_size=args.clip_batch_size, cn_scale=cn_scale)
         out[key] = {"mmd": float(mmd), "embs": embs.cpu(), "photos": photos}
         print(f"  {key}: MMD={mmd:.6f}", flush=True)
 
@@ -176,7 +181,8 @@ def main():
     result.update({
         "final_mlgd_f_mmd": mf, "final_regular_mmd": reg, "mmd_delta": reg - mf,
         "eval_n_final": args.eval_n, "eval_seed_base": eval_seed,
-        "eval_batch_size": args.eval_batch_size, "eval_source": {"scribbles": src, "targets": tsrc},
+        "eval_batch_size": args.eval_batch_size, "eval_cn_scale": cn_scale,
+        "eval_source": {"scribbles": src, "targets": tsrc},
         "eval_half_split_mmd": floor, "eval_time_sec": time.time() - t0,
         "evaluated_by": "experiments/model-optimization/sd/eval_final.py",
     })

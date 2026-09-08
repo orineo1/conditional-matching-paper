@@ -109,6 +109,32 @@ def compute_mmd(x, y, bandwidth=None, bandwidth_scale=1.0, kernel_alpha=1.0,
     return torch.sqrt(mmd_sq.abs() + 1e-8)
 
 
+def compute_point_loss(x, y, point_target=None):
+    """
+    Point-target loss  L = mean_i || x_i - y* ||^2  (opt-in, --loss_fn point).
+
+    The distributional interface is kept: ``y`` is the run's target set and is
+    IGNORED when ``point_target`` is given (the pre-computed y*, e.g. the CLIP
+    centroid of the target set or an oracle image embedding); without it the
+    centroid of ``y`` is used.  For one stochastic observation y ~ f(x,.)
+    E||CLIP(y) - y*||^2 = Var[CLIP(y)] + ||E CLIP(y) - y*||^2 -- the loss is
+    variance-seeking (experiments/point_vs_dist_sd/HYPOTHESIS.md).
+    """
+    if isinstance(x, np.ndarray):
+        x = torch.from_numpy(x)
+    x = x.float()
+    if x.dim() > 2:
+        x = x.reshape(x.shape[0], -1)
+    if point_target is None:
+        t = y.float().to(x.device).detach()
+        if t.dim() > 2:
+            t = t.reshape(t.shape[0], -1)
+        t = t.mean(dim=0, keepdim=True)
+    else:
+        t = point_target.float().to(x.device).detach().reshape(1, -1)
+    return ((x - t) ** 2).sum(dim=1).mean()
+
+
 def compute_swd(
     x,
     y,
@@ -211,6 +237,7 @@ def evaluate_distribution_mmd(
     batch_size=2,
     seed=None,
     clip_batch_size=32,
+    cn_scale=0.8,
 ):
     """
     Full evaluation: latent -> scribble PIL -> sprinter photos -> CLIP -> MMD.
@@ -258,7 +285,7 @@ def evaluate_distribution_mmd(
                 image=[scribble_pil] * bs,
                 num_inference_steps=2,
                 guidance_scale=0.0,
-                controlnet_conditioning_scale=0.8,
+                controlnet_conditioning_scale=cn_scale,
                 output_type="pil",
                 return_dict=True,
                 generator=gens,

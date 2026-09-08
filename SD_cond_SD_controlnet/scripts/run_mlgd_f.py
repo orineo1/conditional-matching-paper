@@ -82,7 +82,16 @@ def parse_args():
                    help="CFG scale for architect (0.0 = unconditional)")
     p.add_argument("--controlnet_scale", type=float, default=0.5)
     p.add_argument("--loss_fn",          type=str,   default="mmd",
-                   choices=["mmd", "swd"])
+                   choices=["mmd", "swd", "point"])
+    p.add_argument("--point_target_pt",  type=str,   default=None,
+                   help="--loss_fn point: torch file with {'y_star': [1,768]} — the point "
+                        "target y*. Without it, the centroid of the run's target set is used. "
+                        "(experiments/point_vs_dist_sd)")
+    p.add_argument("--variation_cn_scale", type=float, default=0.8,
+                   help="ControlNet conditioning scale of the SPRINTER guidance/eval calls "
+                        "(historically hard-coded 0.8; Appendix E specifies 0.5). Default "
+                        "0.8 = unchanged behaviour. --controlnet_scale still governs target "
+                        "generation.")
     p.add_argument("--mmd_cache_target", action="store_true",
                    help="Exact cached-target MMD: compute the target-target distance block "
                         "once per run (src/metrics.py::_target_stats). Off by default.")
@@ -752,6 +761,14 @@ def main():
         loss_fn = partial(compute_mmd, bandwidth_scale=args.bandwidth_scale,
                           cache_target=args.mmd_cache_target,
                           kernel_alpha=args.kernel_alpha)
+    elif args.loss_fn == "point":
+        from metrics import compute_point_loss
+        y_star = None
+        if args.point_target_pt:
+            y_star = torch.load(args.point_target_pt, map_location="cpu")["y_star"].to(device)
+            print(f"Point target y* loaded from {args.point_target_pt} "
+                  f"(norm {float(y_star.norm()):.4f})", flush=True)
+        loss_fn = partial(compute_point_loss, point_target=y_star)
     else:
         loss_fn = LOSS_FNS[args.loss_fn]
 
@@ -890,6 +907,7 @@ def main():
             variation_prompt=args.sprinter_variation_prompt,
             loss_fn=loss_fn,
             loss_scale=args.loss_scale,
+            cn_scale=args.variation_cn_scale,
             variation_seeds=variation_seeds,
             backsel_k=args.backsel,
             backsel_rule=args.backsel_rule,
@@ -957,6 +975,7 @@ def main():
                 sprinter, clip_model, clip_processor,
                 all_clip_embeddings, args.sprinter_eval_prompt,
                 n_eval=n_eval, device=device, batch_size=args.eval_batch_size,
+                cn_scale=args.variation_cn_scale,
                 seed=(args.seed * 1_000_003 + (i + 1) * 10_000 + 5_000) if seeded else None,
             )
             wandb_log["intermediate/unguided_cond_mmd"] = unguided_mmd
@@ -1042,6 +1061,7 @@ def main():
         sprinter, clip_model, clip_processor,
         all_clip_embeddings, eval_prompt=args.sprinter_eval_prompt,
         n_eval=eval_n_final, device=device, batch_size=args.eval_batch_size,
+        cn_scale=args.variation_cn_scale,
         seed=(args.seed * 1_000_003 + 7_000_000) if seeded else None,
     )
 
@@ -1051,6 +1071,7 @@ def main():
         sprinter, clip_model, clip_processor,
         all_clip_embeddings, eval_prompt=args.sprinter_eval_prompt,
         n_eval=eval_n_final, device=device, batch_size=args.eval_batch_size,
+        cn_scale=args.variation_cn_scale,
         seed=(args.seed * 1_000_003 + 7_000_000) if seeded else None,
     )
     if args.profile:

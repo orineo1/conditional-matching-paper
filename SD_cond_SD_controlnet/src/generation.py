@@ -258,6 +258,7 @@ def variation_objective(
     backsel_soft_tau_mode="local",
     profiler=None,
     verbose=True,
+    cn_scale=0.8,
 ):
     """
     CLIP-space MMD/SWD DPS step — core of the MLGD-F algorithm.
@@ -324,7 +325,7 @@ def variation_objective(
                 image=ctrl,
                 num_inference_steps=2,
                 guidance_scale=0.0,
-                controlnet_conditioning_scale=0.8,
+                controlnet_conditioning_scale=cn_scale,
                 output_type="latent",
                 return_dict=True,
                 generator=gen,

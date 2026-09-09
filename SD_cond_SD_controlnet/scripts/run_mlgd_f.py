@@ -111,6 +111,14 @@ def parse_args():
     p.add_argument("--num_variations", type=int, default=6)
     p.add_argument("--eval_interval",  type=int, default=0,
                    help="Evaluate intermediate MMD every N steps (0 = auto ~5 checkpoints)")
+    p.add_argument("--vis_interval", type=int, default=1,
+                   help="Save the per-step visualization PNG (and its num_cond extra Sprinter "
+                        "renders + wandb image upload) every N steps instead of every step "
+                        "(default 1 = every step, original behavior). Always includes the "
+                        "final step regardless. Raise this for long runs (e.g. 125+ steps x "
+                        "several seeds) to avoid exhausting disk/wandb-cache quota -- scalar "
+                        "metrics (loss, gradient_norm, etc.) are still logged every step "
+                        "either way, only the image/PNG is skipped on non-visualized steps.")
 
     # Backprop subsampling: generate num_variations samples for the loss, but only
     # backprop through a subset — cuts backward-pass cost without shrinking the loss's
@@ -958,26 +966,33 @@ def main():
             print(f"  [eval] mlgd_f={mmd_loss.item():.6f}  unguided={unguided_mmd:.6f}  "
                   f"delta={mmd_loss.item()-unguided_mmd:.6f}", flush=True)
 
-        wandb.log(wandb_log, commit=False)
+        is_last_step = (i + 1) == len(timesteps_to_run)
+        do_visualize = is_last_step or (i + 1) % args.vis_interval == 0
 
-        with torch.no_grad():
-            sd = {
-                "step":                     i + 1,
-                "timestep":                 t.item(),
-                "mmd_loss":                 mmd_loss.item(),
-                "loss_name":                step_loss_name,
-                "zeta_i":                   zeta_val,
-                "latents_step_cpu":         latents_step.detach().cpu(),
-                "latents_step_regular_cpu": latents_step_regular.detach().cpu() if run_baseline else None,
-                "pred_x0_cpu":              pred_x0.detach().cpu(),
-                "pred_x0_regular_cpu":      pred_x0_regular.detach().cpu() if run_baseline else None,
-                "variation_clip_flat":      vl_clip_flat,
-            }
-            step_vis_data.append(sd)
+        if do_visualize:
+            with torch.no_grad():
+                sd = {
+                    "step":                     i + 1,
+                    "timestep":                 t.item(),
+                    "mmd_loss":                 mmd_loss.item(),
+                    "loss_name":                step_loss_name,
+                    "zeta_i":                   zeta_val,
+                    "latents_step_cpu":         latents_step.detach().cpu(),
+                    "latents_step_regular_cpu": latents_step_regular.detach().cpu() if run_baseline else None,
+                    "pred_x0_cpu":              pred_x0.detach().cpu(),
+                    "pred_x0_regular_cpu":      pred_x0_regular.detach().cpu() if run_baseline else None,
+                    "variation_clip_flat":      vl_clip_flat,
+                }
+                step_vis_data.append(sd)
 
-        visualize_step(sd, architect, sprinter, target_clip_np,
-                       num_cond=5, save_path=os.path.join(steps_dir, f"step_{i:03d}.png"),
-                       pca_fixed=pca_fixed, group_names=group_names, group_sizes=group_sizes)
+            visualize_step(sd, architect, sprinter, target_clip_np,
+                           num_cond=5, save_path=os.path.join(steps_dir, f"step_{i:03d}.png"),
+                           pca_fixed=pca_fixed, group_names=group_names, group_sizes=group_sizes)
+        else:
+            # visualize_step is what actually commits wandb_log (logged above with
+            # commit=False) -- without it, commit the scalar metrics on their own so
+            # per-step curves aren't gapped just because the image was skipped.
+            wandb.log({}, step=i + 1, commit=True)
 
         latents = denoise_step(
             architect.scheduler, noise_pred, t, latents_step, correction=correction

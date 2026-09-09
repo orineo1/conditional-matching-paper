@@ -16,7 +16,7 @@
 # ══════════════════════════════════════════════════════════════════════════════
 
 # Which experiment?  2D_cond_1D | 5D_cond_1D | 10D_cond_1D
-EXPERIMENT="5D_cond_1D"
+EXPERIMENT="10D_cond_1D"
 
 # ── Shared hyperparameters ────────────────────────────────────────────────────
 NUM_X_T=1                     # fixed, not swept
@@ -25,10 +25,11 @@ SEED=42
 METHODS="${METHODS:-LGD LGD-CM}"  # any of: LGD LGD-CM; overridable via env (see
                                    # "SPLITTING INTO TWO JOBS" below)
 NSAMPLES_LIST="50 100 250 500" # the "n" axis
-K_FRACS="0.1 0.2 0.5 1.0"      # the "proportion" axis (backsel_k / nsamples);
-                                # 1.0 (full baseline) is always included
-RULES="uniform witness"        # any of: uniform witness
-WITNESS_FLOOR=0.3              # defensive-mixture floor for rule=witness (0.3-0.5)
+K_FRACS="0.1 0.25 0.5"         # the "proportion" axis (backsel_k / nsamples);
+                                # 1.0 (full baseline) is always included regardless
+RULES="uniform witness"        # any of: uniform witness witness_topk
+WITNESS_FLOOR=0.0              # defensive-mixture floor for rule=witness (0 = pure
+                                # importance sampling; 0.3-0.5 = safer middle ground)
 BACKSEL_REPLACEMENT=false      # true = sample backsel_k indices with replacement
 NORMALIZE_BY_K_FRAC=false      # true = rescale grad by 1/k_frac (magnitude-normalize
                                 # across k_frac); no-op at k_frac=1.0
@@ -44,6 +45,13 @@ GRAD_REF_N=2000                # sample size for the true/population reference
                                 # gradient used by grad_norm_error_vs_ref
 ALPHA_LIST=""                  # sweep witness_floor over these values; empty =
                                 # just WITNESS_FLOOR
+WITNESS_TEMPERATURE=1.0        # |score|^(1/T) before the witness_floor blend; T>1 flattens
+                                # toward uniform, T<1 sharpens toward top-|score| rows
+TEMPERATURE_LIST="0.1 0.3 1.0 2.0 4.0"  # sweep witness_temperature over these values
+                                # (rule=witness only, at canonical WITNESS_FLOOR,
+                                # independent of ALPHA_LIST); empty = just WITNESS_TEMPERATURE
+INCLUDE_TOPK=true              # true = add a deterministic witness_topk point (the T->0
+                                # limit, done exactly) to the temperature sweep
 
 # ── Misc ──────────────────────────────────────────────────────────────────────
 SMOKE_TEST=false               # true = 2 runs / tiny grid only, for quick debug
@@ -89,6 +97,9 @@ echo "    use_inv_sqrt_alpha   : $USE_INV_SQRT_ALPHA_SCALE"
 echo "    diag_steps           : ${DIAG_STEPS:-(disabled)}"
 echo "    grad_ref_n           : $GRAD_REF_N"
 echo "    alpha_list           : ${ALPHA_LIST:-(just witness_floor)}"
+echo "    witness_temperature  : $WITNESS_TEMPERATURE"
+echo "    temperature_list     : ${TEMPERATURE_LIST:-(just witness_temperature)}"
+echo "    include_topk         : $INCLUDE_TOPK"
 echo "    force_retrain        : $FORCE_RETRAIN"
 python -c "import torch; print(f'GPU available: {torch.cuda.is_available()}')"
 echo "============================================"
@@ -116,12 +127,16 @@ CMD="python run_backsel_witness_sweep.py \
     --rules                 $RULES \
     --witness_floor        $WITNESS_FLOOR"
 
+CMD="$CMD --witness_temperature $WITNESS_TEMPERATURE"
+
 [ "$BACKSEL_REPLACEMENT" = "true" ] && CMD="$CMD --backsel_replacement"
 [ "$NORMALIZE_BY_K_FRAC" = "true" ] && CMD="$CMD --normalize_by_k_frac"
 [ "$USE_INV_SQRT_ALPHA_SCALE" = "true" ] && CMD="$CMD --use_inv_sqrt_alpha_scale"
 [ "$FORCE_RETRAIN" = "true" ] && CMD="$CMD --force_retrain"
+[ "$INCLUDE_TOPK" = "true" ] && CMD="$CMD --include_topk"
 [ -n "$DIAG_STEPS" ] && CMD="$CMD --diag_steps $DIAG_STEPS --grad_ref_n $GRAD_REF_N"
 [ -n "$ALPHA_LIST" ] && CMD="$CMD --alpha_list $ALPHA_LIST"
+[ -n "$TEMPERATURE_LIST" ] && CMD="$CMD --temperature_list $TEMPERATURE_LIST"
 
 echo "Running: $CMD"
 eval $CMD

@@ -63,3 +63,42 @@ To force retraining from scratch for any notebook, set `FORCE_RETRAIN = True` in
 
 - **L2-GMM distance**: closed-form L2 distance between two GMMs
 - **MMD**: kernel-based Maximum Mean Discrepancy between generated and true samples
+
+## Backsel gradient-variance diagnostic (uniform vs. witness, frozen states)
+
+`scripts/backsel_state_gradient_variance.py` isolates ONE guidance step at a
+time to test whether witness-function backsel selection actually reduces
+gradient variance vs. uniform selection -- independent of
+`run_backsel_witness_sweep.py`'s end-to-end L2/MMD grid (which only sees the
+combined effect of many steps).
+
+- A handful of representative states are captured first: a few diffusion
+  steps (`--step_fracs`, e.g. early/mid/late in the denoising trajectory,
+  since difficulty differs across steps) x a few trajectory seeds
+  (`--state_seeds`, to land in different regions of the target
+  distribution). States come from UNGUIDED (zeta=0) trajectories, so which
+  rule is under test never influences the states it's evaluated at.
+- At each state independently: freeze it completely (fixed `x0_sample`,
+  fixed `t`), then redraw the full sampling + backsel pipeline
+  `--n_redraws` times (200+ recommended) for both `uniform` and `witness`.
+- Reports, per state AND per rule: `mean_grad`, `variance_trace` (trace of
+  the empirical gradient covariance across redraws), and
+  `normalized_variance` (`variance_trace / ||mean_grad||^2`) -- plus the
+  average of `normalized_variance` across all states. The per-state numbers
+  are saved in full (not just the average), since a single mean can hide a
+  rule that only wins at some states.
+
+```bash
+python scripts/backsel_state_gradient_variance.py --experiment 5D_cond_1D
+
+# or on a SLURM cluster (no N_RUNS sweep -- finishes in minutes, not hours):
+export ENV_PATH=/path/to/your/env
+export REPO_ROOT=/path/to/conditional-matching-paper
+sbatch simulations/scripts/run_backsel_state_variance.sh
+```
+
+Output: `results/<experiment>/<experiment>_backsel_state_variance_<method>_n<nsamples>_kfrac<k_frac>_seed<seed>.json`
+(nsamples and k_frac are in the filename so runs that only differ in either
+don't overwrite each other),
+containing every state's captured `x0_sample`/`t`, both rules' raw per-redraw
+gradients and summary stats, and the cross-state `averaged` block.

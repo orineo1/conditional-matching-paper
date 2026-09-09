@@ -110,7 +110,8 @@ def parse_args():
                    help="The 'proportion' axis: backsel_k / nsamples. 1.0 = no "
                         "subsampling (the 'full' baseline, computed once per "
                         "nsamples and shared across rules).")
-    p.add_argument("--rules", nargs="+", choices=["uniform", "witness"], default=["uniform", "witness"])
+    p.add_argument("--rules", nargs="+", choices=["uniform", "witness", "witness_topk"],
+                   default=["uniform", "witness"])
     p.add_argument("--witness_floor", type=float, default=0.3,
                    help="Defensive-mixture floor for rule='witness' (see witness_utils.py). Also "
                         "the canonical alpha used for plots/JSON/summary when --alpha_list is not "
@@ -120,6 +121,22 @@ def parse_args():
                    help="Sweep witness_floor over these values (rule='witness' only -- 'uniform' "
                         "doesn't use a floor). Defaults to just [--witness_floor], i.e. no extra "
                         "sweep. --witness_floor's value is always included even if you list others.")
+    p.add_argument("--witness_temperature", type=float, default=1.0,
+                   help="Reshapes |score|^(1/T) before the witness_floor blend for rule='witness' "
+                        "(T=1 plain |w|, T>1 flattens toward uniform, T<1 sharpens toward the "
+                        "top-|score| rows). Also the canonical temperature used everywhere except "
+                        "inside --temperature_list's own sweep.")
+    p.add_argument("--temperature_list", type=float, nargs="+", default=None,
+                   help="Sweep witness_temperature over these values (rule='witness' only), at "
+                        "the canonical --witness_floor -- independent of --alpha_list (not "
+                        "crossed with it, to avoid a combinatorial grid). --witness_temperature's "
+                        "value is always included. Writes an extra *_temperature_sweep.csv when "
+                        "more than one value is given, or when --include_topk is set.")
+    p.add_argument("--include_topk", action="store_true",
+                   help="Add one more point to the temperature sweep using rule='witness_topk' "
+                        "(deterministic: the backsel_k highest-|score| rows, no randomness) -- "
+                        "the T->0 limit of witness selection, done exactly. Logged in "
+                        "*_temperature_sweep.csv with temperature='topk'.")
     p.add_argument("--backsel_replacement", action="store_true",
                    help="Sample the backsel_k indices with replacement (default: without)")
     p.add_argument("--normalize_by_k_frac", action="store_true",
@@ -160,7 +177,7 @@ def run_grid_point(model_uncond, cond_model, CM_flag, num_x_t, nsamples, backsel
                    witness_floor, backsel_replacement, n_runs, global_seed, device,
                    mu_list, Sigma_list, alpha, mog_means, mog_variances, weights, x_star, label,
                    diag_steps=None, grad_ref_n=2000, normalize_by_k_frac=False,
-                   use_inv_sqrt_alpha_scale=False):
+                   use_inv_sqrt_alpha_scale=False, witness_temperature=1.0):
     """
     Returns (metrics, diag) where metrics = {"final_loss", "l2_gmm", "l2_x", "times"} (unchanged
     from before diagnostics existed -- this is what feeds the JSON/summary CSV/plots), and
@@ -181,7 +198,8 @@ def run_grid_point(model_uncond, cond_model, CM_flag, num_x_t, nsamples, backsel
             nsamples=nsamples, loss="MMD", device=device,
             num_x_t=num_x_t, CM=CM_flag,
             backsel_k=backsel_k, backsel_rule=backsel_rule,
-            witness_floor=witness_floor, backsel_replacement=backsel_replacement,
+            witness_floor=witness_floor, witness_temperature=witness_temperature,
+            backsel_replacement=backsel_replacement,
             backsel_generator=backsel_generator, normalize_by_k_frac=normalize_by_k_frac,
             use_inv_sqrt_alpha_scale=use_inv_sqrt_alpha_scale,
             return_history=diag_steps is not None, diag_steps=diag_steps, grad_ref_n=grad_ref_n,
@@ -329,12 +347,18 @@ def main():
     # well-defined even if --alpha_list doesn't happen to list it.
     alpha_list = sorted(set(args.alpha_list or [args.witness_floor]) | {args.witness_floor})
     canonical_alpha = args.witness_floor
+    # Temperature sweep (rule='witness' only): independent of alpha_list -- always run at
+    # canonical_alpha, not crossed with it, to avoid a combinatorial grid.
+    temperature_list = sorted(set(args.temperature_list or [args.witness_temperature]) | {args.witness_temperature})
+    canonical_temperature = args.witness_temperature
 
     results = {}
     diag_history = {}  # only populated when args.diag_steps is set; kept separate from
                         # `results` so the JSON/plot code paths below are unaffected either way
     alpha_metrics_rows = []  # every (method, n, kf, alpha) witness point's summary stats,
                              # captured inline as they're computed -- feeds the alpha-sweep CSV
+    temperature_metrics_rows = []  # every (method, n, kf, temperature) witness/witness_topk point's
+                                   # summary stats -- feeds the temperature-sweep CSV
     for method in methods:
         results[method] = {}
         diag_history[method] = {}
@@ -349,6 +373,7 @@ def main():
                 label=f"{method}-full", diag_steps=args.diag_steps, grad_ref_n=args.grad_ref_n,
                 normalize_by_k_frac=args.normalize_by_k_frac,
                 use_inv_sqrt_alpha_scale=args.use_inv_sqrt_alpha_scale,
+                witness_temperature=canonical_temperature,
             )
             for rule in rules:
                 results[method][n][rule] = {}
@@ -373,6 +398,7 @@ def main():
                                 label=f"{method}-witness-alpha{a}", diag_steps=args.diag_steps,
                                 grad_ref_n=args.grad_ref_n, normalize_by_k_frac=args.normalize_by_k_frac,
                                 use_inv_sqrt_alpha_scale=args.use_inv_sqrt_alpha_scale,
+                                witness_temperature=canonical_temperature,
                             )
                             diag_history[method][n][rule][kf][a] = diag_a
                             if a == canonical_alpha:
@@ -392,7 +418,50 @@ def main():
                             label=f"{method}-{rule}", diag_steps=args.diag_steps,
                             grad_ref_n=args.grad_ref_n, normalize_by_k_frac=args.normalize_by_k_frac,
                             use_inv_sqrt_alpha_scale=args.use_inv_sqrt_alpha_scale,
+                            witness_temperature=canonical_temperature,
                         )
+
+            # Temperature sweep (rule='witness', at canonical_alpha; plus an optional
+            # witness_topk point) -- independent of the alpha sweep above, and only run if
+            # there's actually more than the canonical temperature to compare, or --include_topk.
+            if "witness" in rules and (len(temperature_list) > 1 or args.include_topk):
+                for kf in k_fracs:
+                    if kf >= 1.0:
+                        continue
+                    k = max(1, round(kf * n))
+                    for temp in temperature_list:
+                        metrics_t, _ = run_grid_point(
+                            model_uncond, method_models[method]["cond_model"], method_models[method]["CM_flag"],
+                            args.num_x_t, n, k, "witness", canonical_alpha, args.backsel_replacement,
+                            args.n_runs, args.seed, device,
+                            mu_list, Sigma_list, alpha, mog_means, mog_variances, weights, x_star,
+                            label=f"{method}-witness-temp{temp}",
+                            normalize_by_k_frac=args.normalize_by_k_frac,
+                            use_inv_sqrt_alpha_scale=args.use_inv_sqrt_alpha_scale,
+                            witness_temperature=temp,
+                        )
+                        temperature_metrics_rows.append({
+                            "method": method, "nsamples": n, "k_frac": kf, "temperature": temp,
+                            "L2_GMM_mean": np.mean(metrics_t["l2_gmm"]), "L2_GMM_std": np.std(metrics_t["l2_gmm"]),
+                            "L2_x_mean": np.mean(metrics_t["l2_x"]), "L2_x_std": np.std(metrics_t["l2_x"]),
+                            "MMD_mean": np.mean(metrics_t["final_loss"]), "MMD_std": np.std(metrics_t["final_loss"]),
+                        })
+                    if args.include_topk:
+                        metrics_tk, _ = run_grid_point(
+                            model_uncond, method_models[method]["cond_model"], method_models[method]["CM_flag"],
+                            args.num_x_t, n, k, "witness_topk", canonical_alpha, args.backsel_replacement,
+                            args.n_runs, args.seed, device,
+                            mu_list, Sigma_list, alpha, mog_means, mog_variances, weights, x_star,
+                            label=f"{method}-witness_topk",
+                            normalize_by_k_frac=args.normalize_by_k_frac,
+                            use_inv_sqrt_alpha_scale=args.use_inv_sqrt_alpha_scale,
+                        )
+                        temperature_metrics_rows.append({
+                            "method": method, "nsamples": n, "k_frac": kf, "temperature": "topk",
+                            "L2_GMM_mean": np.mean(metrics_tk["l2_gmm"]), "L2_GMM_std": np.std(metrics_tk["l2_gmm"]),
+                            "L2_x_mean": np.mean(metrics_tk["l2_x"]), "L2_x_std": np.std(metrics_tk["l2_x"]),
+                            "MMD_mean": np.mean(metrics_tk["final_loss"]), "MMD_std": np.std(metrics_tk["final_loss"]),
+                        })
 
     out = {
         "experiment": args.experiment,
@@ -406,6 +475,9 @@ def main():
             "rules": rules,
             "witness_floor": args.witness_floor,
             "alpha_list": alpha_list,
+            "witness_temperature": args.witness_temperature,
+            "temperature_list": temperature_list,
+            "include_topk": args.include_topk,
             "backsel_replacement": args.backsel_replacement,
             "normalize_by_k_frac": args.normalize_by_k_frac,
             "use_inv_sqrt_alpha_scale": args.use_inv_sqrt_alpha_scale,
@@ -489,6 +561,16 @@ def main():
         alpha_df = pd.DataFrame(alpha_metrics_rows)
         alpha_df.to_csv(alpha_csv_path, index=False)
         print(f"[Results] Saved alpha-sweep summary to {alpha_csv_path}")
+
+    # Temperature sweep (witness_temperature), only written when --temperature_list listed more
+    # than the canonical value, or --include_topk added the deterministic top-k point.
+    if temperature_metrics_rows:
+        temp_csv_path = os.path.join(
+            results_dir, f"witness_sweep_numxt{args.num_x_t}_seed{args.seed}_{methods_tag}_temperature_sweep.csv"
+        )
+        temp_df = pd.DataFrame(temperature_metrics_rows)
+        temp_df.to_csv(temp_csv_path, index=False)
+        print(f"[Results] Saved temperature-sweep summary to {temp_csv_path}")
 
     # ── Gradient-variance / witness-scenario diagnostics (only when --diag_steps given) ────────
     if args.diag_steps:

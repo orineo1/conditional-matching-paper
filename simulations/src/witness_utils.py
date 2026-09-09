@@ -51,17 +51,25 @@ def compute_witness_scores(X, Y, kernel=None):
     return scores
 
 
-def select_backsel_mask(scores, k, rule="uniform", witness_floor=0.3, generator=None,
-                        replacement=False):
+def select_backsel_mask(scores, k, rule="uniform", witness_floor=0.3, witness_temperature=1.0,
+                        generator=None, replacement=False):
     """Choose which of len(scores) rows to keep differentiable.
 
     rule='uniform': k uniformly-random rows. rule='witness': sample proportional
-    to |scores|, blended with witness_floor toward uniform (defensive mixture
-    p_i = floor/n + (1-floor)*|w_i|/sum|w|). replacement=False (default) draws k
-    distinct rows; True allows repeats, tracked in `counts`.
+    to |scores|^(1/T) (T=witness_temperature; T=1 is plain |w|, T>1 flattens
+    toward uniform, T<1 sharpens toward the top-|score| rows), blended with
+    witness_floor toward uniform (defensive mixture p_i = floor/n +
+    (1-floor)*|w_i|^(1/T)/sum|w|^(1/T)). rule='witness_topk': deterministic --
+    the k highest-|score| rows, no randomness, no floor/temperature (the T->0
+    limit of 'witness', done exactly rather than approximated). replacement=
+    False (default) draws k distinct rows; True allows repeats, tracked in
+    `counts` (ignored for 'witness_topk', which is inherently without
+    replacement).
 
     Returns (mask, counts, probs): mask[n] bool = kept at least once; counts[n]
-    long = times drawn; probs[n] float = selection probabilities used.
+    long = times drawn; probs[n] float = selection probabilities used ('witness_topk'
+    returns a one-hot-per-selected-row probs for logging, not an actual sampling
+    distribution).
     """
     n = scores.shape[0]
     k = max(0, min(int(k), n))
@@ -70,12 +78,24 @@ def select_backsel_mask(scores, k, rule="uniform", witness_floor=0.3, generator=
         probs = torch.full((n,), 1.0 / n, dtype=torch.float64)
     elif rule == "witness":
         p = scores.abs().double()
+        if witness_temperature != 1.0:
+            p = p.clamp_min(1e-12) ** (1.0 / witness_temperature)
         p = (1.0 - witness_floor) * p / p.sum().clamp_min(1e-12) + witness_floor / n
         probs = p / p.sum()
+    elif rule == "witness_topk":
+        probs = None  # not a sampling distribution -- filled in below
     else:
-        raise ValueError(f"unknown backsel_rule {rule!r} (known: 'uniform', 'witness')")
+        raise ValueError(
+            f"unknown backsel_rule {rule!r} (known: 'uniform', 'witness', 'witness_topk')"
+        )
 
-    if k == 0:
+    if rule == "witness_topk":
+        counts = torch.zeros(n, dtype=torch.long)
+        if k > 0:
+            top_idx = torch.topk(scores.abs(), k).indices
+            counts[top_idx] = 1
+        probs = counts.double() / max(k, 1)
+    elif k == 0:
         counts = torch.zeros(n, dtype=torch.long)
     elif k >= n and not replacement:
         counts = torch.ones(n, dtype=torch.long)
@@ -88,12 +108,12 @@ def select_backsel_mask(scores, k, rule="uniform", witness_floor=0.3, generator=
 
 
 def apply_backsel(samples, target_samples_for_scoring, k, rule="uniform",
-                  witness_floor=0.3, generator=None, replacement=False):
+                  witness_floor=0.3, witness_temperature=1.0, generator=None, replacement=False):
     """Build the differentiable-subsample batch for the guidance loss: unselected
     rows are individually detached (zero gradient, still counted in the loss
     VALUE), selected rows keep gradient (duplicated if drawn >1x with
     replacement -- autograd sums across reuses). See select_backsel_mask for
-    k/rule/witness_floor/generator/replacement.
+    k/rule/witness_floor/witness_temperature/generator/replacement.
 
     Returns (batch, info): batch is samples' rows reassembled per selection
     (grows beyond n only with replacement duplicates); info has
@@ -101,9 +121,9 @@ def apply_backsel(samples, target_samples_for_scoring, k, rule="uniform",
     """
     n = samples.shape[0]
     scores = compute_witness_scores(samples, target_samples_for_scoring) \
-        if rule == "witness" else torch.zeros(n)
+        if rule in ("witness", "witness_topk") else torch.zeros(n)
     mask, counts, probs = select_backsel_mask(
-        scores, k, rule=rule, witness_floor=witness_floor,
+        scores, k, rule=rule, witness_floor=witness_floor, witness_temperature=witness_temperature,
         generator=generator, replacement=replacement,
     )
 

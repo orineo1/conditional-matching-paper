@@ -1,4 +1,4 @@
-# MLGD-F
+`# MLGD-F
 
 **Marginal-distribution-guided Diffusion via Flow** — steers a diffusion model toward
 a target distribution using MMD loss in CLIP embedding space.

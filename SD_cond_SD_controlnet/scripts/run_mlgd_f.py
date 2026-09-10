@@ -239,6 +239,12 @@ def parse_args():
                    help="Images per age value. 0 = auto (~100 total)")
     p.add_argument("--age_gender", type=str,   default="man",
                    help="Gender word used in age prompt (man/woman)")
+    p.add_argument("--source_age", type=int, default=None,
+                   help="Which age's generated portrait to use as the SDEdit source "
+                        "scribble/image (must be one of the ages actually swept, i.e. "
+                        "in range(age_min, age_max, age_step)). None (default) = the "
+                        "middle age of the range, as before -- pass e.g. --source_age "
+                        "40 to start from the youngest end instead.")
 
     return p.parse_args()
 
@@ -486,10 +492,19 @@ def build_targets_age(args, sprinter, clip_model, clip_processor, device,
         plot_row(target_images_per_group[str(age)], f"Age {age}",
                  save_path=os.path.join(args.output_dir, f"target_samples_age{age}.png"))
 
-    # Extract HED scribble from a male portrait at middle age
-    mid_age = ages[len(ages) // 2]
-    print(f"Extracting HED scribble from age-{mid_age} portrait...", flush=True)
-    source_image = target_images_per_group[str(mid_age)][0]
+    # Extract HED scribble from a male portrait at the chosen source age (default:
+    # middle of the range; pass --source_age to start from a younger/older end instead)
+    if args.source_age is not None:
+        if args.source_age not in ages:
+            raise ValueError(
+                f"--source_age {args.source_age} is not among the swept ages {ages} "
+                f"(check --age_min/--age_max/--age_step)"
+            )
+        source_age = args.source_age
+    else:
+        source_age = ages[len(ages) // 2]
+    print(f"Extracting HED scribble from age-{source_age} portrait...", flush=True)
+    source_image = target_images_per_group[str(source_age)][0]
     scribble_pil = extract_scribble_hed(source_image)
 
     # Encode to CLIP

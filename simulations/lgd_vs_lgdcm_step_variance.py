@@ -2,7 +2,10 @@
 """
 lgd_vs_lgdcm_step_variance.py — per-step gradient variance/accuracy of LGD's
 inner sampler (K-step DDIM unroll through the conditional diffusion model)
-vs. LGD-CM's inner sampler (one-shot consistency-model draw), along real
+vs. LGD-CM's inner sampler (the consistency model's own ~14-step multistep
+sampling procedure -- see ConsistencyModeliCT.sample: far fewer, coarser
+jump-and-refine steps than LGD's fine-grained DDIM unroll, not a single
+network call), along real
 optimization trajectories rather than a single hand-picked point.
 
 Extends gradient_variance_vs_unroll_depth.py's "freeze a state, redraw the
@@ -23,7 +26,9 @@ Design:
       LGD:    a --k_lgd-step DDIM unroll through model_cond (default: the
               full schedule, matching what real LGD guidance actually runs
               each outer step).
-      LGD-CM: one draw through the consistency model.
+      LGD-CM: one draw via the consistency model's own multistep sampling
+              (ConsistencyModeliCT.sample -- ~14 network calls at default
+              `ts`, each a coarse jump-and-refine step, not one forward pass).
     against the SAME fixed target-sample set (drawn once per state from the
     exact analytic conditional GMM at that state's x -- not model_cond's own
     approximation), and compute the MMD loss + its gradient w.r.t. x.
@@ -126,7 +131,7 @@ def capture_trajectory_states(model_uncond, seed, step_stride, condition_on, dev
 
 
 def grad_stats_for_method(x0_sample, sampler_fn, target_samples, n_redraws, base_seed, mmd_loss, experiment_utils, device):
-    """Redraw `sampler_fn` (LGD's K-step unroll or LGD-CM's one-shot draw)
+    """Redraw `sampler_fn` (LGD's K-step DDIM unroll or LGD-CM's own multistep sample)
     n_redraws times at this ONE frozen x0_sample, against the fixed
     target_samples. Returns (mean_grad, normalized_variance)."""
     grads = []

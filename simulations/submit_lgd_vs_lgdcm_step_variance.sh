@@ -10,9 +10,10 @@
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Per-step gradient variance/accuracy of LGD's inner sampler (K-step DDIM
-# unroll through model_cond) vs. LGD-CM's inner sampler (one-shot consistency-
-# model draw), averaged over N_TRAJECTORIES independent optimization
-# trajectories. See lgd_vs_lgdcm_step_variance.py's docstring for the full
+# unroll through model_cond) vs. LGD-CM's inner sampler (the consistency
+# model's own ~14-step multistep sampling procedure), averaged over
+# N_TRAJECTORIES independent optimization trajectories. See
+# lgd_vs_lgdcm_step_variance.py's docstring for the full
 # design. For the original single-point, sweep-K-only version, use the
 # separate submit_gradient_variance.sh instead.
 #

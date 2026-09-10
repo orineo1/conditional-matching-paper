@@ -72,7 +72,7 @@ python scripts/run_mlgd_f.py \
     --guidance_scale 0.0 \
     --controlnet_scale 0.5 \
     --loss_fn mmd \
-    --seed 1
+    --seed "${SEED:-1}"
 
 # ── 6. Offline analysis (run manually when needed) ────────────────────────────
 # python src/analysis.py --run_dir "$OUTPUT_DIR" --plots_dir "$OUTPUT_DIR/plots"

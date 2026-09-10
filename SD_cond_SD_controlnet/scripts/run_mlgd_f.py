@@ -989,6 +989,8 @@ def main():
             print(f"  [eval] mlgd_f={mmd_loss.item():.6f}  unguided={unguided_mmd:.6f}  "
                   f"delta={mmd_loss.item()-unguided_mmd:.6f}", flush=True)
 
+        wandb.log(wandb_log, commit=False)
+
         is_last_step = (i + 1) == len(timesteps_to_run)
         do_visualize = is_last_step or (i + 1) % args.vis_interval == 0
 

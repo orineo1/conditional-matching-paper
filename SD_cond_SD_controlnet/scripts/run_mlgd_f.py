@@ -504,6 +504,7 @@ def build_targets_age(args, sprinter, clip_model, clip_processor, device,
     else:
         source_age = ages[len(ages) // 2]
     print(f"Extracting HED scribble from age-{source_age} portrait...", flush=True)
+    args.resolved_source_age = source_age  # for wandb logging, even when --source_age was unset
     source_image = target_images_per_group[str(source_age)][0]
     scribble_pil = extract_scribble_hed(source_image)
 
@@ -645,6 +646,13 @@ def main():
             "bandwidth_scale":              args.bandwidth_scale,
             "kernel_alpha":                 args.kernel_alpha,
             "mode":                         args.mode,
+            "age_min":                      args.age_min,
+            "age_max":                      args.age_max,
+            "age_step":                     args.age_step,
+            "n_per_age":                    args.n_per_age,
+            "age_gender":                   args.age_gender,
+            "source_age":                   args.source_age,
+            "resolved_source_age":          getattr(args, "resolved_source_age", None),
             "use_adam":                     args.use_adam,
             "adam_lr":                      args.adam_lr,
             "adam_beta1":                   args.adam_beta1,

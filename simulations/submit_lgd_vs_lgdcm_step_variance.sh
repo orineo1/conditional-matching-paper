@@ -36,13 +36,6 @@ GRAD_REF_N=2000            # sample size for the TRUE/population reference gradi
 SEED=42                    # base seed; trajectory i uses SEED + i
 SMOKE_TEST=false           # true = tiny sanity-check run (2 trajectories, coarse stride,
                             # few redraws) instead of the real sweep above
-STATE_SOURCE="${STATE_SOURCE:-unguided}"  # unguided | own -- see script docstring for
-                            # --state_source. "own" runs N_TRAJECTORIES REAL guided
-                            # trajectories PER METHOD (LGD and LGD-CM each drive their own
-                            # -zeta*grad correction) and also records each trajectory's
-                            # final_l2_gmm downstream outcome.
-ZETA=1.0                   # guidance strength for STATE_SOURCE=own (ignored otherwise)
-NUM_X_T=1                  # candidates per step for STATE_SOURCE=own (ignored otherwise)
 
 export ENV_PATH="${ENV_PATH:?ENV_PATH is not set. Export it before submitting (dir containing bin/python).}"
 PYTHON="$ENV_PATH/bin/python"
@@ -58,11 +51,6 @@ mkdir -p logs
 KLGD_ARGS=()
 [ -n "$K_LGD" ] && KLGD_ARGS=(--k_lgd "$K_LGD")
 
-OWN_ARGS=()
-if [ "$STATE_SOURCE" = "own" ]; then
-    OWN_ARGS=(--zeta "$ZETA" --num_x_t "$NUM_X_T")
-fi
-
 echo "=== JOB ${SLURM_JOB_ID} ON $(hostname) ==="
 echo "    experiment      : $EXPERIMENT_NAME"
 echo "    n_trajectories  : $N_TRAJECTORIES"
@@ -72,11 +60,6 @@ echo "    nsamples        : $NSAMPLES"
 echo "    k_lgd           : ${K_LGD:-(full diffusion_steps)}"
 echo "    grad_ref_n      : $GRAD_REF_N"
 echo "    smoke_test      : $SMOKE_TEST"
-echo "    state_source    : $STATE_SOURCE"
-if [ "$STATE_SOURCE" = "own" ]; then
-    echo "    zeta            : $ZETA"
-    echo "    num_x_t         : $NUM_X_T"
-fi
 "$PYTHON" -c "import torch; print(f'GPU available: {torch.cuda.is_available()}')"
 echo "============================================"
 
@@ -84,8 +67,6 @@ if [ "$SMOKE_TEST" = "true" ]; then
     "$PYTHON" lgd_vs_lgdcm_step_variance.py \
         --experiment_name "$EXPERIMENT_NAME" \
         --seed             "$SEED" \
-        --state_source     "$STATE_SOURCE" \
-        "${OWN_ARGS[@]}" \
         --smoke \
         --plot
 else
@@ -97,8 +78,6 @@ else
         --nsamples            "$NSAMPLES" \
         --grad_ref_n          "$GRAD_REF_N" \
         --seed                "$SEED" \
-        --state_source        "$STATE_SOURCE" \
-        "${OWN_ARGS[@]}" \
         "${KLGD_ARGS[@]}" \
         --plot
 fi

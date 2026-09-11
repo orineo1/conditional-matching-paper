@@ -133,7 +133,22 @@ def capture_trajectory_states(model_uncond, seed, step_stride, condition_on, dev
 def grad_stats_for_method(x0_sample, sampler_fn, target_samples, n_redraws, base_seed, mmd_loss, experiment_utils, device):
     """Redraw `sampler_fn` (LGD's K-step DDIM unroll or LGD-CM's own multistep sample)
     n_redraws times at this ONE frozen x0_sample, against the fixed
-    target_samples. Returns (mean_grad, normalized_variance)."""
+    target_samples. Returns (mean_grad, stats) where stats has:
+      normalized_variance   -- Var(grad)/||mean_grad||^2 (scale-free, but can mask a
+                                real dimension-dependent noise trend if ||mean_grad||
+                                itself grows with dimension).
+      variance_trace        -- raw E[||g - mean_grad||^2] (sum over condition_on
+                                coordinates -- grows trivially with dimension just
+                                from having more terms in the sum, NOT itself evidence
+                                of a per-coordinate noise increase).
+      variance_trace_per_dim -- variance_trace / condition_on, i.e. per-coordinate
+                                variance -- the fair cross-dimension comparison: factors
+                                out the trivial "more coordinates -> bigger sum" effect,
+                                isolating whether a TYPICAL coordinate's noise actually
+                                gets worse as dimension grows.
+      mean_grad_norm         -- ||mean_grad|| (for reference / sanity-checking whether
+                                the signal itself is what's scaling with dimension).
+    """
     grads = []
     for r in range(n_redraws):
         experiment_utils.set_run_seed(base_seed, r)
@@ -144,12 +159,19 @@ def grad_stats_for_method(x0_sample, sampler_fn, target_samples, n_redraws, base
         grads.append(grad.detach().cpu().numpy().copy())
 
     grads = np.stack(grads, axis=0)
+    condition_on = grads.shape[1]
     mean_grad = grads.mean(axis=0)
     centered = grads - mean_grad
     variance_trace = float(np.mean(np.sum(centered ** 2, axis=1)))
     mean_grad_norm_sq = float(np.sum(mean_grad ** 2))
     normalized_variance = variance_trace / (mean_grad_norm_sq + 1e-12)
-    return mean_grad, normalized_variance
+    stats = {
+        "normalized_variance": normalized_variance,
+        "variance_trace": variance_trace,
+        "variance_trace_per_dim": variance_trace / condition_on,
+        "mean_grad_norm": float(np.sqrt(mean_grad_norm_sq)),
+    }
+    return mean_grad, stats
 
 
 def main():
@@ -299,7 +321,7 @@ def main():
                 ("LGD", lgd_sampler, 0),
                 ("LGD-CM", lgdcm_sampler, 500),
             ):
-                mean_grad, normalized_variance = grad_stats_for_method(
+                mean_grad, stats = grad_stats_for_method(
                     x_fixed, sampler_fn, target_samples, args.n_redraws,
                     traj_seed * 100_000 + step_idx + seed_offset,
                     mmd_loss, experiment_utils, device,
@@ -308,19 +330,24 @@ def main():
                 dist_to_ref_normalized = dist_to_ref / (grad_ref_norm + 1e-12)
                 raw_rows.append({
                     "trajectory": traj_i, "step_index": step_idx, "t": t, "method": method_name,
-                    "normalized_variance": normalized_variance,
+                    **stats,
                     "dist_to_ref": dist_to_ref, "dist_to_ref_normalized": dist_to_ref_normalized,
                     "grad_ref_norm": grad_ref_norm,
                 })
             print(f"  [traj {traj_i}] step {step_idx:>3} (t={t:>3}) | "
-                  f"LGD nv={raw_rows[-2]['normalized_variance']:.4e} dist={raw_rows[-2]['dist_to_ref_normalized']:.4f} | "
-                  f"LGD-CM nv={raw_rows[-1]['normalized_variance']:.4e} dist={raw_rows[-1]['dist_to_ref_normalized']:.4f}",
+                  f"LGD nv={raw_rows[-2]['normalized_variance']:.4e} "
+                  f"var/dim={raw_rows[-2]['variance_trace_per_dim']:.4e} "
+                  f"dist={raw_rows[-2]['dist_to_ref_normalized']:.4f} | "
+                  f"LGD-CM nv={raw_rows[-1]['normalized_variance']:.4e} "
+                  f"var/dim={raw_rows[-1]['variance_trace_per_dim']:.4e} "
+                  f"dist={raw_rows[-1]['dist_to_ref_normalized']:.4f}",
                   flush=True)
 
     # ── aggregate: mean/std/sem per (step_index, method) across trajectories ─
     step_indices = sorted(set(r["step_index"] for r in raw_rows))
     methods = ["LGD", "LGD-CM"]
-    METRICS = ["normalized_variance", "dist_to_ref_normalized"]
+    METRICS = ["normalized_variance", "dist_to_ref_normalized",
+               "variance_trace", "variance_trace_per_dim", "mean_grad_norm"]
     aggregated = {m: {metric: [] for metric in METRICS} for m in methods}
     aggregated["step_index"] = step_indices
     aggregated["t"] = [next(r["t"] for r in raw_rows if r["step_index"] == s) for s in step_indices]
@@ -370,16 +397,18 @@ def _make_plot(aggregated, experiment_name, save_path):
     ts = aggregated["t"]
     colors = {"LGD": "steelblue", "LGD-CM": "crimson"}
 
-    fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
+    fig, axes = plt.subplots(1, 3, figsize=(17, 4.5))
     for ax, metric, title, ylabel in (
-        (axes[0], "normalized_variance", "Per-step gradient variance", "Var(grad) / ||mean_grad||²"),
-        (axes[1], "dist_to_ref_normalized", "Per-step gradient accuracy", "||mean_grad − grad_ref|| / ||grad_ref||"),
+        (axes[0], "normalized_variance", "Per-step gradient variance (scale-free)", "Var(grad) / ||mean_grad||²"),
+        (axes[1], "variance_trace_per_dim", "Per-step gradient variance (per coordinate)",
+         "Var(grad) / condition_on  (fair across dimensions)"),
+        (axes[2], "dist_to_ref_normalized", "Per-step gradient accuracy", "||mean_grad − grad_ref|| / ||grad_ref||"),
     ):
         for method in ("LGD", "LGD-CM"):
             means = np.array([e["mean"] for e in aggregated[method][metric]])
             sems = np.array([e["sem"] for e in aggregated[method][metric]])
             ax.plot(ts, means, marker="o", color=colors[method], label=method)
-            ax.fill_between(ts, means - sems, means + sems, color=colors[method], alpha=0.2)
+            ax.fill_between(ts, np.clip(means - sems, 1e-9, None), means + sems, color=colors[method], alpha=0.2)
         ax.set_xlabel("timestep t (noisy → clean, right to left)")
         ax.set_ylabel(ylabel)
         ax.set_title(title)

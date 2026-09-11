@@ -41,6 +41,18 @@ def ddim_sample_kstep(model, nsamples, condition_x, K, device):
     return x, y, n_steps
 
 
+def analytic_target_samples(dist_utils, mu_list, Sigma_list, alpha, x_fixed, n_target, device):
+    """Fixed target samples at x_fixed, drawn from the EXACT analytic
+    conditional GMM (closed-form, ground truth) -- not model_cond's learned
+    approximation of it. Returns a [n_target, y_dim] float tensor on `device`.
+    """
+    mu_cond, Sigma_cond = dist_utils.compute_conditionals(mu_list, Sigma_list, x_fixed)
+    w_cond = dist_utils.compute_alpha(mu_list, Sigma_list, alpha, x_fixed)
+    return dist_utils.generate_mog_samples_not_differentiable(
+        n_target, mu_cond, Sigma_cond, w_cond
+    ).float().to(device)
+
+
 def true_reference_gradient(dist_utils, mmd_loss, mu_list, Sigma_list, alpha, x_fixed, target_samples, grad_ref_n, device):
     """TRUE/population gradient at x_fixed: differentiate MMD(ref_samples(x),
     target_samples) w.r.t. x, where ref_samples(x) is a large, differentiable

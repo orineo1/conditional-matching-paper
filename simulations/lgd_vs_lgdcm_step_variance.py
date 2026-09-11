@@ -213,11 +213,9 @@ def main():
 
             # Fixed target samples for this state: drawn once from the exact analytic
             # conditional GMM at x_fixed (ground truth, not model_cond's approximation).
-            mu_cond, Sigma_cond = dist_utils.compute_conditionals(mu_list, Sigma_list, x_fixed)
-            w_cond = dist_utils.compute_alpha(mu_list, Sigma_list, alpha, x_fixed)
-            target_samples = dist_utils.generate_mog_samples_not_differentiable(
-                n_target, mu_cond, Sigma_cond, w_cond
-            ).float().to(device)
+            target_samples = grad_variance_utils.analytic_target_samples(
+                dist_utils, mu_list, Sigma_list, alpha, x_fixed, n_target, device
+            )
 
             # TRUE/population reference gradient at this state (closed-form, independent
             # of which inner sampler is being evaluated).

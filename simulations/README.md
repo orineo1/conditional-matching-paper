@@ -64,47 +64,41 @@ To force retraining from scratch for any notebook, set `FORCE_RETRAIN = True` in
 - **L2-GMM distance**: closed-form L2 distance between two GMMs
 - **MMD**: kernel-based Maximum Mean Discrepancy between generated and true samples
 
-## LGD vs. LGD-CM per-step gradient variance/accuracy
+## Backsel gradient-variance diagnostic (uniform vs. witness, frozen states)
 
-`lgd_vs_lgdcm_step_variance.py` directly tests the claim that unrolling
-deeper diffusion chains injects more noise into the guidance gradient, by
-comparing LGD's inner sampler (a `--k_lgd`-step DDIM unroll through the
-pretrained `Diffusion_cond` checkpoint) against LGD-CM's inner sampler (the
-pretrained consistency model's own ~14-step multistep sampling procedure) at
-every step of one or more real optimization trajectories, not just a single
-hand-picked point.
+`scripts/backsel_state_gradient_variance.py` isolates ONE guidance step at a
+time to test whether witness-function backsel selection actually reduces
+gradient variance vs. uniform selection -- independent of
+`run_backsel_witness_sweep.py`'s end-to-end L2/MMD grid (which only sees the
+combined effect of many steps).
 
-States are captured from `--n_trajectories` independent UNGUIDED (zeta=0)
-reference trajectories of `model_uncond`, one per outer diffusion step
-(every `--step_stride`-th step) -- unguided so the states themselves don't
-already depend on which inner sampler produced them. Each trajectory uses a
-different seed.
-
-At each captured state, both samplers are redrawn `--n_redraws` times against
-the same fixed target-sample set (drawn from the exact analytic conditional
-GMM, not either model's approximation), and per (trajectory, step, method) it
-reports `normalized_variance` (`Var(grad)/||mean_grad||^2`),
-`variance_trace_per_dim` (raw per-coordinate variance — the fair
-cross-dimension comparison), and `dist_to_ref_normalized` (distance from the
-mean gradient to the TRUE/population reference gradient, computed
-closed-form with no network forward) — averaged (mean ± SEM) across
-trajectories at each step. Results (per-trajectory raw rows and the
-aggregated means) are saved to a single JSON file; the script does not
-produce any plots.
+- A handful of representative states are captured first: a few diffusion
+  steps (`--step_fracs`, e.g. early/mid/late in the denoising trajectory,
+  since difficulty differs across steps) x a few trajectory seeds
+  (`--state_seeds`, to land in different regions of the target
+  distribution). States come from UNGUIDED (zeta=0) trajectories, so which
+  rule is under test never influences the states it's evaluated at.
+- At each state independently: freeze it completely (fixed `x0_sample`,
+  fixed `t`), then redraw the full sampling + backsel pipeline
+  `--n_redraws` times (200+ recommended) for both `uniform` and `witness`.
+- Reports, per state AND per rule: `mean_grad`, `variance_trace` (trace of
+  the empirical gradient covariance across redraws), and
+  `normalized_variance` (`variance_trace / ||mean_grad||^2`) -- plus the
+  average of `normalized_variance` across all states. The per-state numbers
+  are saved in full (not just the average), since a single mean can hide a
+  rule that only wins at some states.
 
 ```bash
-python lgd_vs_lgdcm_step_variance.py --experiment_name 10D_cond_1D --smoke
+python scripts/backsel_state_gradient_variance.py --experiment 5D_cond_1D
 
-python lgd_vs_lgdcm_step_variance.py --experiment_name 10D_cond_1D \
-    --n_trajectories 10 --step_stride 10 --n_redraws 30
-
-# or on a SLURM cluster:
+# or on a SLURM cluster (no N_RUNS sweep -- finishes in minutes, not hours):
 export ENV_PATH=/path/to/your/env
 export REPO_ROOT=/path/to/conditional-matching-paper
-export EXPERIMENT_NAME=10D_cond_1D
-sbatch simulations/submit_lgd_vs_lgdcm_step_variance.sh
+sbatch simulations/scripts/run_backsel_state_variance.sh
 ```
 
-Requires the `Diffusion_uncond`, `Diffusion_cond`, and `CM` checkpoints for
-the chosen experiment — either let them download once via the HuggingFace
-fallback, or train them locally via `notebooks/Exp_<experiment_name>.ipynb`.
+Output: `results/<experiment>/<experiment>_backsel_state_variance_<method>_n<nsamples>_kfrac<k_frac>_seed<seed>.json`
+(nsamples and k_frac are in the filename so runs that only differ in either
+don't overwrite each other),
+containing every state's captured `x0_sample`/`t`, both rules' raw per-redraw
+gradients and summary stats, and the cross-state `averaged` block.

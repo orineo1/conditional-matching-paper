@@ -8,11 +8,11 @@ jump-and-refine steps than LGD's fine-grained DDIM unroll, not a single
 network call), along real
 optimization trajectories rather than a single hand-picked point.
 
-Extends gradient_variance_vs_unroll_depth.py's "freeze a state, redraw the
-sampler's noise many times" methodology (same normalized_variance and
-dist_to_ref_normalized metrics, same true/population reference-gradient
+Uses the "freeze a state, redraw the sampler's noise many times" methodology
+from src/grad_variance_utils.py (normalized_variance and
+dist_to_ref_normalized metrics, true/population reference-gradient
 machinery) across EVERY step of one or more full trajectories, comparing the
-two inner samplers directly instead of sweeping unroll depth K on one method.
+two inner samplers directly rather than at a single hand-picked point.
 
 Design:
   - States are captured from --n_trajectories independent UNGUIDED (zeta=0)
@@ -35,7 +35,7 @@ Design:
   - Per (trajectory, step, method): normalized_variance = Var(grad)/||mean_grad||^2
     across the redraws, and dist_to_ref_normalized = ||mean_grad - grad_ref|| /
     ||grad_ref||, where grad_ref is the TRUE population gradient at that state
-    (closed-form, no network forward -- see gradient_variance_vs_unroll_depth.py).
+    (closed-form, no network forward -- see src/grad_variance_utils.py).
   - Averaged (mean + std + SEM) across --n_trajectories at each step index,
     separately for LGD and LGD-CM -- this is the "run e.g. 10 trajectories,
     report the mean of each metric per step" output; per-trajectory raw rows
@@ -64,46 +64,13 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if os.path.join(_HERE, "src") not in sys.path:
     sys.path.insert(0, os.path.join(_HERE, "src"))
 
+import grad_variance_utils
+
 ARCH = {
     "2D_cond_1D":  dict(nblocks=3, nunits=128, diffusion_steps=100, condition_on=1),
     "5D_cond_1D":  dict(nblocks=6, nunits=512, diffusion_steps=100, condition_on=4),
     "10D_cond_1D": dict(nblocks=8, nunits=512, diffusion_steps=100, condition_on=9),
 }
-
-
-def ddim_sample_kstep(model, nsamples, condition_x, K, device):
-    """Differentiable, deterministic (eta=0) DDIM sampling from `model`, using
-    an evenly-spaced K-step subsequence of its trained noise schedule
-    (accelerated DDIM respacing). Gradients flow from the output back to
-    `condition_x`. Returns (full_sample, y_only, n_steps_actually_taken).
-    Identical to gradient_variance_vs_unroll_depth.py's version -- kept local
-    here so this script has no import-order dependency on that one.
-    """
-    model_dtype = next(model.parameters()).dtype
-    T = model.diffusion_steps
-
-    idx = torch.linspace(0, T - 1, K + 1).round().long()
-    idx = torch.unique(idx, sorted=True).flip(0)  # descending, e.g. [99, ..., 0]
-    n_steps = len(idx) - 1
-
-    x = torch.randn(nsamples, model.nfeatures, device=device, dtype=model_dtype)
-    cond = condition_x.to(device=device, dtype=model_dtype)
-
-    for i in range(n_steps):
-        t_cur = idx[i].item()
-        t_next = idx[i + 1].item()
-        t_batch = torch.full((nsamples, 1), t_cur, device=device, dtype=model_dtype)
-        predicted_noise = model(x, t_batch, cond)
-
-        alpha_bar_t = model.baralphas[t_cur]
-        alpha_bar_prev = model.baralphas[t_next]
-
-        pred_x0 = (x - torch.sqrt(1 - alpha_bar_t) * predicted_noise) / torch.sqrt(alpha_bar_t)
-        dir_xt = torch.sqrt(1 - alpha_bar_prev) * predicted_noise  # eta=0 => sigma_t=0
-        x = torch.sqrt(alpha_bar_prev) * pred_x0 + dir_xt
-
-    y = x[:, model.condition_on:]
-    return x, y, n_steps
 
 
 def capture_trajectory_states(model_uncond, seed, step_stride, condition_on, device, experiment_utils):
@@ -128,50 +95,6 @@ def capture_trajectory_states(model_uncond, seed, step_stride, condition_on, dev
             captured.append((step_idx, t, x0_sample.detach().clone()))
         x_t = x_t_minus_1.detach().clone()
     return captured
-
-
-def grad_stats_for_method(x0_sample, sampler_fn, target_samples, n_redraws, base_seed, mmd_loss, experiment_utils, device):
-    """Redraw `sampler_fn` (LGD's K-step DDIM unroll or LGD-CM's own multistep sample)
-    n_redraws times at this ONE frozen x0_sample, against the fixed
-    target_samples. Returns (mean_grad, stats) where stats has:
-      normalized_variance   -- Var(grad)/||mean_grad||^2 (scale-free, but can mask a
-                                real dimension-dependent noise trend if ||mean_grad||
-                                itself grows with dimension).
-      variance_trace        -- raw E[||g - mean_grad||^2] (sum over condition_on
-                                coordinates -- grows trivially with dimension just
-                                from having more terms in the sum, NOT itself evidence
-                                of a per-coordinate noise increase).
-      variance_trace_per_dim -- variance_trace / condition_on, i.e. per-coordinate
-                                variance -- the fair cross-dimension comparison: factors
-                                out the trivial "more coordinates -> bigger sum" effect,
-                                isolating whether a TYPICAL coordinate's noise actually
-                                gets worse as dimension grows.
-      mean_grad_norm         -- ||mean_grad|| (for reference / sanity-checking whether
-                                the signal itself is what's scaling with dimension).
-    """
-    grads = []
-    for r in range(n_redraws):
-        experiment_utils.set_run_seed(base_seed, r)
-        x_leaf = x0_sample.clone().detach().to(device).requires_grad_(True)
-        y_samples = sampler_fn(x_leaf)
-        loss = mmd_loss(y_samples, target_samples)
-        grad = torch.autograd.grad(loss, x_leaf)[0]
-        grads.append(grad.detach().cpu().numpy().copy())
-
-    grads = np.stack(grads, axis=0)
-    condition_on = grads.shape[1]
-    mean_grad = grads.mean(axis=0)
-    centered = grads - mean_grad
-    variance_trace = float(np.mean(np.sum(centered ** 2, axis=1)))
-    mean_grad_norm_sq = float(np.sum(mean_grad ** 2))
-    normalized_variance = variance_trace / (mean_grad_norm_sq + 1e-12)
-    stats = {
-        "normalized_variance": normalized_variance,
-        "variance_trace": variance_trace,
-        "variance_trace_per_dim": variance_trace / condition_on,
-        "mean_grad_norm": float(np.sqrt(mean_grad_norm_sq)),
-    }
-    return mean_grad, stats
 
 
 def main():
@@ -298,18 +221,14 @@ def main():
 
             # TRUE/population reference gradient at this state (closed-form, independent
             # of which inner sampler is being evaluated).
-            x_ref_leaf = x_fixed.clone().detach().to(device).requires_grad_(True)
-            condi_mu, condi_sigma = dist_utils.compute_conditionals(mu_list, Sigma_list, x_ref_leaf)
-            condi_mu = condi_mu.squeeze(-1)
-            condi_alpha = dist_utils.compute_alpha(mu_list, Sigma_list, alpha, x_ref_leaf)
-            ref_samples = dist_utils.generate_mog_samples(args.grad_ref_n, condi_mu, condi_sigma, condi_alpha, device=device)
-            loss_ref = mmd_loss(ref_samples, target_samples)
-            grad_ref = torch.autograd.grad(loss_ref, x_ref_leaf)[0].detach().cpu().numpy()
-            grad_ref_norm = float(np.linalg.norm(grad_ref))
+            grad_ref, grad_ref_norm = grad_variance_utils.true_reference_gradient(
+                dist_utils, mmd_loss, mu_list, Sigma_list, alpha, x_fixed, target_samples,
+                args.grad_ref_n, device,
+            )
 
             def lgd_sampler(x_leaf, _k=k_lgd):
                 cond = x_leaf.view(1, -1).repeat(args.nsamples, 1)
-                _, y, _ = ddim_sample_kstep(model_cond, args.nsamples, cond, _k, device)
+                _, y, _ = grad_variance_utils.ddim_sample_kstep(model_cond, args.nsamples, cond, _k, device)
                 return y
 
             def lgdcm_sampler(x_leaf):
@@ -321,13 +240,14 @@ def main():
                 ("LGD", lgd_sampler, 0),
                 ("LGD-CM", lgdcm_sampler, 500),
             ):
-                mean_grad, stats = grad_stats_for_method(
-                    x_fixed, sampler_fn, target_samples, args.n_redraws,
+                mean_grad, stats, _ = grad_variance_utils.redraw_grad_stats(
+                    sampler_fn, x_fixed, target_samples, args.n_redraws,
                     traj_seed * 100_000 + step_idx + seed_offset,
                     mmd_loss, experiment_utils, device,
                 )
-                dist_to_ref = float(np.linalg.norm(mean_grad - grad_ref))
-                dist_to_ref_normalized = dist_to_ref / (grad_ref_norm + 1e-12)
+                dist_to_ref, dist_to_ref_normalized = grad_variance_utils.dist_to_ref_stats(
+                    mean_grad, grad_ref, grad_ref_norm
+                )
                 raw_rows.append({
                     "trajectory": traj_i, "step_index": step_idx, "t": t, "method": method_name,
                     **stats,

@@ -13,9 +13,7 @@
 # unroll through model_cond) vs. LGD-CM's inner sampler (the consistency
 # model's own ~14-step multistep sampling procedure), averaged over
 # N_TRAJECTORIES independent optimization trajectories. See
-# lgd_vs_lgdcm_step_variance.py's docstring for the full
-# design. For the original single-point, sweep-K-only version, use the
-# separate submit_gradient_variance.sh instead.
+# lgd_vs_lgdcm_step_variance.py's docstring for the full design.
 #
 # Submit with:
 #   export ENV_PATH=/path/to/your/conda/or/venv/env   # dir containing bin/python

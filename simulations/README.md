@@ -64,61 +64,53 @@ To force retraining from scratch for any notebook, set `FORCE_RETRAIN = True` in
 - **L2-GMM distance**: closed-form L2 distance between two GMMs
 - **MMD**: kernel-based Maximum Mean Discrepancy between generated and true samples
 
-## Gradient variance vs. unroll depth
+## LGD vs. LGD-CM per-step gradient variance/accuracy
 
-`gradient_variance_vs_unroll_depth.py` directly tests the claim that unrolling
-deeper diffusion chains injects more noise into the guidance gradient. It
-isolates the inner conditional sampler only (`model_cond`, i.e. the pretrained
-`Diffusion_cond` checkpoint used by the LGD baseline) at one or more
-conditioning points `x`, each against its own fixed set of target samples,
-and for each unroll depth `K` in `{10, 25, 40, 60, 80, 100}` runs the inner
-MMD-guidance gradient estimator 100 times per `x`, redrawing only the
-sampler's internal noise each time. It reports `Var(grad)` (trace of the
-empirical covariance across the 100 draws) normalized by `||mean(grad)||^2`
-for each `(x, K)` — if that quantity rises with `K`, deeper unrolling injects
-more gradient noise, independent of whether a given `K` is a more or less
-accurate sampler.
+`lgd_vs_lgdcm_step_variance.py` directly tests the claim that unrolling
+deeper diffusion chains injects more noise into the guidance gradient, by
+comparing LGD's inner sampler (a `--k_lgd`-step DDIM unroll through the
+pretrained `Diffusion_cond` checkpoint) against LGD-CM's inner sampler (the
+pretrained consistency model's own ~14-step multistep sampling procedure) at
+every step of one or more real optimization trajectories, not just a single
+hand-picked point.
 
-It also computes the TRUE/population reference gradient at each `x` (the
-exact analytic conditional GMM, differentiated w.r.t. `x`, scored against
-the same fixed target samples via `--grad_ref_n` closed-form samples — no
-network forward, so this is cheap even at `grad_ref_n >> nsamples`), and
-reports each `K`'s `dist_to_ref`/`dist_to_ref_normalized`: the distance from
-that `K`'s mean gradient to the true one. This answers a different question
-than `normalized_variance` does — whether the estimator's mean is actually
-converging toward the true gradient as `K` grows, or has instead plateaued
-near zero (or some other wrong value): a low-variance estimator can still be
-consistently wrong, and `normalized_variance` alone can't tell you which.
+States are captured from `--n_trajectories` independent UNGUIDED (zeta=0)
+reference trajectories by default (`--state_source unguided`), so the states
+themselves don't already depend on which inner sampler produced them;
+`--state_source own` instead runs `--n_trajectories` REAL guided trajectories
+per method (each driven by that method's own `-zeta*grad` correction) and
+also records each trajectory's downstream `final_l2_gmm` outcome, to test
+whether something inherent to a method's own optimization dynamics — not
+just its sampler's isolated noise at a neutral point — explains the observed
+differences.
 
-Conditioning points can be chosen two ways:
-- `--n_random_conds N` (recommended, and the sbatch default) — draw `N`
-  points at random from the GMM's own marginal over `x`, instead of
-  hand-picking them. This is the only choice that stays comparable across
-  2D/5D/10D: a fixed point like `x=0` isn't the same "difficulty" in each.
-- `--x_conds` (repeatable) — fixed points instead, e.g. `--x_conds -5
-  --x_conds 0 --x_conds 5` for a 1D-conditioning experiment.
+At each captured state, both samplers are redrawn `--n_redraws` times against
+the same fixed target-sample set (drawn from the exact analytic conditional
+GMM, not either model's approximation), and per (trajectory, step, method) it
+reports `normalized_variance` (`Var(grad)/||mean_grad||^2`),
+`variance_trace_per_dim` (raw per-coordinate variance — the fair
+cross-dimension comparison), and `dist_to_ref_normalized` (distance from the
+mean gradient to the TRUE/population reference gradient, computed
+closed-form with no network forward) — averaged (mean ± SEM) across
+trajectories at each step.
 
 ```bash
-python gradient_variance_vs_unroll_depth.py --experiment_name 2D_cond_1D \
-    --n_random_conds 5
+python lgd_vs_lgdcm_step_variance.py --experiment_name 10D_cond_1D --smoke
 
-# or fixed points instead:
-python gradient_variance_vs_unroll_depth.py --experiment_name 2D_cond_1D \
-    --x_conds -5 --x_conds 0 --x_conds 5
+python lgd_vs_lgdcm_step_variance.py --experiment_name 10D_cond_1D \
+    --n_trajectories 10 --step_stride 10 --n_redraws 30 --plot
 
-# same command works for 5D/10D (condition_on is 4/9 there, so --x_conds
-# would need that many values per point -- --n_random_conds needs no changes):
-python gradient_variance_vs_unroll_depth.py --experiment_name 5D_cond_1D --n_random_conds 5
-python gradient_variance_vs_unroll_depth.py --experiment_name 10D_cond_1D --n_random_conds 5
+# or the --state_source own mode (real guided trajectories + final_l2_gmm):
+python lgd_vs_lgdcm_step_variance.py --experiment_name 10D_cond_1D \
+    --n_trajectories 10 --state_source own --zeta 1.0 --plot
 
 # or on a SLURM cluster:
 export ENV_PATH=/path/to/your/env
 export REPO_ROOT=/path/to/conditional-matching-paper
-export EXPERIMENT_NAME=5D_cond_1D   # or 10D_cond_1D
-sbatch simulations/submit_gradient_variance.sh   # N_RANDOM_CONDS=5 by default
+export EXPERIMENT_NAME=10D_cond_1D
+sbatch simulations/submit_lgd_vs_lgdcm_step_variance.sh
 ```
 
-Requires the `Diffusion_cond` checkpoint for the chosen experiment (not
-needed by the hyperparameter sweep above, which only uses `CM` and
-`Diffusion_uncond`) — either let it download once via the HuggingFace
-fallback, or train it locally via `notebooks/Exp_<experiment_name>.ipynb`.
+Requires the `Diffusion_uncond`, `Diffusion_cond`, and `CM` checkpoints for
+the chosen experiment — either let them download once via the HuggingFace
+fallback, or train them locally via `notebooks/Exp_<experiment_name>.ipynb`.

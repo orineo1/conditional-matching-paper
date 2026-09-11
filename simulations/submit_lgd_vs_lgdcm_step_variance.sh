@@ -65,8 +65,7 @@ if [ "$SMOKE_TEST" = "true" ]; then
     "$PYTHON" lgd_vs_lgdcm_step_variance.py \
         --experiment_name "$EXPERIMENT_NAME" \
         --seed             "$SEED" \
-        --smoke \
-        --plot
+        --smoke
 else
     "$PYTHON" lgd_vs_lgdcm_step_variance.py \
         --experiment_name "$EXPERIMENT_NAME" \
@@ -76,8 +75,7 @@ else
         --nsamples            "$NSAMPLES" \
         --grad_ref_n          "$GRAD_REF_N" \
         --seed                "$SEED" \
-        "${KLGD_ARGS[@]}" \
-        --plot
+        "${KLGD_ARGS[@]}"
 fi
 
 EXIT_CODE=$?

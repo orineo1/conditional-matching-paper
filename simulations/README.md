@@ -75,14 +75,10 @@ every step of one or more real optimization trajectories, not just a single
 hand-picked point.
 
 States are captured from `--n_trajectories` independent UNGUIDED (zeta=0)
-reference trajectories by default (`--state_source unguided`), so the states
-themselves don't already depend on which inner sampler produced them;
-`--state_source own` instead runs `--n_trajectories` REAL guided trajectories
-per method (each driven by that method's own `-zeta*grad` correction) and
-also records each trajectory's downstream `final_l2_gmm` outcome, to test
-whether something inherent to a method's own optimization dynamics — not
-just its sampler's isolated noise at a neutral point — explains the observed
-differences.
+reference trajectories of `model_uncond`, one per outer diffusion step
+(every `--step_stride`-th step) -- unguided so the states themselves don't
+already depend on which inner sampler produced them. Each trajectory uses a
+different seed.
 
 At each captured state, both samplers are redrawn `--n_redraws` times against
 the same fixed target-sample set (drawn from the exact analytic conditional
@@ -92,17 +88,15 @@ reports `normalized_variance` (`Var(grad)/||mean_grad||^2`),
 cross-dimension comparison), and `dist_to_ref_normalized` (distance from the
 mean gradient to the TRUE/population reference gradient, computed
 closed-form with no network forward) — averaged (mean ± SEM) across
-trajectories at each step.
+trajectories at each step. Results (per-trajectory raw rows and the
+aggregated means) are saved to a single JSON file; the script does not
+produce any plots.
 
 ```bash
 python lgd_vs_lgdcm_step_variance.py --experiment_name 10D_cond_1D --smoke
 
 python lgd_vs_lgdcm_step_variance.py --experiment_name 10D_cond_1D \
-    --n_trajectories 10 --step_stride 10 --n_redraws 30 --plot
-
-# or the --state_source own mode (real guided trajectories + final_l2_gmm):
-python lgd_vs_lgdcm_step_variance.py --experiment_name 10D_cond_1D \
-    --n_trajectories 10 --state_source own --zeta 1.0 --plot
+    --n_trajectories 10 --step_stride 10 --n_redraws 30
 
 # or on a SLURM cluster:
 export ENV_PATH=/path/to/your/env

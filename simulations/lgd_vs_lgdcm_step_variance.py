@@ -125,7 +125,6 @@ def main():
                    help="Tiny run for a quick sanity check: 2 trajectories, step_stride=40, "
                         "5 redraws, nsamples=32.")
     p.add_argument("--output_dir", type=str, default=None)
-    p.add_argument("--plot", action="store_true", help="Also save a per-step comparison PNG.")
     args = p.parse_args()
 
     if args.smoke:
@@ -301,45 +300,6 @@ def main():
     with open(out_path, "w") as f:
         json.dump(out, f, indent=2)
     print(f"[StepVar] Saved results to {out_path}")
-
-    if args.plot:
-        _make_plot(aggregated, args.experiment_name, out_path.replace(".json", ".png"))
-
-
-def _make_plot(aggregated, experiment_name, save_path):
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    step_indices = aggregated["step_index"]
-    ts = aggregated["t"]
-    colors = {"LGD": "steelblue", "LGD-CM": "crimson"}
-
-    fig, axes = plt.subplots(1, 3, figsize=(17, 4.5))
-    for ax, metric, title, ylabel in (
-        (axes[0], "normalized_variance", "Per-step gradient variance (scale-free)", "Var(grad) / ||mean_grad||²"),
-        (axes[1], "variance_trace_per_dim", "Per-step gradient variance (per coordinate)",
-         "Var(grad) / condition_on  (fair across dimensions)"),
-        (axes[2], "dist_to_ref_normalized", "Per-step gradient accuracy", "||mean_grad − grad_ref|| / ||grad_ref||"),
-    ):
-        for method in ("LGD", "LGD-CM"):
-            means = np.array([e["mean"] for e in aggregated[method][metric]])
-            sems = np.array([e["sem"] for e in aggregated[method][metric]])
-            ax.plot(ts, means, marker="o", color=colors[method], label=method)
-            ax.fill_between(ts, np.clip(means - sems, 1e-9, None), means + sems, color=colors[method], alpha=0.2)
-        ax.set_xlabel("timestep t (noisy → clean, right to left)")
-        ax.set_ylabel(ylabel)
-        ax.set_title(title)
-        ax.invert_xaxis()
-        ax.set_yscale("log")
-        ax.grid(True, alpha=0.3)
-        ax.legend()
-    fig.suptitle(f"{experiment_name}: LGD vs LGD-CM inner-sampler gradient quality along one trajectory\n"
-                 f"(mean ± SEM over {aggregated[method][metric][0]['n']} trajectories per step)")
-    plt.tight_layout()
-    fig.savefig(save_path, dpi=150)
-    plt.close(fig)
-    print(f"[StepVar] Saved plot to {save_path}")
 
 
 if __name__ == "__main__":

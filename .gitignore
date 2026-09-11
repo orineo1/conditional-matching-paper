@@ -55,6 +55,8 @@ MNIST/results/
 MNIST/logs/
 MNIST/checkpoints/
 simulations/results/
+simulations/logs/
+simulations/checkpoints/
 
 # Exception: keep committed result JSONs and CSVs used in the paper
 !SD_cond_SD_controlnet/experiments/eval_all_results.json

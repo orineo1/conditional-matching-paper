@@ -88,7 +88,7 @@ EXPERIMENT_CONFIGS = {
     'AgeInterpolation': dict(
         best_jid         = 44492374,
         seed             = 42,
-        n_eval_search    = 240,
+        n_eval_search    = 250,
         sdedit_start     = 125,
         n_steps          = 250,
         sdedit_cfg       = 7.5,

@@ -1,0 +1,17 @@
+{
+  "scenario": "B",
+  "seed": 42,
+  "cn_scale": 0.5,
+  "smoke": false,
+  "groups": [
+    [
+      "Man",
+      50
+    ],
+    [
+      "Woman",
+      50
+    ]
+  ],
+  "y_star_mode": "centroid"
+}

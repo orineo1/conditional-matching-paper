@@ -1,0 +1,283 @@
+{
+  "mmd": {
+    "dir": "../../output/pvd_B/mmd",
+    "cost": {
+      "s_step": 121.73914765686169,
+      "vram_gb": 40.24542856216431,
+      "wall_s": 15382.522119760513,
+      "n_steps_opt": 125,
+      "n_cond": 100,
+      "args": {
+        "output_dir": "/sci/labs/orzuk/shaulytolk/cdm-perf/experiments/point_vs_dist_sd/runs/B/mmd",
+        "lora_path": null,
+        "architect_unet_path": null,
+        "wandb_project": "point_vs_dist_sd",
+        "wandb_entity": "",
+        "n_steps": 250,
+        "start_step": 125,
+        "base_zeta": 4.0,
+        "guidance_scale": 0.0,
+        "controlnet_scale": 0.5,
+        "loss_fn": "mmd",
+        "point_target_pt": null,
+        "variation_cn_scale": 0.5,
+        "mmd_cache_target": false,
+        "bandwidth_scale": 1.0,
+        "loss_scale": 1.0,
+        "kernel_alpha": 1.0,
+        "num_variations": 100,
+        "eval_interval": 0,
+        "prompt": "",
+        "negative_prompt": "",
+        "sprinter_variation_prompt": "a superrealistic professional photograph of",
+        "sprinter_eval_prompt": "a superrealistic professional photograph of",
+        "target_prompts": null,
+        "controlnet_model_id": "xinsir/controlnet-scribble-sdxl-1.0",
+        "sprinter_model_id": "stabilityai/sdxl-turbo",
+        "architect_model_id": "stabilityai/stable-diffusion-xl-base-1.0",
+        "seed": 42,
+        "no_vis": true,
+        "arch_single_batch": false,
+        "trust_noise": 0.0,
+        "backsel": 0,
+        "backsel_rule": "uniform",
+        "backsel_weighting": "ht",
+        "backsel_soft_tau_scale": 1.0,
+        "backsel_soft_tau_mode": "local",
+        "seeded_rng": true,
+        "variation_batch_size": 1,
+        "engine": "legacy",
+        "profile": true,
+        "eval_n": 64,
+        "eval_n_intermediate": 8,
+        "eval_batch_size": 8,
+        "target_cache": "/sci/labs/orzuk/shaulytolk/cdm-perf/experiments/point_vs_dist_sd/cache/B",
+        "mode": "gender",
+        "age_min": 10,
+        "age_max": 80,
+        "age_step": 1,
+        "n_per_age": 0,
+        "age_gender": "man"
+      }
+    },
+    "trace": {
+      "n": 125,
+      "first": 0.63816237449646,
+      "last": 0.6311607182025909,
+      "delta": -0.007001656293869063,
+      "corr": -0.024764769586169005,
+      "pc1_pass": false,
+      "corr_med": 1.84375,
+      "applied_med": 1.84375,
+      "clipped_frac": 0.0
+    },
+    "cfg": "zeta 4, tau off",
+    "mmd": 0.6430198295425925,
+    "own_ref_mmd": 0.599952594336899,
+    "p_male": [
+      0.3867047883705335,
+      0.3766441354371637,
+      0.39676544130390334
+    ],
+    "frac_male": [
+      0.2925,
+      0.27297560945763716,
+      0.31281999434657565
+    ],
+    "extreme": 0.315,
+    "own_ref_hash": "63dd54446510"
+  },
+  "pgd_eps128": {
+    "dir": "../../output/pvd_B/pgd_eps128",
+    "cost": {
+      "wall_s": 254.70797610282898,
+      "n_steps_opt": 200,
+      "n_cond": 1,
+      "args": {
+        "arm": "pgd",
+        "seed": 42,
+        "eps_255": 128,
+        "eps": 0.5019607843137255,
+        "lr": 0.05019607843137255,
+        "steps": 200,
+        "variation_cn_scale": 0.5,
+        "sprinter_eval_prompt": "a superrealistic professional photograph of",
+        "target_cache": "/sci/labs/orzuk/shaulytolk/cdm-perf/experiments/point_vs_dist_sd/cache/B"
+      }
+    },
+    "trace": null,
+    "cfg": "eps 128/255, lr 0.0502",
+    "mmd": 0.8005882500547553,
+    "own_ref_mmd": 0.3776416729329784,
+    "p_male": [
+      0.1673440798068383,
+      0.16219189034595616,
+      0.17249626926772044
+    ],
+    "frac_male": [
+      0.026,
+      0.019881989983916163,
+      0.0339354375013701
+    ],
+    "extreme": 0.743,
+    "own_ref_hash": "6cfbb0db5c9b"
+  },
+  "pgd_eps32": {
+    "dir": "../../output/pvd_B/pgd_eps32",
+    "cost": {
+      "wall_s": 265.26734828948975,
+      "n_steps_opt": 200,
+      "n_cond": 1,
+      "args": {
+        "arm": "pgd",
+        "seed": 42,
+        "eps_255": 32,
+        "eps": 0.12549019607843137,
+        "lr": 0.012549019607843137,
+        "steps": 200,
+        "variation_cn_scale": 0.5,
+        "sprinter_eval_prompt": "a superrealistic professional photograph of",
+        "target_cache": "/sci/labs/orzuk/shaulytolk/cdm-perf/experiments/point_vs_dist_sd/cache/B"
+      }
+    },
+    "trace": null,
+    "cfg": "eps 32/255, lr 0.01255",
+    "mmd": 0.7000660961311252,
+    "own_ref_mmd": 0.3776416729329784,
+    "p_male": [
+      0.29414518548329205,
+      0.28715343301265495,
+      0.30113693795392915
+    ],
+    "frac_male": [
+      0.1135,
+      0.10033251204887769,
+      0.12814941985631884
+    ],
+    "extreme": 0.3275,
+    "own_ref_hash": "6cfbb0db5c9b"
+  },
+  "pgd_eps64": {
+    "dir": "../../output/pvd_B/pgd_eps64",
+    "cost": {
+      "wall_s": 256.05314111709595,
+      "n_steps_opt": 200,
+      "n_cond": 1,
+      "args": {
+        "arm": "pgd",
+        "seed": 42,
+        "eps_255": 64,
+        "eps": 0.25098039215686274,
+        "lr": 0.025098039215686273,
+        "steps": 200,
+        "variation_cn_scale": 0.5,
+        "sprinter_eval_prompt": "a superrealistic professional photograph of",
+        "target_cache": "/sci/labs/orzuk/shaulytolk/cdm-perf/experiments/point_vs_dist_sd/cache/B"
+      }
+    },
+    "trace": null,
+    "cfg": "eps 64/255, lr 0.0251",
+    "mmd": 0.7449228083772644,
+    "own_ref_mmd": 0.3776416729329784,
+    "p_male": [
+      0.2645625392470175,
+      0.2567461508399275,
+      0.2723789276541075
+    ],
+    "frac_male": [
+      0.127,
+      0.11311836976019432,
+      0.14231179996978835
+    ],
+    "extreme": 0.4715,
+    "own_ref_hash": "6cfbb0db5c9b"
+  },
+  "point": {
+    "dir": "../../output/pvd_B/point",
+    "cost": {
+      "s_step": 1.6353983398079872,
+      "vram_gb": 24.809902667999268,
+      "wall_s": 255.09918880462646,
+      "n_steps_opt": 125,
+      "n_cond": 1,
+      "args": {
+        "output_dir": "/sci/labs/orzuk/shaulytolk/cdm-perf/experiments/point_vs_dist_sd/runs/B/point",
+        "lora_path": null,
+        "architect_unet_path": null,
+        "wandb_project": "point_vs_dist_sd",
+        "wandb_entity": "",
+        "n_steps": 250,
+        "start_step": 125,
+        "base_zeta": 4.0,
+        "guidance_scale": 0.0,
+        "controlnet_scale": 0.5,
+        "loss_fn": "point",
+        "point_target_pt": "/sci/labs/orzuk/shaulytolk/cdm-perf/experiments/point_vs_dist_sd/cache/B/point_target.pt",
+        "variation_cn_scale": 0.5,
+        "mmd_cache_target": false,
+        "bandwidth_scale": 1.0,
+        "loss_scale": 1.0,
+        "kernel_alpha": 1.0,
+        "num_variations": 1,
+        "eval_interval": 0,
+        "prompt": "",
+        "negative_prompt": "",
+        "sprinter_variation_prompt": "a superrealistic professional photograph of",
+        "sprinter_eval_prompt": "a superrealistic professional photograph of",
+        "target_prompts": null,
+        "controlnet_model_id": "xinsir/controlnet-scribble-sdxl-1.0",
+        "sprinter_model_id": "stabilityai/sdxl-turbo",
+        "architect_model_id": "stabilityai/stable-diffusion-xl-base-1.0",
+        "seed": 42,
+        "no_vis": true,
+        "arch_single_batch": false,
+        "trust_noise": 0.0,
+        "backsel": 0,
+        "backsel_rule": "uniform",
+        "backsel_weighting": "ht",
+        "backsel_soft_tau_scale": 1.0,
+        "backsel_soft_tau_mode": "local",
+        "seeded_rng": true,
+        "variation_batch_size": 1,
+        "engine": "legacy",
+        "profile": true,
+        "eval_n": 64,
+        "eval_n_intermediate": 8,
+        "eval_batch_size": 8,
+        "target_cache": "/sci/labs/orzuk/shaulytolk/cdm-perf/experiments/point_vs_dist_sd/cache/B",
+        "mode": "gender",
+        "age_min": 10,
+        "age_max": 80,
+        "age_step": 1,
+        "n_per_age": 0,
+        "age_gender": "man"
+      }
+    },
+    "trace": {
+      "n": 125,
+      "first": 0.7565616577863693,
+      "last": 0.8397679805755616,
+      "delta": 0.08320632278919227,
+      "corr": 0.010292547137544353,
+      "pc1_pass": false,
+      "corr_med": 9.4453125,
+      "applied_med": 9.4453125,
+      "clipped_frac": 0.0
+    },
+    "cfg": "zeta 4, tau off",
+    "mmd": 0.7595057633682292,
+    "own_ref_mmd": 0.599952594336899,
+    "p_male": [
+      0.22056269414530077,
+      0.21415884266975627,
+      0.22696654562084528
+    ],
+    "frac_male": [
+      0.059,
+      0.04949406075003941,
+      0.070196836973613
+    ],
+    "extreme": 0.5495,
+    "own_ref_hash": "63dd54446510"
+  }
+}

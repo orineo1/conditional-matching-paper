@@ -10,7 +10,7 @@
 
 # Usage:
 #   export ENV_PATH=/path/to/your/env
-#   sbatch pgd_submit.sh <EXPERIMENT> <TARGET_MINUTES> [SEED] [LOSS_FN]
+#   sbatch pgd_submit.sh <EXPERIMENT> <TARGET_MINUTES> [SEED] [LOSS_FN] [NUM_VARIATIONS]
 #
 #   EXPERIMENT     one of GenderTarget100, GenderTarget1, SkewedTarget,
 #                  BalancedTarget, GenderInterpolation, AgeInterpolation
@@ -21,6 +21,7 @@
 #                  experiments/<Experiment>/baselines/baselines_meta.json)
 #   SEED           optional -- overrides the experiment preset's default seed
 #   LOSS_FN        optional -- "mmd" (default) or "l2"
+#   NUM_VARIATIONS optional -- Sprinter samples per loss evaluation (default 6)
 #
 # Examples:
 #   sbatch pgd_submit.sh GenderTarget100 241
@@ -29,11 +30,13 @@
 #   sbatch pgd_submit.sh BalancedTarget  241            # vs. existing MLGD-F BalancedTarget run
 #   sbatch pgd_submit.sh GenderInterpolation 241
 #   sbatch pgd_submit.sh AgeInterpolation    177
+#   sbatch pgd_submit.sh GenderInterpolation 168 1 mmd 100
 
 EXPERIMENT=${1:?experiment name required, e.g. GenderTarget100}
 TARGET_MINUTES=${2:?target_minutes required -- the matching MLGD-F runtime}
 SEED=${3:-}
 LOSS_FN=${4:-mmd}
+NUM_VARIATIONS=${5:-6}
 
 # ── 1. Environment ────────────────────────────────────────────────────────────
 # Set ENV_PATH to your Python environment before submitting:
@@ -51,6 +54,7 @@ echo "Experiment      : $EXPERIMENT"
 echo "Target minutes  : $TARGET_MINUTES"
 echo "Seed override   : ${SEED:-<preset default>}"
 echo "Loss fn         : $LOSS_FN"
+echo "Num variations  : $NUM_VARIATIONS"
 python -c "import torch; print(f'GPU: {torch.cuda.is_available()}')"
 echo "============================================"
 
@@ -84,7 +88,7 @@ python scripts/run_pgd.py \
     --opt_lr 0.05 \
     --proj_adam_steps "$PROJ_ADAM_STEPS" \
     --proj_lr 0.03 \
-    --num_variations 6
+    --num_variations "$NUM_VARIATIONS"
 
 # ── 6. (Optional) Sync outputs ────────────────────────────────────────────────
 # Uncomment and adjust if you want to sync results to remote storage:

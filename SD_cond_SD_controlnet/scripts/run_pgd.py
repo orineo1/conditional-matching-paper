@@ -303,13 +303,16 @@ def optimization_step(x_latent, architect, sprinter, clip_model, clip_processor,
     """Ambient (pixel-space) gradient descent: decode once, then take
     opt_steps gradient steps directly on the pixel tensor.
 
-    Returns (w, last_loss, last_gen_embs) -- last_gen_embs is the full
-    num_variations-sized CLIP embedding batch from the final iteration
-    (detached), for reuse in the PCA visualization instead of a fresh,
-    differently-sized batch."""
+    Returns (w, last_loss, last_gen_embs, last_grad_norm) -- last_gen_embs is
+    the full num_variations-sized CLIP embedding batch from the final
+    iteration (detached), for reuse in the PCA visualization instead of a
+    fresh, differently-sized batch. A NaN gradient (mirrors MLGD-F's own
+    guard in run_mlgd_f.py's main loop) skips that iteration's update rather
+    than corrupting w with NaNs; last_grad_norm is float('nan') for that
+    iteration so it's visible in the logs rather than silently swallowed."""
     w = decode_01(x_latent.detach(), architect.vae).detach()
-    last_loss, last_gen_embs = None, None
-    for _ in range(args.opt_steps):
+    last_loss, last_gen_embs, last_grad_norm = None, None, None
+    for i in range(args.opt_steps):
         w = w.clone().requires_grad_(True)
         gen_embs = generate_clip_embeddings(
             w, sprinter, args.num_variations, args.variation_batch_size,
@@ -318,9 +321,19 @@ def optimization_step(x_latent, architect, sprinter, clip_model, clip_processor,
         )
         loss = loss_fn(gen_embs, all_clip_embeddings)
         grad_w = torch.autograd.grad(loss, w)[0]
-        w = (w.detach() - args.opt_lr * grad_w).clamp(0.0, 1.0)
+
+        if torch.isnan(grad_w).any():
+            print(f"  ⚠️  NaN in gradient at opt iter {i} — skipping update", flush=True)
+            last_grad_norm = float("nan")
+            w = w.detach()
+        else:
+            last_grad_norm = grad_w.norm().item()
+            if last_grad_norm == 0.0:
+                print(f"  ⚠️  Zero gradient at opt iter {i} — w will not move this iteration", flush=True)
+            w = (w.detach() - args.opt_lr * grad_w).clamp(0.0, 1.0)
+
         last_loss, last_gen_embs = loss.detach(), gen_embs.detach()
-    return w.detach(), last_loss, last_gen_embs
+    return w.detach(), last_loss, last_gen_embs, last_grad_norm
 
 
 def projection_step(w_pixels, x_init, architect, args):
@@ -438,7 +451,7 @@ def main():
 
     while n_rounds is None or round_idx < n_rounds:
         t0 = time.time()
-        w, opt_loss, opt_gen_embs = optimization_step(
+        w, opt_loss, opt_gen_embs, opt_grad_norm = optimization_step(
             x, architect, sprinter, clip_model, clip_processor,
             all_clip_embeddings, loss_fn, args,
         )
@@ -447,9 +460,10 @@ def main():
         round_idx += 1
 
         print(f"Round {round_idx}{f'/{n_rounds}' if n_rounds else ''}  "
-              f"opt_loss={opt_loss.item():.6f}  proj_l2={proj_loss:.6f}  "
-              f"round_time={round_time:.1f}s", flush=True)
+              f"opt_loss={opt_loss.item():.6f}  grad_norm={opt_grad_norm:.6f}  "
+              f"proj_l2={proj_loss:.6f}  round_time={round_time:.1f}s", flush=True)
         log_data = {"round": round_idx, "opt_loss": opt_loss.item(),
+                   "opt_grad_norm": opt_grad_norm,
                    "proj_l2": proj_loss, "round_time_sec": round_time}
         wandb.log(log_data, commit=(round_idx % args.log_image_every != 0))
 

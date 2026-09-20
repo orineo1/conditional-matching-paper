@@ -316,20 +316,33 @@ def build_targets_gender(args, sprinter, clip_model, clip_processor, device,
     N_total       = sum(g[2] for g in target_groups)
     print(f"Target groups: {[(g[0], g[2]) for g in target_groups]}", flush=True)
 
-    # Generate a few male portraits on the oval scribble for HED extraction
-    # Always use a male prompt for the scribble regardless of target groups
-    _male_prompt = "a superrealistic portrait photograph of a man, studio lighting"
-    print("Generating male portraits for HED scribble extraction...", flush=True)
-    with torch.no_grad():
-        _scribble_init_imgs, _ = generate_and_store_cs(
-            sprinter, _male_prompt,
-            sobel_cond_pil, 3, batch_size=2, cn_scale=args.controlnet_scale,
-        )
+    _source_scribble_path = getattr(args, "source_scribble_path", None)
+    if _source_scribble_path:
+        # Reuse an existing experiment's canonical source scribble instead of
+        # generating+extracting a fresh one -- e.g. so a PGD run is directly
+        # comparable to an existing MLGD-F run on the same starting scribble,
+        # and skips the cost of the male-portrait generation + HED pass.
+        from PIL import Image
+        print(f"Loading source scribble from {_source_scribble_path}...", flush=True)
+        scribble_pil = Image.open(_source_scribble_path).convert("RGB")
+        _source_portrait_path = getattr(args, "source_portrait_path", None)
+        source_image = (Image.open(_source_portrait_path).convert("RGB")
+                        if _source_portrait_path else scribble_pil)
+    else:
+        # Generate a few male portraits on the oval scribble for HED extraction
+        # Always use a male prompt for the scribble regardless of target groups
+        _male_prompt = "a superrealistic portrait photograph of a man, studio lighting"
+        print("Generating male portraits for HED scribble extraction...", flush=True)
+        with torch.no_grad():
+            _scribble_init_imgs, _ = generate_and_store_cs(
+                sprinter, _male_prompt,
+                sobel_cond_pil, 3, batch_size=2, cn_scale=args.controlnet_scale,
+            )
 
-    # Extract HED scribble from a male portrait
-    print("Extracting HED scribble...", flush=True)
-    source_image = _scribble_init_imgs[2]
-    scribble_pil = extract_scribble_hed(source_image)
+        # Extract HED scribble from a male portrait
+        print("Extracting HED scribble...", flush=True)
+        source_image = _scribble_init_imgs[2]
+        scribble_pil = extract_scribble_hed(source_image)
 
     # Regenerate targets conditioned on HED scribble
     print(f"Regenerating {N_total} targets conditioned on HED scribble...", flush=True)
@@ -433,11 +446,24 @@ def build_targets_age(args, sprinter, clip_model, clip_processor, device,
         plot_row(target_images_per_group[str(age)], f"Age {age}",
                  save_path=os.path.join(args.output_dir, f"target_samples_age{age}.png"))
 
-    # Extract HED scribble from a male portrait at middle age
-    mid_age = ages[len(ages) // 2]
-    print(f"Extracting HED scribble from age-{mid_age} portrait...", flush=True)
-    source_image = target_images_per_group[str(mid_age)][0]
-    scribble_pil = extract_scribble_hed(source_image)
+    _source_scribble_path = getattr(args, "source_scribble_path", None)
+    if _source_scribble_path:
+        # Reuse an existing experiment's canonical source scribble instead of
+        # extracting a fresh one from a freshly-generated age portrait --
+        # target generation above is unaffected (age mode always conditions
+        # on sobel_cond_pil, not on the scribble).
+        from PIL import Image
+        print(f"Loading source scribble from {_source_scribble_path}...", flush=True)
+        scribble_pil = Image.open(_source_scribble_path).convert("RGB")
+        _source_portrait_path = getattr(args, "source_portrait_path", None)
+        source_image = (Image.open(_source_portrait_path).convert("RGB")
+                        if _source_portrait_path else scribble_pil)
+    else:
+        # Extract HED scribble from a male portrait at middle age
+        mid_age = ages[len(ages) // 2]
+        print(f"Extracting HED scribble from age-{mid_age} portrait...", flush=True)
+        source_image = target_images_per_group[str(mid_age)][0]
+        scribble_pil = extract_scribble_hed(source_image)
 
     # Encode to CLIP
     print("Encoding age targets to CLIP...", flush=True)

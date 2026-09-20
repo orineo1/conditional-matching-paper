@@ -73,8 +73,10 @@ mkdir -p "$OUTPUT_DIR"
 # Optimization-step (pixel-space gradient descent) vs. projection-step
 # (Adam search onto the VAE decoder's range) split within the fixed
 # target_minutes budget -- tune these to compare splits at equal total cost.
+# proj_adam_steps/proj_lr match the PGD paper's CelebA setting (faces,
+# closer to our task than their MNIST setting of 200 steps @ lr=0.03).
 OPT_STEPS=3
-PROJ_ADAM_STEPS=200
+PROJ_ADAM_STEPS=100
 
 # ── 5. Run ────────────────────────────────────────────────────────────────────
 python scripts/run_pgd.py \
@@ -87,7 +89,7 @@ python scripts/run_pgd.py \
     --opt_steps "$OPT_STEPS" \
     --opt_lr 0.05 \
     --proj_adam_steps "$PROJ_ADAM_STEPS" \
-    --proj_lr 0.03 \
+    --proj_lr 0.1 \
     --num_variations "$NUM_VARIATIONS"
 
 # ── 6. (Optional) Sync outputs ────────────────────────────────────────────────

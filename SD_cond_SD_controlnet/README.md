@@ -141,7 +141,13 @@ step in pixel space with a projection back onto the Architect VAE decoder's rang
 (found by Adam-searching its latent input, matching the paper's own
 `P_G(w) = G(argmin_z ‖w - G(z)‖)`). Sprinter+CLIP play the same role as in
 MLGD-F — the measurement operator the loss is computed on — but PGD never touches
-the Architect's UNet/diffusion trajectory, only its VAE.
+the Architect's UNet/diffusion trajectory, only its VAE. When `--experiment` names
+one with an existing `experiments/<Experiment>/` folder (`SkewedTarget`,
+`BalancedTarget`, `GenderInterpolation`, `AgeInterpolation`), PGD reuses that
+run's exact `scribble_source.png` as its own starting scribble instead of
+generating a fresh one — so it starts from the same point as the MLGD-F run
+it's being compared to, and skips the extra generation cost. `GenderTarget100`/
+`GenderTarget1` have no matching MLGD-F run, so they still generate fresh.
 
 On a SLURM cluster, `pgd_submit.sh` takes the experiment, the time budget, and
 optionally a seed override and loss function as positional arguments, mirroring
@@ -178,13 +184,16 @@ within that fixed budget.
 | `--loss_fn` | `mmd` | `mmd` (full distribution) or `l2` (mean-CLIP-embedding matching only) |
 | `--opt_steps` | 3 | Ambient/pixel-space gradient steps per round |
 | `--opt_lr` | 0.05 | Step size for the ambient gradient step |
-| `--proj_adam_steps` | 200 | Adam iterations for the projection search (paper default) |
-| `--proj_lr` | 0.03 | Adam learning rate for the projection search |
+| `--proj_adam_steps` | 100 | Adam iterations for the projection search (paper's CelebA setting) |
+| `--proj_lr` | 0.1 | Adam learning rate for the projection search (paper's CelebA setting) |
 | `--target_minutes` | *(required)* | Wall-clock budget, matched to the compared MLGD-F run |
 | `--n_eval` | 10 | Sprinter samples for the quick init/per-round MMD check |
 | `--n_eval_final` | 250 | Sprinter samples for the final, higher-fidelity MMD (`final_pgd_mmd_250`) |
 | `--n_photos_per_round` | 5 | Conditioned Sprinter photos logged to wandb per logged round |
 | `--log_image_every` | 1 | Log the scribble + conditioned photos every N rounds |
+| `--source_scribble_path` | *(preset default)* | Reuse an existing `experiments/<Experiment>/scribble_source.png` instead of generating a fresh one |
+
+The PGD paper reports two different projection setups: MNIST (VAE, k=20) used 200 Adam steps @ lr=0.03; CelebA (DCGAN, k=100) — the closer analogue to our face-portrait task — used 100 steps @ lr=0.1. We default to the CelebA setting.
 
 ---
 

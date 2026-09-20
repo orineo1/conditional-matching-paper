@@ -63,6 +63,21 @@ from visualization import plot_row, visualize_round
 
 from run_mlgd_f import build_targets_age, build_targets_gender, save_image_list_npy
 
+_REPO_ROOT = os.path.dirname(_SCRIPT_DIR)
+
+
+def _experiment_scribble_paths(name):
+    """(source_scribble_path, source_portrait_path) for an existing
+    experiments/<name>/ folder, or (None, None) if it has none (e.g. the
+    PGD-only GenderTarget100/1 presets, which have no matching MLGD-F run)."""
+    exp_dir = os.path.join(_REPO_ROOT, "experiments", name)
+    scribble = os.path.join(exp_dir, "scribble_source.png")
+    portrait = os.path.join(exp_dir, "source_portrait.png")
+    if os.path.isfile(scribble):
+        return scribble, (portrait if os.path.isfile(portrait) else None)
+    return None, None
+
+
 _MAN   = "a superrealistic portrait photograph of a man, studio lighting"
 _WOMAN = "a superrealistic portrait photograph of a woman, studio lighting"
 
@@ -81,7 +96,16 @@ _LOOP_CONTROLNET_SCALE = 0.8
 # directly comparable. Per-experiment default seed matches
 # eval_baselines.py's EXPERIMENT_CONFIGS. --seed/--controlnet_scale/etc. on
 # the CLI still override a preset's value when explicitly passed.
+def _preset_with_scribble(name, **kwargs):
+    scribble_path, portrait_path = _experiment_scribble_paths(name)
+    if scribble_path:
+        kwargs["source_scribble_path"] = scribble_path
+        kwargs["source_portrait_path"] = portrait_path
+    return kwargs
+
+
 EXPERIMENT_PRESETS = {
+    # No matching experiments/ folder (PGD-only presets) -- fresh scribble generation.
     "GenderTarget100": dict(
         mode="gender", seed=1, controlnet_scale=0.5,
         target_prompts=[f"Woman:{_WOMAN}:100"],
@@ -90,16 +114,19 @@ EXPERIMENT_PRESETS = {
         mode="gender", seed=1, controlnet_scale=0.5,
         target_prompts=[f"Woman:{_WOMAN}:1"],
     ),
-    "SkewedTarget": dict(  # 25% male / 75% female, matches experiments/SkewedTarget
-        mode="gender", seed=5, controlnet_scale=0.5,
+    # The remaining presets reuse the existing experiments/<name>/scribble_source.png
+    # (and source_portrait.png) instead of generating a fresh one, so PGD starts
+    # from the exact same scribble as the MLGD-F run it's being compared to.
+    "SkewedTarget": _preset_with_scribble(  # 25% male / 75% female
+        "SkewedTarget", mode="gender", seed=5, controlnet_scale=0.5,
         target_prompts=[f"Man:{_MAN}:25", f"Woman:{_WOMAN}:75"],
     ),
-    "BalancedTarget": dict(  # 50% male / 50% female, matches experiments/BalancedTarget
-        mode="gender", seed=5, controlnet_scale=0.5,
+    "BalancedTarget": _preset_with_scribble(  # 50% male / 50% female
+        "BalancedTarget", mode="gender", seed=5, controlnet_scale=0.5,
         target_prompts=[f"Man:{_MAN}:50", f"Woman:{_WOMAN}:50"],
     ),
-    "GenderInterpolation": dict(  # 4-class, matches experiments/GenderInterpolation
-        mode="gender", seed=5, controlnet_scale=0.5,
+    "GenderInterpolation": _preset_with_scribble(  # 4-class
+        "GenderInterpolation", mode="gender", seed=5, controlnet_scale=0.5,
         target_prompts=[
             "Woman:superrealistic portrait photograph of a woman, extremely feminine features, studio lighting:25",
             "Woman w/ masc features:a superrealistic portrait photograph of a woman with masculine features, heavy brow ridge, studio lighting:25",
@@ -107,8 +134,8 @@ EXPERIMENT_PRESETS = {
             f"Man:{_MAN}:25",
         ],
     ),
-    "AgeInterpolation": dict(  # matches experiments/AgeInterpolation
-        mode="age", seed=42, controlnet_scale=0.5,
+    "AgeInterpolation": _preset_with_scribble(
+        "AgeInterpolation", mode="age", seed=42, controlnet_scale=0.5,
         age_min=40, age_max=79, age_step=1, age_gender="man",
     ),
 }
@@ -129,6 +156,9 @@ def apply_experiment_preset(args):
         args.target_prompts = preset["target_prompts"]
     if args.seed is None:
         args.seed = preset.get("seed")
+    if args.source_scribble_path is None and "source_scribble_path" in preset:
+        args.source_scribble_path = preset["source_scribble_path"]
+        args.source_portrait_path = preset.get("source_portrait_path")
     for key in ("controlnet_scale", "age_min", "age_max", "age_step", "age_gender"):
         if key in preset:
             setattr(args, key, preset[key])
@@ -163,11 +193,14 @@ def parse_args():
                    help="Ambient (pixel-space) gradient steps per round")
     p.add_argument("--opt_lr",           type=float, default=0.05,
                    help="Step size nu for the ambient gradient step")
-    p.add_argument("--proj_adam_steps",  type=int,   default=200,
+    p.add_argument("--proj_adam_steps",  type=int,   default=100,
                    help="Adam iterations for the projection's inner "
-                        "argmin_z ||w - decode(z)|| search (200 = paper default)")
-    p.add_argument("--proj_lr",          type=float, default=0.03,
-                   help="Adam learning rate for the projection search")
+                        "argmin_z ||w - decode(z)|| search (100 = paper's "
+                        "CelebA setting -- faces, closer to our task than "
+                        "their MNIST setting of 200 steps @ lr=0.03)")
+    p.add_argument("--proj_lr",          type=float, default=0.1,
+                   help="Adam learning rate for the projection search "
+                        "(0.1 = paper's CelebA setting)")
 
     # Logging
     p.add_argument("--n_photos_per_round", type=int, default=5,
@@ -190,6 +223,14 @@ def parse_args():
                         "MLGD-F's --num_variations for a fair comparison)")
     p.add_argument("--variation_batch_size", type=int, default=1)
     p.add_argument("--controlnet_scale", type=float, default=0.5)
+    p.add_argument("--source_scribble_path", type=str, default=None,
+                   help="Reuse an existing scribble (e.g. "
+                        "experiments/<Experiment>/scribble_source.png) instead "
+                        "of generating+extracting a fresh one -- auto-filled "
+                        "by --experiment when that experiment's folder exists.")
+    p.add_argument("--source_portrait_path", type=str, default=None,
+                   help="Matching source_portrait.png for --source_scribble_path "
+                        "(saved as-is; cosmetic only, not used for generation).")
 
     # Prompts
     p.add_argument("--sprinter_variation_prompt", type=str,

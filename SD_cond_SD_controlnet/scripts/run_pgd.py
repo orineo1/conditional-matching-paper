@@ -456,21 +456,14 @@ def main():
     run = wandb.init(
         project=args.wandb_project,
         entity=args.wandb_entity or None,
+        # vars(args) logs every CLI hyperparameter (opt_lr, proj_lr, seed,
+        # num_variations, source_scribble_path, ...) so a run's full config is
+        # always reconstructable from wandb, not just a hand-picked subset.
         config={
-            "algorithm":           "PGD",
-            "experiment":          args.experiment,
-            "n_targets":           N_total,
-            "target_groups":       {name: {"prompt": pt, "n": n} for name, pt, n, _, _ in target_groups},
-            "loss_fn":             args.loss_fn,
-            "num_variations":      args.num_variations,
-            "controlnet_scale":    args.controlnet_scale,
-            "opt_steps":           args.opt_steps,
-            "opt_lr":              args.opt_lr,
-            "proj_adam_steps":     args.proj_adam_steps,
-            "proj_lr":             args.proj_lr,
-            "target_minutes":      args.target_minutes,
-            "mode":                args.mode,
-            "seed":                args.seed,
+            **vars(args),
+            "algorithm":     "PGD",
+            "n_targets":     N_total,
+            "target_groups": {name: {"prompt": pt, "n": n} for name, pt, n, _, _ in target_groups},
         },
     )
     print(f"✅ wandb run: {run.name}", flush=True)

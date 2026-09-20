@@ -10,7 +10,7 @@
 
 # Usage:
 #   export ENV_PATH=/path/to/your/env
-#   sbatch pgd_submit.sh <EXPERIMENT> <TARGET_MINUTES> [SEED] [LOSS_FN] [NUM_VARIATIONS]
+#   sbatch pgd_submit.sh <EXPERIMENT> <TARGET_MINUTES> [SEED] [LOSS_FN] [NUM_VARIATIONS] [OPT_LR]
 #
 #   EXPERIMENT     one of GenderTarget100, GenderTarget1, SkewedTarget,
 #                  BalancedTarget, GenderInterpolation, AgeInterpolation
@@ -22,6 +22,7 @@
 #   SEED           optional -- overrides the experiment preset's default seed
 #   LOSS_FN        optional -- "mmd" (default) or "l2"
 #   NUM_VARIATIONS optional -- Sprinter samples per loss evaluation (default 6)
+#   OPT_LR         optional -- ambient (pixel-space) gradient step size (default 0.05)
 #
 # Examples:
 #   sbatch pgd_submit.sh GenderTarget100 241
@@ -31,12 +32,14 @@
 #   sbatch pgd_submit.sh GenderInterpolation 241
 #   sbatch pgd_submit.sh AgeInterpolation    177
 #   sbatch pgd_submit.sh GenderInterpolation 168 1 mmd 100
+#   sbatch pgd_submit.sh GenderInterpolation 168 1 mmd 100 0.5
 
 EXPERIMENT=${1:?experiment name required, e.g. GenderTarget100}
 TARGET_MINUTES=${2:?target_minutes required -- the matching MLGD-F runtime}
 SEED=${3:-}
 LOSS_FN=${4:-mmd}
 NUM_VARIATIONS=${5:-6}
+OPT_LR=${6:-0.05}
 
 # ── 1. Environment ────────────────────────────────────────────────────────────
 # Set ENV_PATH to your Python environment before submitting:
@@ -55,6 +58,7 @@ echo "Target minutes  : $TARGET_MINUTES"
 echo "Seed override   : ${SEED:-<preset default>}"
 echo "Loss fn         : $LOSS_FN"
 echo "Num variations  : $NUM_VARIATIONS"
+echo "Opt lr          : $OPT_LR"
 python -c "import torch; print(f'GPU: {torch.cuda.is_available()}')"
 echo "============================================"
 
@@ -67,7 +71,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 REPO="YOUR_REPO_PATH_HERE/SD_cond_SD_controlnet"
 cd "$REPO"
 
-OUTPUT_DIR="$REPO/output/pgd_${EXPERIMENT}_${SLURM_JOB_ID}"
+OUTPUT_DIR="$REPO/output/pgd_${EXPERIMENT}_optlr${OPT_LR}_${SLURM_JOB_ID}"
 mkdir -p "$OUTPUT_DIR"
 
 # Optimization-step (pixel-space gradient descent) vs. projection-step
@@ -87,7 +91,7 @@ python scripts/run_pgd.py \
     ${SEED:+--seed "$SEED"} \
     --loss_fn "$LOSS_FN" \
     --opt_steps "$OPT_STEPS" \
-    --opt_lr 0.05 \
+    --opt_lr "$OPT_LR" \
     --proj_adam_steps "$PROJ_ADAM_STEPS" \
     --proj_lr 0.1 \
     --num_variations "$NUM_VARIATIONS"

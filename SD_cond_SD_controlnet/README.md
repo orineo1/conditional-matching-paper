@@ -44,7 +44,8 @@ SD_cond_SD_controlnet/
 │
 ├── age_submit_mlgd_f.sh                      # SLURM submit script — age mode
 ├── gender_submit_mlgd_f.sh                   # SLURM submit script — gender mode
-├── pgd_submit.sh                             # SLURM submit script — PGD, takes experiment/minutes/seed/loss_fn
+├── pgd_submit.sh                             # SLURM submit script — PGD, takes experiment/minutes/seed/loss_fn/opt_lr
+├── pgd_opt_lr_sweep.sh                       # bash driver — submits the opt_lr sweep via pgd_submit.sh
 ├── requirements.txt
 └── README.md
 ```
@@ -155,7 +156,7 @@ optionally a seed override and loss function as positional arguments, mirroring
 
 ```bash
 export ENV_PATH=/path/to/your/env
-sbatch pgd_submit.sh <EXPERIMENT> <TARGET_MINUTES> [SEED] [LOSS_FN]
+sbatch pgd_submit.sh <EXPERIMENT> <TARGET_MINUTES> [SEED] [LOSS_FN] [NUM_VARIATIONS] [OPT_LR]
 
 sbatch pgd_submit.sh GenderTarget100 241            # man scribble -> 100-sample woman target
 sbatch pgd_submit.sh GenderTarget1   241 1    l2    # single-sample target, l2 loss, seed override
@@ -163,7 +164,23 @@ sbatch pgd_submit.sh SkewedTarget    241            # 25% male / 75% female (vs.
 sbatch pgd_submit.sh BalancedTarget  241            # 50% male / 50% female (vs. experiments/BalancedTarget)
 sbatch pgd_submit.sh GenderInterpolation 241        # 4-class (vs. experiments/GenderInterpolation)
 sbatch pgd_submit.sh AgeInterpolation    177        # age sweep (vs. experiments/AgeInterpolation)
+sbatch pgd_submit.sh GenderInterpolation 168 1 mmd 100 0.5   # opt_lr override
 ```
+
+`pgd_opt_lr_sweep.sh` submits GenderInterpolation/SkewedTarget/BalancedTarget/
+AgeInterpolation at three `--opt_lr` values each (`0.05`/`0.5`/`2.0` by
+default — edit the `OPT_LRS` array to change) via repeated `sbatch
+pgd_submit.sh` calls. It's a plain bash driver, run directly (not itself
+submitted via `sbatch`):
+
+```bash
+export ENV_PATH=/path/to/your/env
+bash pgd_opt_lr_sweep.sh
+```
+
+Every hyperparameter, `opt_lr` included, is logged to each run's wandb
+config (`vars(args)`), so runs stay distinguishable regardless of how many
+you launch.
 
 `EXPERIMENT` selects a preset from `EXPERIMENT_PRESETS` in `scripts/run_pgd.py`
 (target prompts/mode/controlnet_scale/age-range, matching the corresponding

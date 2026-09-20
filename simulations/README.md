@@ -79,9 +79,12 @@ constructed:
 `Optimization.optimize_LGD` draws the model side and the target side with the *same*
 `nsamples`, unlike `nonstar.py`'s asymmetric 32-vs-250 split. Regret is scored against the
 analytic oracle `min_x L(x)` (exact closed-form GMM L2 distance), same convention as
-`Exp_2D_infeasible_targets.ipynb`. Set `QUICK_RUN = False` in the config cell for a
-full-fidelity run (`NEPOCHS=20_000`, `N_ATTEMP_OPTIM=25`) — needs a GPU; `QUICK_RUN = True`
-(the default) trades fidelity for wall-clock time so the notebook can be smoke-tested on CPU.
+`Exp_2D_infeasible_targets.ipynb`. The default is a full-fidelity run (`QUICK_RUN = False`,
+`NEPOCHS=20_000`, `N_ATTEMP_OPTIM=25`); set `QUICK_RUN = True` in the config cell to trade
+fidelity for wall-clock time (`NEPOCHS=2_000`, `N_ATTEMP_OPTIM=3`) and smoke-test on CPU —
+note that with that little training the guided optimizer can wander off the data manifold,
+where the closed-form conditional/L2 machinery saturates and stops being meaningful, so treat
+`QUICK_RUN` output as a pipeline check, not a science result.
 
 Output: `results/nonstar/nonstar_mmd_target_ablation_results_seed<seed>[_quickrun].json`.
 

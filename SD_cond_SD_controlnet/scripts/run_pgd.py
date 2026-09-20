@@ -291,9 +291,14 @@ def conditioned_photos(scribble_pil, sprinter, prompt, controlnet_scale, n):
 def optimization_step(x_latent, architect, sprinter, clip_model, clip_processor,
                       all_clip_embeddings, loss_fn, args):
     """Ambient (pixel-space) gradient descent: decode once, then take
-    opt_steps gradient steps directly on the pixel tensor."""
+    opt_steps gradient steps directly on the pixel tensor.
+
+    Returns (w, last_loss, last_gen_embs) -- last_gen_embs is the full
+    num_variations-sized CLIP embedding batch from the final iteration
+    (detached), for reuse in the PCA visualization instead of a fresh,
+    differently-sized batch."""
     w = decode_01(x_latent.detach(), architect.vae).detach()
-    last_loss = None
+    last_loss, last_gen_embs = None, None
     for _ in range(args.opt_steps):
         w = w.clone().requires_grad_(True)
         gen_embs = generate_clip_embeddings(
@@ -304,8 +309,8 @@ def optimization_step(x_latent, architect, sprinter, clip_model, clip_processor,
         loss = loss_fn(gen_embs, all_clip_embeddings)
         grad_w = torch.autograd.grad(loss, w)[0]
         w = (w.detach() - args.opt_lr * grad_w).clamp(0.0, 1.0)
-        last_loss = loss.detach()
-    return w.detach(), last_loss
+        last_loss, last_gen_embs = loss.detach(), gen_embs.detach()
+    return w.detach(), last_loss, last_gen_embs
 
 
 def projection_step(w_pixels, x_init, architect, args):
@@ -423,7 +428,7 @@ def main():
 
     while n_rounds is None or round_idx < n_rounds:
         t0 = time.time()
-        w, opt_loss = optimization_step(
+        w, opt_loss, opt_gen_embs = optimization_step(
             x, architect, sprinter, clip_model, clip_processor,
             all_clip_embeddings, loss_fn, args,
         )
@@ -448,17 +453,14 @@ def main():
             round_scribble_pil.save(
                 os.path.join(rounds_dir, f"round_{round_idx:04d}_scribble.png"))
 
-            clip_model.to(device)
-            with torch.no_grad():
-                cond_tensor = torch.cat(
-                    [TF.to_tensor(p).unsqueeze(0) for p in round_photos]).to(device)
-                cond_clip_embs = encode_images_clip(
-                    cond_tensor, clip_model, clip_processor).cpu().numpy()
-
-            # Same grid MLGD-F logs per step (scribble/samples + CLIP-PCA
-            # scatter), one combined wandb image under "round_visualization".
+            # PCA reuses the actual num_variations-sized batch the optimization
+            # step just computed its loss on -- not a fresh, differently-sized
+            # batch -- so "Generated" reflects --num_variations, matching how
+            # MLGD-F's visualize_step plots its own full variation_clip_flat
+            # (while only ever *showing* num_cond thumbnail photos).
             visualize_round(
-                round_idx, round_scribble_pil, round_photos, cond_clip_embs,
+                round_idx, round_scribble_pil, round_photos,
+                opt_gen_embs.cpu().numpy(),
                 target_clip_np, pca_fixed, group_names, group_sizes,
                 save_path=os.path.join(rounds_dir, f"round_{round_idx:04d}_viz.png"),
             )

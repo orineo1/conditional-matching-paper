@@ -32,6 +32,7 @@ simulations/
     Exp_10D_cond_1D.ipynb
     toy_example_with_beta_sweep.ipynb
     Exp_2D_infeasible_targets.ipynb
+    Exp_nonstar_mmd_target_ablation.ipynb
   params/                  # Saved GMM parameters (.pt files)
   results/                 # JSON result files per experiment
   requirements.txt
@@ -58,6 +59,31 @@ For the three main experiment notebooks (`Exp_2D_cond_1D`, `Exp_5D_cond_1D`, `Ex
 The `toy_example_with_beta_sweep.ipynb` notebook does not have pre-trained weights and will train from scratch.
 
 To force retraining from scratch for any notebook, set `FORCE_RETRAIN = True` in the configuration cell.
+
+## nonstar MMD target-construction ablation (trained models)
+
+`notebooks/Exp_nonstar_mmd_target_ablation.ipynb` is a trained-model (not closed-form
+analytic-sampler) version of `experiments/nonstar/nonstar.py`'s "no star" scenario: a joint
+GMM where `x_bi = -2` is exactly right half the time and `x_uni = +2` is never right but
+always close, and no `x` reproduces the requested `N(y*=4, sigma_t^2)`. It trains its own
+Consistency Model (MLGD-F) and Diffusion (MLGD) checkpoints under experiment name `nonstar`
+(self-contained, not reusing `2D_cond_1D`'s), then ablates how the MMD guidance target is
+constructed:
+
+| config | `nsamples` | target |
+|---|---|---|
+| `zero_sigma_n32` | 32 | 32 samples all exactly `y*=4` (`sigma_t -> 0`, a point-mass target) |
+| `noisy_n32`      | 32 | 32 samples `~ N(4, sigma_t^2)` (matches `nonstar.py`'s `N_MMD_BATCH`) |
+| `noisy_n250`     | 250 | 250 samples `~ N(4, sigma_t^2)` (matches this repo's default `NSAMPLES_IN_OPTIM_FOR_MMD`, "current") |
+
+`Optimization.optimize_LGD` draws the model side and the target side with the *same*
+`nsamples`, unlike `nonstar.py`'s asymmetric 32-vs-250 split. Regret is scored against the
+analytic oracle `min_x L(x)` (exact closed-form GMM L2 distance), same convention as
+`Exp_2D_infeasible_targets.ipynb`. Set `QUICK_RUN = False` in the config cell for a
+full-fidelity run (`NEPOCHS=20_000`, `N_ATTEMP_OPTIM=25`) — needs a GPU; `QUICK_RUN = True`
+(the default) trades fidelity for wall-clock time so the notebook can be smoke-tested on CPU.
+
+Output: `results/nonstar/nonstar_mmd_target_ablation_results_seed<seed>[_quickrun].json`.
 
 ## Metrics
 

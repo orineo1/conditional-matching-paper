@@ -337,16 +337,36 @@ def optimization_step(x_latent, architect, sprinter, clip_model, clip_processor,
 
 
 def projection_step(w_pixels, x_init, architect, args):
-    """z* = argmin_z ||w_pixels - decode(z)||_2 via Adam, init z = x_init."""
+    """z* = argmin_z ||w_pixels - decode(z)||_2 via Adam, init z = x_init.
+
+    Returns (z, init_proj_loss, final_proj_loss, final_grad_norm) -- the
+    init/final pair lets callers confirm the Adam search actually decreases
+    its own reconstruction loss each round rather than reporting a single
+    opaque number, and final_grad_norm/the NaN guard mirror
+    optimization_step's gradient checks (a NaN gradient here would otherwise
+    silently corrupt z via Adam's moment estimates)."""
     z = x_init.detach().clone().float().requires_grad_(True)
     opt = torch.optim.Adam([z], lr=args.proj_lr)
-    for _ in range(args.proj_adam_steps):
+    init_proj_loss, final_proj_loss, final_grad_norm = None, None, None
+    for i in range(args.proj_adam_steps):
         opt.zero_grad()
         decoded = decode_01(z, architect.vae)
         proj_loss = ((decoded - w_pixels) ** 2).mean()
         proj_loss.backward()
+
+        if torch.isnan(z.grad).any():
+            print(f"  ⚠️  NaN in projection gradient at proj iter {i} — skipping update", flush=True)
+            z.grad.zero_()
+            final_grad_norm = float("nan")
+        else:
+            final_grad_norm = z.grad.norm().item()
+
         opt.step()
-    return z.detach().to(x_init.dtype), proj_loss.item()
+        if i == 0:
+            init_proj_loss = proj_loss.item()
+        final_proj_loss = proj_loss.item()
+
+    return z.detach().to(x_init.dtype), init_proj_loss, final_proj_loss, final_grad_norm
 
 
 # ---------------------------------------------------------------------------
@@ -455,16 +475,20 @@ def main():
             x, architect, sprinter, clip_model, clip_processor,
             all_clip_embeddings, loss_fn, args,
         )
-        x, proj_loss = projection_step(w, x, architect, args)
+        x, proj_loss_init, proj_loss, proj_grad_norm = projection_step(w, x, architect, args)
         round_time = time.time() - t0
         round_idx += 1
 
         print(f"Round {round_idx}{f'/{n_rounds}' if n_rounds else ''}  "
-              f"opt_loss={opt_loss.item():.6f}  grad_norm={opt_grad_norm:.6f}  "
-              f"proj_l2={proj_loss:.6f}  round_time={round_time:.1f}s", flush=True)
+              f"opt_loss={opt_loss.item():.6f}  opt_grad_norm={opt_grad_norm:.6f}  "
+              f"proj_l2 {proj_loss_init:.6f}->{proj_loss:.6f}  "
+              f"proj_grad_norm={proj_grad_norm:.6f}  round_time={round_time:.1f}s", flush=True)
         log_data = {"round": round_idx, "opt_loss": opt_loss.item(),
                    "opt_grad_norm": opt_grad_norm,
-                   "proj_l2": proj_loss, "round_time_sec": round_time}
+                   "proj_l2": proj_loss, "proj_l2_init": proj_loss_init,
+                   "proj_l2_delta": proj_loss_init - proj_loss,
+                   "proj_grad_norm": proj_grad_norm,
+                   "round_time_sec": round_time}
         wandb.log(log_data, commit=(round_idx % args.log_image_every != 0))
 
         if round_idx % args.log_image_every == 0:

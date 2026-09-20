@@ -227,6 +227,8 @@ def generate_clip_embeddings(pixel_01, sprinter, num_variations, variation_batch
     +CLIP chain in generation.run_dps_step_clip, decoupled from the Architect's
     UNet/pred_x0 (PGD never touches the Architect's diffusion trajectory).
     """
+    clip_model.to(pixel_01.device)
+
     def forward(ctrl):
         var_latents = sprinter(
             prompt=[variation_prompt] * ctrl.shape[0],

@@ -4,6 +4,7 @@ visualization.py — Step-level and final visualizations for MLGD-F.
 Functions:
     plot_row                  Horizontal strip of PIL images with a title.
     visualize_step            Per-DPS-step 2×(2+num_cond+1) grid + wandb log.
+    visualize_round           Per-PGD-round (1+num_cond+1) grid + wandb log.
     compare_scribbles_heatmap Pixel-difference heatmap between two scribbles.
 """
 
@@ -189,6 +190,77 @@ def visualize_step(
 
     plt.tight_layout()
     wandb.log({"step_visualization": wandb.Image(fig)}, step=i + 1, commit=True)
+
+    if save_path:
+        fig.savefig(save_path, dpi=100, bbox_inches="tight")
+
+    plt.close(fig)
+
+
+_PCA_COLORS  = ["royalblue", "crimson", "limegreen", "orange",
+                "mediumpurple", "gold", "deepskyblue", "hotpink"]
+_PCA_MARKERS = ["o", "x", "^", "s", "D", "P", "v", "<"]
+
+
+def visualize_round(
+    round_idx, scribble_pil, cond_imgs, cond_clip_embs, target_clip_np,
+    pca_fixed, group_names, group_sizes, save_path=None,
+):
+    """
+    Per-PGD-round (1 + num_cond + 1) visualization grid: scribble, num_cond
+    Sprinter-conditioned samples, and a CLIP-PCA scatter (target groups vs.
+    the round's conditioned samples). Single-row analogue of visualize_step's
+    grid, for the same PCA-space read on PGD as MLGD-F gets per step.
+
+    Logs to wandb (one combined image, matching visualize_step's pattern) and
+    optionally saves to disk.
+
+    Args:
+        round_idx:      1-indexed PGD round number (used as the wandb step).
+        scribble_pil:   current round's decoded scribble.
+        cond_imgs:      list of PIL Sprinter-conditioned samples.
+        cond_clip_embs: [num_cond, 768] numpy array, CLIP embeddings of cond_imgs.
+        target_clip_np: [N, 768] numpy array of target CLIP embeddings.
+        pca_fixed:      fitted PCA for consistent projection across rounds.
+    """
+    combined = np.vstack([target_clip_np, cond_clip_embs])
+    pca_coords = pca_fixed.transform(combined)
+    target_pca = pca_coords[: target_clip_np.shape[0]]
+    gen_pca    = pca_coords[target_clip_np.shape[0]:]
+
+    group_pca_slices = []
+    offset = 0
+    for sz in group_sizes:
+        group_pca_slices.append(target_pca[offset: offset + sz])
+        offset += sz
+
+    n_cols = 1 + len(cond_imgs) + 1
+    fig, axes = plt.subplots(1, n_cols, figsize=(4 * n_cols, 4))
+    fig.suptitle(f"PGD round {round_idx}", fontsize=14, fontweight="bold")
+
+    axes[0].imshow(scribble_pil)
+    axes[0].set_title("Scribble")
+    for j, ci in enumerate(cond_imgs):
+        axes[j + 1].imshow(ci)
+        axes[j + 1].set_title(f"Cond {j + 1}")
+
+    ax = axes[-1]
+    for g_idx, (g_pca, g_name) in enumerate(zip(group_pca_slices, group_names)):
+        ax.scatter(g_pca[:, 0], g_pca[:, 1],
+                   c=_PCA_COLORS[g_idx % len(_PCA_COLORS)],
+                   marker=_PCA_MARKERS[g_idx % len(_PCA_MARKERS)],
+                   alpha=0.6, s=40, label=g_name)
+    ax.scatter(gen_pca[:, 0], gen_pca[:, 1],
+               c="limegreen", alpha=0.8, s=50, marker="x", label="Generated")
+    ax.set_title("CLIP PCA")
+    ax.legend(fontsize=7)
+    ax.grid(True, alpha=0.3)
+
+    for ax_ in axes[:-1]:
+        ax_.axis("off")
+
+    plt.tight_layout()
+    wandb.log({"round_visualization": wandb.Image(fig)}, step=round_idx, commit=True)
 
     if save_path:
         fig.savefig(save_path, dpi=100, bbox_inches="tight")

@@ -59,7 +59,7 @@ from clip_utils import encode_images_clip, load_clip_model
 from image_utils import build_base_image, sobel_proxy
 from metrics import compute_l2, compute_mmd, evaluate_distribution_mmd
 from models import load_models, setup_gradient_checkpointing
-from visualization import plot_row
+from visualization import plot_row, visualize_round
 
 from run_mlgd_f import build_targets_age, build_targets_gender, save_image_list_npy
 
@@ -392,6 +392,8 @@ def main():
            for name, imgs in target_images_per_group.items()},
     })
 
+    target_clip_np = all_clip_embeddings.cpu().numpy()
+
     architect.vae.to(dtype=torch.float32)
     sprinter.vae.to(dtype=torch.float32)
     loss_fn = (partial(compute_mmd, bandwidth_scale=args.bandwidth_scale,
@@ -434,6 +436,7 @@ def main():
               f"round_time={round_time:.1f}s", flush=True)
         log_data = {"round": round_idx, "opt_loss": opt_loss.item(),
                    "proj_l2": proj_loss, "round_time_sec": round_time}
+        wandb.log(log_data, commit=(round_idx % args.log_image_every != 0))
 
         if round_idx % args.log_image_every == 0:
             with torch.no_grad():
@@ -444,10 +447,21 @@ def main():
             )
             round_scribble_pil.save(
                 os.path.join(rounds_dir, f"round_{round_idx:04d}_scribble.png"))
-            log_data["round/scribble"] = wandb.Image(round_scribble_pil)
-            log_data["round/photos"]   = [wandb.Image(p) for p in round_photos]
 
-        wandb.log(log_data)
+            clip_model.to(device)
+            with torch.no_grad():
+                cond_tensor = torch.cat(
+                    [TF.to_tensor(p).unsqueeze(0) for p in round_photos]).to(device)
+                cond_clip_embs = encode_images_clip(
+                    cond_tensor, clip_model, clip_processor).cpu().numpy()
+
+            # Same grid MLGD-F logs per step (scribble/samples + CLIP-PCA
+            # scatter), one combined wandb image under "round_visualization".
+            visualize_round(
+                round_idx, round_scribble_pil, round_photos, cond_clip_embs,
+                target_clip_np, pca_fixed, group_names, group_sizes,
+                save_path=os.path.join(rounds_dir, f"round_{round_idx:04d}_viz.png"),
+            )
 
         if n_rounds is None:
             n_rounds = max(1, round(args.target_minutes * 60 / round_time))

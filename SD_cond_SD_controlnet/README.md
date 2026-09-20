@@ -181,6 +181,10 @@ within that fixed budget.
 | `--proj_adam_steps` | 200 | Adam iterations for the projection search (paper default) |
 | `--proj_lr` | 0.03 | Adam learning rate for the projection search |
 | `--target_minutes` | *(required)* | Wall-clock budget, matched to the compared MLGD-F run |
+| `--n_eval` | 10 | Sprinter samples for the quick init/per-round MMD check |
+| `--n_eval_final` | 250 | Sprinter samples for the final, higher-fidelity MMD (`final_pgd_mmd_250`) |
+| `--n_photos_per_round` | 5 | Conditioned Sprinter photos logged to wandb per logged round |
+| `--log_image_every` | 1 | Log the scribble + conditioned photos every N rounds |
 
 ---
 

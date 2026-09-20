@@ -159,6 +159,17 @@ def parse_args():
     p.add_argument("--proj_lr",          type=float, default=0.03,
                    help="Adam learning rate for the projection search")
 
+    # Logging
+    p.add_argument("--n_photos_per_round", type=int, default=5,
+                   help="Sprinter photos conditioned on the current scribble "
+                        "to log to wandb each logged round")
+    p.add_argument("--log_image_every",  type=int, default=1,
+                   help="Log the scribble + conditioned photos every N rounds")
+    p.add_argument("--n_eval",           type=int, default=10,
+                   help="Sprinter samples for the quick init/per-round MMD check")
+    p.add_argument("--n_eval_final",     type=int, default=250,
+                   help="Sprinter samples for the final, higher-fidelity MMD")
+
     # Loss / guidance
     p.add_argument("--loss_fn",          type=str,   default="mmd",
                    choices=["l2", "mmd"])
@@ -253,6 +264,24 @@ def generate_clip_embeddings(pixel_01, sprinter, num_variations, variation_batch
         chunk = torch.utils.checkpoint.checkpoint(forward, ctrl_batch, use_reentrant=False)
         rows.append(chunk)
     return torch.cat(rows, dim=0)
+
+
+def conditioned_photos(scribble_pil, sprinter, prompt, controlnet_scale, n):
+    """n Sprinter portraits conditioned on scribble_pil, for visualization only
+    (no_grad, PIL output) -- e.g. the per-round wandb preview."""
+    original_vae_dtype = sprinter.vae.dtype
+    sprinter.vae.to(dtype=torch.float16)
+    with torch.no_grad():
+        photos = sprinter(
+            prompt=[prompt] * n,
+            image=[scribble_pil] * n,
+            num_inference_steps=2,
+            guidance_scale=0.0,
+            controlnet_conditioning_scale=controlnet_scale,
+            output_type="pil",
+        ).images
+    sprinter.vae.to(dtype=original_vae_dtype)
+    return photos
 
 
 # ---------------------------------------------------------------------------
@@ -374,7 +403,7 @@ def main():
         scribble_01 = TF.to_tensor(scribble_pil).unsqueeze(0).to(device).float()
         x = encode_01(scribble_01, architect.vae)
 
-    n_eval = 10
+    n_eval = args.n_eval
     print("Evaluating initial (pre-PGD) MMD...", flush=True)
     init_mmd, _, _ = evaluate_distribution_mmd(
         x, architect.vae, architect.image_processor, sprinter, clip_model, clip_processor,
@@ -384,6 +413,8 @@ def main():
     wandb.log({"init_mmd": init_mmd}, commit=False)
 
     # ── PGD loop: run round 1, time it, then compute n_rounds to hit the budget ──
+    rounds_dir = os.path.join(args.output_dir, "rounds")
+    os.makedirs(rounds_dir, exist_ok=True)
     round_idx = 0
     n_rounds = None
     pgd_start_time = time.time()
@@ -401,8 +432,22 @@ def main():
         print(f"Round {round_idx}{f'/{n_rounds}' if n_rounds else ''}  "
               f"opt_loss={opt_loss.item():.6f}  proj_l2={proj_loss:.6f}  "
               f"round_time={round_time:.1f}s", flush=True)
-        wandb.log({"round": round_idx, "opt_loss": opt_loss.item(),
-                  "proj_l2": proj_loss, "round_time_sec": round_time})
+        log_data = {"round": round_idx, "opt_loss": opt_loss.item(),
+                   "proj_l2": proj_loss, "round_time_sec": round_time}
+
+        if round_idx % args.log_image_every == 0:
+            with torch.no_grad():
+                round_scribble_pil = TF.to_pil_image(decode_01(x, architect.vae).squeeze(0).cpu())
+            round_photos = conditioned_photos(
+                round_scribble_pil, sprinter, args.sprinter_eval_prompt,
+                args.controlnet_scale, args.n_photos_per_round,
+            )
+            round_scribble_pil.save(
+                os.path.join(rounds_dir, f"round_{round_idx:04d}_scribble.png"))
+            log_data["round/scribble"] = wandb.Image(round_scribble_pil)
+            log_data["round/photos"]   = [wandb.Image(p) for p in round_photos]
+
+        wandb.log(log_data)
 
         if n_rounds is None:
             n_rounds = max(1, round(args.target_minutes * 60 / round_time))
@@ -425,6 +470,13 @@ def main():
     print(f"PGD MMD  : {pgd_mmd:.6f}",  flush=True)
     print(f"Delta (↓ better): {init_mmd - pgd_mmd:.6f}", flush=True)
 
+    print(f"Computing final PGD MMD at n_eval={args.n_eval_final} (higher-fidelity)...", flush=True)
+    pgd_mmd_final, _, _ = evaluate_distribution_mmd(
+        x, architect.vae, architect.image_processor, sprinter, clip_model, clip_processor,
+        all_clip_embeddings, args.sprinter_eval_prompt, n_eval=args.n_eval_final, device=device,
+    )
+    print(f"PGD MMD (n={args.n_eval_final}): {pgd_mmd_final:.6f}", flush=True)
+
     with torch.no_grad():
         final_pgd_pil = TF.to_pil_image(decode_01(x, architect.vae).squeeze(0).cpu())
     final_pgd_pil.save(os.path.join(args.output_dir, "final_scribble_pgd.png"))
@@ -439,15 +491,17 @@ def main():
 
     wandb.log({
         "final_pgd_mmd":         pgd_mmd,
+        "final_pgd_mmd_250":     pgd_mmd_final,
         "final_init_mmd":        init_mmd,
         "mmd_delta":             init_mmd - pgd_mmd,
         "final_scribble_pgd":    wandb.Image(final_pgd_pil),
         "pgd_eval_photos":       [wandb.Image(p) for p in pgd_eval_photos],
     })
-    wandb.summary["final_pgd_mmd"]  = pgd_mmd
-    wandb.summary["final_init_mmd"] = init_mmd
-    wandb.summary["mmd_delta"]      = init_mmd - pgd_mmd
-    wandb.summary["n_rounds"]       = round_idx
+    wandb.summary["final_pgd_mmd"]      = pgd_mmd
+    wandb.summary["final_pgd_mmd_250"]  = pgd_mmd_final
+    wandb.summary["final_init_mmd"]     = init_mmd
+    wandb.summary["mmd_delta"]          = init_mmd - pgd_mmd
+    wandb.summary["n_rounds"]           = round_idx
 
     npy_dir = os.path.join(args.output_dir, "npy")
     os.makedirs(npy_dir, exist_ok=True)
@@ -464,6 +518,8 @@ def main():
             "args":                  vars(args),
             "n_rounds":              round_idx,
             "final_pgd_mmd":         pgd_mmd,
+            "final_pgd_mmd_n_eval_final": pgd_mmd_final,
+            "n_eval_final":          args.n_eval_final,
             "final_init_mmd":        init_mmd,
             "mmd_delta":             init_mmd - pgd_mmd,
             "optimization_time_sec": optimization_time_sec,

@@ -341,8 +341,9 @@ def build_targets_gender(args, sprinter, clip_model, clip_processor, device,
                 scribble_pil, n, batch_size=2, cn_scale=args.controlnet_scale,
             )
             target_images_per_group[name] = imgs
+            safe_name = name.replace(" ", "_").replace("/", "_")
             plot_row(imgs, f"Target: {name}",
-                     save_path=os.path.join(args.output_dir, f"target_samples_{name}.png"))
+                     save_path=os.path.join(args.output_dir, f"target_samples_{safe_name}.png"))
 
     # Encode to CLIP
     print("Encoding targets to CLIP...", flush=True)
@@ -958,7 +959,7 @@ def main():
     save_image_list_npy(mlgd_f_eval_photos,  os.path.join(npy_dir, "photos_mlgd_f.npy"))
     save_image_list_npy(regular_eval_photos, os.path.join(npy_dir, "photos_regular.npy"))
     for name, imgs in target_images_per_group.items():
-        safe_name = name.lower().replace(" ", "_")
+        safe_name = name.lower().replace(" ", "_").replace("/", "_")
         save_image_list_npy(imgs, os.path.join(npy_dir, f"targets_{safe_name}.npy"))
     save_image_list_npy([source_image],      os.path.join(npy_dir, "source_portrait.npy"))
     save_image_list_npy([scribble_pil],      os.path.join(npy_dir, "scribble.npy"))
@@ -967,7 +968,7 @@ def main():
     print("✅ Image arrays saved to npy/", flush=True)
 
     for name, imgs in target_images_per_group.items():
-        safe_name = name.lower().replace(" ", "_")
+        safe_name = name.lower().replace(" ", "_").replace("/", "_")
         photo_dir = os.path.join(args.output_dir, f"targets_{safe_name}")
         os.makedirs(photo_dir, exist_ok=True)
         for idx, photo in enumerate(imgs):

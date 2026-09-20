@@ -523,7 +523,7 @@ def main():
     os.makedirs(npy_dir, exist_ok=True)
     save_image_list_npy(pgd_eval_photos, os.path.join(npy_dir, "photos_pgd.npy"))
     for name, imgs in target_images_per_group.items():
-        safe_name = name.lower().replace(" ", "_")
+        safe_name = name.lower().replace(" ", "_").replace("/", "_")
         save_image_list_npy(imgs, os.path.join(npy_dir, f"targets_{safe_name}.npy"))
     save_image_list_npy([source_image],   os.path.join(npy_dir, "source_portrait.npy"))
     save_image_list_npy([scribble_pil],   os.path.join(npy_dir, "scribble.npy"))

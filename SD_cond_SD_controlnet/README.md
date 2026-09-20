@@ -21,6 +21,7 @@ SD_cond_SD_controlnet/
 │
 ├── scripts/
 │   ├── run_mlgd_f.py                         # main MLGD-F entry point
+│   ├── run_pgd.py                            # PGD competitor entry point
 │   └── eval_baselines.py                     # baseline scribble generation for comparison
 │
 ├── notebooks/
@@ -43,6 +44,11 @@ SD_cond_SD_controlnet/
 │
 ├── age_submit_mlgd_f.sh                      # SLURM submit script — age mode
 ├── gender_submit_mlgd_f.sh                   # SLURM submit script — gender mode
+├── pgd_gender_100_submit.sh                  # SLURM submit script — PGD, 100-sample woman target, mmd
+├── pgd_gender_100_l2_submit.sh               # SLURM submit script — PGD, 100-sample woman target, l2
+├── pgd_gender_1_submit.sh                    # SLURM submit script — PGD, 1-sample woman target, mmd
+├── pgd_gender_1_l2_submit.sh                 # SLURM submit script — PGD, 1-sample woman target, l2
+├── pgd_bimodal_submit.sh                     # SLURM submit script — PGD, 50/50 man+woman target
 ├── requirements.txt
 └── README.md
 ```
@@ -128,6 +134,42 @@ python scripts/run_mlgd_f.py \
         "Man with feminine features:a superrealistic portrait photograph of a man with extremely feminine features, soft delicate face, high cheekbones, studio lighting:25" \
         "Man:a superrealistic portrait photograph of a man, extremely masculine features, studio lighting:25"
 ```
+
+---
+
+## PGD (projected gradient descent) — competitor
+
+`scripts/run_pgd.py` is an alternative to MLGD-F's DPS-style guidance, following
+Shah & Hegde-style PGD for generative priors: alternate an unconstrained gradient
+step in pixel space with a projection back onto the Architect VAE decoder's range
+(found by Adam-searching its latent input, matching the paper's own
+`P_G(w) = G(argmin_z ‖w - G(z)‖)`). Sprinter+CLIP play the same role as in
+MLGD-F — the measurement operator the loss is computed on — but PGD never touches
+the Architect's UNet/diffusion trajectory, only its VAE.
+
+```bash
+export ENV_PATH=/path/to/your/env
+sbatch pgd_gender_100_submit.sh     # man scribble -> 100-sample woman target, mmd loss
+sbatch pgd_gender_100_l2_submit.sh  # same, l2 (mean-CLIP-matching) loss
+sbatch pgd_gender_1_submit.sh       # same, but a single-sample woman target
+sbatch pgd_gender_1_l2_submit.sh    # same, l2 loss
+sbatch pgd_bimodal_submit.sh        # man scribble -> 50/50 man+woman target (vs. BalancedTarget)
+```
+
+`--target_minutes` sets the wall-clock budget: pass the matching MLGD-F run's
+measured runtime so both methods get the same time budget (round 1 is timed,
+then the number of rounds is computed to hit that budget — the same pattern
+`eval_baselines.py` uses for its SDEdit search). `--opt_steps`/`--proj_adam_steps`
+control the optimization-vs-projection split within that fixed budget.
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--loss_fn` | `mmd` | `mmd` (full distribution) or `l2` (mean-CLIP-embedding matching only) |
+| `--opt_steps` | 3 | Ambient/pixel-space gradient steps per round |
+| `--opt_lr` | 0.05 | Step size for the ambient gradient step |
+| `--proj_adam_steps` | 200 | Adam iterations for the projection search (paper default) |
+| `--proj_lr` | 0.03 | Adam learning rate for the projection search |
+| `--target_minutes` | *(required)* | Wall-clock budget, matched to the compared MLGD-F run |
 
 ---
 

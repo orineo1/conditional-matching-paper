@@ -3,6 +3,7 @@ metrics.py — Loss functions and distribution evaluation for MLGD-F.
 
 Functions:
     compute_mmd               Unbiased MMD with generalised RBF kernel.
+    compute_l2                Mean-matching L2 loss (PGD-GLasso analogue).
     compute_swd                Sliced Wasserstein Distance (adaptive projections).
     compute_witness_scores    Per-sample MMD witness function (for importance backsel).
     evaluate_distribution_mmd Decode latent -> scribble -> photos -> CLIP -> MMD.
@@ -115,6 +116,37 @@ def compute_mmd(x, y, bandwidth=None, bandwidth_scale=1.0, kernel_alpha=1.0):
     mmd_sq = xx_term - xy_term + yy_term
     # abs() before sqrt handles slightly-negative unbiased estimates
     return torch.sqrt(mmd_sq.abs() + 1e-8)
+
+
+def compute_l2(x, y):
+    """
+    Mean-matching L2 loss: squared distance between the mean embeddings of
+    two sets — the CLIP-space analogue of the linear least-squares loss used
+    by PGD-GLasso (only the first moment is matched, unlike MMD which matches
+    the full distribution via the kernel).
+
+    Args:
+        x: [n, d] generated embeddings (grad flows through).
+        y: [m, d] target embeddings (detached).
+
+    Returns:
+        Scalar squared L2 distance between mean(x) and mean(y).
+    """
+    if isinstance(x, np.ndarray):
+        x = torch.from_numpy(x)
+    if isinstance(y, np.ndarray):
+        y = torch.from_numpy(y)
+
+    dev = x.device
+    x = x.float().to(dev)
+    y = y.float().to(dev).detach()
+
+    if x.dim() > 2:
+        x = x.reshape(x.shape[0], -1)
+    if y.dim() > 2:
+        y = y.reshape(y.shape[0], -1)
+
+    return ((x.mean(dim=0) - y.mean(dim=0)) ** 2).sum()
 
 
 def compute_swd(

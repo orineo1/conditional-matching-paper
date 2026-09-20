@@ -63,6 +63,67 @@ from visualization import plot_row
 
 from run_mlgd_f import build_targets_age, build_targets_gender, save_image_list_npy
 
+_MAN   = "a superrealistic portrait photograph of a man, studio lighting"
+_WOMAN = "a superrealistic portrait photograph of a woman, studio lighting"
+
+# Same source (man) scribble, same target-distribution presets used by the
+# corresponding MLGD-F / eval_baselines.py experiments, so results are
+# directly comparable. Per-experiment default seed matches
+# eval_baselines.py's EXPERIMENT_CONFIGS. --seed/--controlnet_scale/etc. on
+# the CLI still override a preset's value when explicitly passed.
+EXPERIMENT_PRESETS = {
+    "GenderTarget100": dict(
+        mode="gender", seed=1, controlnet_scale=0.5,
+        target_prompts=[f"Woman:{_WOMAN}:100"],
+    ),
+    "GenderTarget1": dict(
+        mode="gender", seed=1, controlnet_scale=0.5,
+        target_prompts=[f"Woman:{_WOMAN}:1"],
+    ),
+    "SkewedTarget": dict(  # 25% male / 75% female, matches experiments/SkewedTarget
+        mode="gender", seed=5, controlnet_scale=0.5,
+        target_prompts=[f"Man:{_MAN}:25", f"Woman:{_WOMAN}:75"],
+    ),
+    "BalancedTarget": dict(  # 50% male / 50% female, matches experiments/BalancedTarget
+        mode="gender", seed=5, controlnet_scale=0.5,
+        target_prompts=[f"Man:{_MAN}:50", f"Woman:{_WOMAN}:50"],
+    ),
+    "GenderInterpolation": dict(  # 4-class, matches experiments/GenderInterpolation
+        mode="gender", seed=5, controlnet_scale=0.5,
+        target_prompts=[
+            "Woman:superrealistic portrait photograph of a woman, extremely feminine features, studio lighting:25",
+            "Woman w/ masc features:a superrealistic portrait photograph of a woman with masculine features, heavy brow ridge, studio lighting:25",
+            "Man w/ fem features:a superrealistic portrait photograph of a man with extremely feminine features, soft delicate face, high cheekbones, studio lighting:25",
+            f"Man:{_MAN}:25",
+        ],
+    ),
+    "AgeInterpolation": dict(  # matches experiments/AgeInterpolation
+        mode="age", seed=42, controlnet_scale=0.5,
+        age_min=40, age_max=79, age_step=1, age_gender="man",
+    ),
+}
+
+
+def apply_experiment_preset(args):
+    """Fill in mode/target_prompts/controlnet_scale/age-range from
+    EXPERIMENT_PRESETS[args.experiment]. --target_prompts and --seed are only
+    filled in when not explicitly passed (both default to None); the other
+    preset fields (controlnet_scale, age range) are authoritative for a named
+    experiment, so they're applied whenever --experiment is given -- pass no
+    --experiment and set flags manually for full manual control instead."""
+    if not args.experiment:
+        return args
+    preset = EXPERIMENT_PRESETS[args.experiment]
+    args.mode = preset["mode"]
+    if args.target_prompts is None and "target_prompts" in preset:
+        args.target_prompts = preset["target_prompts"]
+    if args.seed is None:
+        args.seed = preset.get("seed")
+    for key in ("controlnet_scale", "age_min", "age_max", "age_step", "age_gender"):
+        if key in preset:
+            setattr(args, key, preset[key])
+    return args
+
 
 # ---------------------------------------------------------------------------
 # Argument parsing
@@ -74,6 +135,12 @@ def parse_args():
     p.add_argument("--output_dir",    type=str, default="output/pgd_run")
     p.add_argument("--wandb_project", type=str, default="PGD-EXP")
     p.add_argument("--wandb_entity",  type=str, default="")
+    p.add_argument("--experiment",    type=str, default=None,
+                   choices=list(EXPERIMENT_PRESETS.keys()),
+                   help="Optional preset name -- fills in mode/target_prompts/"
+                        "seed/age range from EXPERIMENT_PRESETS, matching the "
+                        "corresponding MLGD-F/eval_baselines.py experiment. "
+                        "Explicit --target_prompts/--seed/etc. still win.")
 
     # PGD schedule
     p.add_argument("--target_minutes",   type=float, required=True,
@@ -228,7 +295,7 @@ def projection_step(w_pixels, x_init, architect, args):
 # ---------------------------------------------------------------------------
 
 def main():
-    args   = parse_args()
+    args   = apply_experiment_preset(parse_args())
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Device: {device}", flush=True)
 
@@ -271,6 +338,7 @@ def main():
         entity=args.wandb_entity or None,
         config={
             "algorithm":           "PGD",
+            "experiment":          args.experiment,
             "n_targets":           N_total,
             "target_groups":       {name: {"prompt": pt, "n": n} for name, pt, n, _, _ in target_groups},
             "loss_fn":             args.loss_fn,

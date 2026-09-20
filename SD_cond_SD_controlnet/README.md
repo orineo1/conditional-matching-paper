@@ -44,11 +44,7 @@ SD_cond_SD_controlnet/
 │
 ├── age_submit_mlgd_f.sh                      # SLURM submit script — age mode
 ├── gender_submit_mlgd_f.sh                   # SLURM submit script — gender mode
-├── pgd_gender_100_submit.sh                  # SLURM submit script — PGD, 100-sample woman target, mmd
-├── pgd_gender_100_l2_submit.sh               # SLURM submit script — PGD, 100-sample woman target, l2
-├── pgd_gender_1_submit.sh                    # SLURM submit script — PGD, 1-sample woman target, mmd
-├── pgd_gender_1_l2_submit.sh                 # SLURM submit script — PGD, 1-sample woman target, l2
-├── pgd_bimodal_submit.sh                     # SLURM submit script — PGD, 50/50 man+woman target
+├── pgd_submit.sh                             # SLURM submit script — PGD, takes experiment/minutes/seed/loss_fn
 ├── requirements.txt
 └── README.md
 ```
@@ -147,23 +143,38 @@ step in pixel space with a projection back onto the Architect VAE decoder's rang
 MLGD-F — the measurement operator the loss is computed on — but PGD never touches
 the Architect's UNet/diffusion trajectory, only its VAE.
 
+On a SLURM cluster, `pgd_submit.sh` takes the experiment, the time budget, and
+optionally a seed override and loss function as positional arguments, mirroring
+`run_eval_baselines.sh`'s `<experiment> <minutes>` pattern:
+
 ```bash
 export ENV_PATH=/path/to/your/env
-sbatch pgd_gender_100_submit.sh     # man scribble -> 100-sample woman target, mmd loss
-sbatch pgd_gender_100_l2_submit.sh  # same, l2 (mean-CLIP-matching) loss
-sbatch pgd_gender_1_submit.sh       # same, but a single-sample woman target
-sbatch pgd_gender_1_l2_submit.sh    # same, l2 loss
-sbatch pgd_bimodal_submit.sh        # man scribble -> 50/50 man+woman target (vs. BalancedTarget)
+sbatch pgd_submit.sh <EXPERIMENT> <TARGET_MINUTES> [SEED] [LOSS_FN]
+
+sbatch pgd_submit.sh GenderTarget100 241            # man scribble -> 100-sample woman target
+sbatch pgd_submit.sh GenderTarget1   241 1    l2    # single-sample target, l2 loss, seed override
+sbatch pgd_submit.sh SkewedTarget    241            # 25% male / 75% female (vs. experiments/SkewedTarget)
+sbatch pgd_submit.sh BalancedTarget  241            # 50% male / 50% female (vs. experiments/BalancedTarget)
+sbatch pgd_submit.sh GenderInterpolation 241        # 4-class (vs. experiments/GenderInterpolation)
+sbatch pgd_submit.sh AgeInterpolation    177        # age sweep (vs. experiments/AgeInterpolation)
 ```
 
-`--target_minutes` sets the wall-clock budget: pass the matching MLGD-F run's
+`EXPERIMENT` selects a preset from `EXPERIMENT_PRESETS` in `scripts/run_pgd.py`
+(target prompts/mode/controlnet_scale/age-range, matching the corresponding
+MLGD-F/`eval_baselines.py` experiment); its default seed comes from the same
+table `eval_baselines.py` uses, overridable via the `SEED` argument.
+
+`TARGET_MINUTES` sets the wall-clock budget: pass the matching MLGD-F run's
 measured runtime so both methods get the same time budget (round 1 is timed,
 then the number of rounds is computed to hit that budget — the same pattern
 `eval_baselines.py` uses for its SDEdit search). `--opt_steps`/`--proj_adam_steps`
-control the optimization-vs-projection split within that fixed budget.
+(set inside `pgd_submit.sh`) control the optimization-vs-projection split
+within that fixed budget.
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
+| `--experiment` | *(none)* | Preset name from `EXPERIMENT_PRESETS` — fills in target/mode/seed/controlnet_scale |
+| `--seed` | *(preset default)* | Overrides the preset's seed |
 | `--loss_fn` | `mmd` | `mmd` (full distribution) or `l2` (mean-CLIP-embedding matching only) |
 | `--opt_steps` | 3 | Ambient/pixel-space gradient steps per round |
 | `--opt_lr` | 0.05 | Step size for the ambient gradient step |

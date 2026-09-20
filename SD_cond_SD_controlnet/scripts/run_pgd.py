@@ -66,6 +66,16 @@ from run_mlgd_f import build_targets_age, build_targets_gender, save_image_list_
 _MAN   = "a superrealistic portrait photograph of a man, studio lighting"
 _WOMAN = "a superrealistic portrait photograph of a woman, studio lighting"
 
+# MLGD-F hardcodes controlnet_conditioning_scale=0.8 for every loop-time Sprinter
+# call -- generation.run_dps_step_clip (the actual guidance loss), metrics.
+# evaluate_distribution_mmd, and visualization.visualize_step's "Cond" images --
+# independent of its --controlnet_scale flag (0.5), which is only used to build
+# the target distribution. PGD's optimization-step loss and per-round preview
+# photos are the analogues of those loop-time calls, so they use this same 0.8
+# rather than --controlnet_scale, to keep the two methods' Sprinter behavior
+# identical wherever it isn't the thing being compared.
+_LOOP_CONTROLNET_SCALE = 0.8
+
 # Same source (man) scribble, same target-distribution presets used by the
 # corresponding MLGD-F / eval_baselines.py experiments, so results are
 # directly comparable. Per-experiment default seed matches
@@ -303,7 +313,7 @@ def optimization_step(x_latent, architect, sprinter, clip_model, clip_processor,
         w = w.clone().requires_grad_(True)
         gen_embs = generate_clip_embeddings(
             w, sprinter, args.num_variations, args.variation_batch_size,
-            args.sprinter_variation_prompt, args.controlnet_scale,
+            args.sprinter_variation_prompt, _LOOP_CONTROLNET_SCALE,
             clip_model, clip_processor,
         )
         loss = loss_fn(gen_embs, all_clip_embeddings)
@@ -448,7 +458,7 @@ def main():
                 round_scribble_pil = TF.to_pil_image(decode_01(x, architect.vae).squeeze(0).cpu())
             round_photos = conditioned_photos(
                 round_scribble_pil, sprinter, args.sprinter_eval_prompt,
-                args.controlnet_scale, args.n_photos_per_round,
+                _LOOP_CONTROLNET_SCALE, args.n_photos_per_round,
             )
             round_scribble_pil.save(
                 os.path.join(rounds_dir, f"round_{round_idx:04d}_scribble.png"))

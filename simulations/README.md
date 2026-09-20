@@ -32,6 +32,7 @@ simulations/
     Exp_10D_cond_1D.ipynb
     toy_example_with_beta_sweep.ipynb
     Exp_2D_infeasible_targets.ipynb
+    Exp_nonstar_mmd_target_ablation.ipynb
   params/                  # Saved GMM parameters (.pt files)
   results/                 # JSON result files per experiment
   requirements.txt
@@ -58,6 +59,38 @@ For the three main experiment notebooks (`Exp_2D_cond_1D`, `Exp_5D_cond_1D`, `Ex
 The `toy_example_with_beta_sweep.ipynb` notebook does not have pre-trained weights and will train from scratch.
 
 To force retraining from scratch for any notebook, set `FORCE_RETRAIN = True` in the configuration cell.
+
+## nonstar MMD-vs-L2 guidance ablation (trained models)
+
+`notebooks/Exp_nonstar_mmd_target_ablation.ipynb` is a trained-model (not closed-form
+analytic-sampler) version of `experiments/nonstar/nonstar.py`'s "no star" scenario: a joint
+GMM where `x_bi = -2` is exactly right half the time and `x_uni = +2` is never right but
+always close, and no `x` reproduces the requested point target `y* = 4`. It trains its own
+Consistency Model (MLGD-F) checkpoint (and the unconditional Diffusion prior the CM-guided
+optimizer needs) under experiment name `nonstar` -- self-contained, not reusing
+`2D_cond_1D`'s, and CM-only (the plain conditional Diffusion/MLGD path is not trained) -- then
+asks whether the loss function alone still sends the optimizer to different design points,
+the way it does in `nonstar.py`'s closed-form script:
+
+* **target**: a zero-sigma point mass at `y* = 4` (`sigma_t -> 0`)
+* **nsamples**: 32 model + 32 target samples per guidance step (matches `nonstar.py`'s
+  `N_MMD_BATCH`), identical for both arms
+* **arms**: `MMD` (distributional) vs `L2` (pointwise squared error, `Optimization.py`'s new
+  `_step_loss` `"L2"` branch -- `((target_samples - mog_samples) ** 2).mean()`, which with a
+  degenerate target is exactly `nonstar.py`'s `(y - y*)^2`, just batched over 32 samples/step
+  instead of 1)
+
+Regret is scored against the analytic oracle `min_x L(x)` (exact closed-form GMM L2
+distance), same convention as `Exp_2D_infeasible_targets.ipynb` -- the same metric for both
+arms, since MMD vs L2 only changes *how the optimizer is guided*, not how landing quality is
+scored. The default is a full-fidelity run (`QUICK_RUN = False`, `NEPOCHS=20_000`,
+`N_ATTEMP_OPTIM=25`); set `QUICK_RUN = True` in the config cell to trade fidelity for
+wall-clock time (`NEPOCHS=2_000`, `N_ATTEMP_OPTIM=3`) and smoke-test on CPU -- note that with
+that little training the guided optimizer can wander off the data manifold, where the
+closed-form conditional/L2 machinery saturates and stops being meaningful, so treat
+`QUICK_RUN` output as a pipeline check, not a science result.
+
+Output: `results/nonstar/nonstar_mmd_vs_l2_results_seed<seed>[_quickrun].json`.
 
 ## Metrics
 

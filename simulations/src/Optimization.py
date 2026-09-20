@@ -19,6 +19,19 @@ from tqdm import tqdm
 from witness_utils import apply_backsel, compute_witness_scores, witness_scenario_stats
 
 
+def _step_loss(loss_name, mmd_loss, target_samples, mog_samples):
+    """Distributional MMD loss (default) or a pointwise squared-error loss -- mirrors
+    experiments/nonstar/nonstar.py's 'mmd' vs 'point_sq' arms. The L2 branch is an
+    unpaired per-row squared distance between target_samples and mog_samples: exact
+    (matches nonstar.py's (y - y_star)^2) when mog_samples is degenerate (every row
+    equal, e.g. sigma_t -> 0); for a non-degenerate target it's still well-defined but
+    depends on the arbitrary row pairing between the two independently-drawn batches.
+    """
+    if loss_name == "L2":
+        return ((target_samples - mog_samples) ** 2).mean()
+    return mmd_loss(target_samples, mog_samples)
+
+
 def _reference_loss_term(x0_sample, mu_list, Sigma_list, alpha, mog_samples, grad_ref_n, device, mmd_loss):
     """
     The TRUE/population reference loss term for one j: sample grad_ref_n points from the
@@ -187,7 +200,7 @@ def optimize_LGD(model_uncond, model_cond, mog_means, mog_variances, weights, mu
                 # loss on the SAME raw target_samples draw, before subsampling -- gives
                 # grad_full, the "what would the full-batch gradient have been" reference.
                 if diag_this_step:
-                    loss_val_full = mmd_loss(target_samples, mog_samples)
+                    loss_val_full = _step_loss(loss, mmd_loss, target_samples, mog_samples)
                     losses_full.append(-loss_val_full)
                 target_samples, step_backsel_info = apply_backsel(
                     target_samples, mog_samples, backsel_k, rule=backsel_rule,
@@ -195,7 +208,7 @@ def optimize_LGD(model_uncond, model_cond, mog_means, mog_variances, weights, mu
                     replacement=backsel_replacement,
                 )
 
-            loss_val = mmd_loss(target_samples, mog_samples)
+            loss_val = _step_loss(loss, mmd_loss, target_samples, mog_samples)
             losses.append(-loss_val)
             if FLAG:
                 pbar.set_description(f"Step {t} | x_t:{x_t}|x0_sample:{x0_sample} | loss_val:{loss_val}|log_mean_exp_loss: {log_mean_exp_loss.item():.4f}")
@@ -230,7 +243,7 @@ def optimize_LGD(model_uncond, model_cond, mog_means, mog_variances, weights, mu
     if not CM:
         target_samples = target_samples[:, model_cond.condition_on:]
     mog_samples = generate_mog_samples_not_differentiable(nsamples, mog_means, mog_variances, weights)
-    final_loss = mmd_loss(target_samples, mog_samples)
+    final_loss = _step_loss(loss, mmd_loss, target_samples, mog_samples)
 
     x_t_final = x_t.detach().clone()
     del x_t, condition, target_samples, mog_samples

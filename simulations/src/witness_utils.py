@@ -2,14 +2,14 @@
 witness_utils.py — MMD witness function and backprop-subsample selection for the
 toy LGD guidance loop (Optimization.optimize_LGD).
 
-Mirrors SD_cond_SD_controlnet/src/metrics.py's compute_witness_scores, reusing
-this repo's existing multi-bandwidth RBF kernel (LossFunctions.RBF) instead of
-duplicating a single-bandwidth Gaussian kernel.
+Mirrors SD_cond_SD_controlnet/src/metrics.py's compute_witness_scores exactly,
+via the same rbf_kernel/estimate_bandwidth functions LossFunctions.compute_mmd
+uses (single Gaussian kernel, detached median-heuristic bandwidth).
 """
 
 import torch
 
-from LossFunctions import RBF
+from LossFunctions import rbf_kernel, estimate_bandwidth
 
 
 def witness_scenario_stats(scores):
@@ -32,21 +32,20 @@ def witness_scenario_stats(scores):
         }
 
 
-def compute_witness_scores(X, Y, kernel=None):
+def compute_witness_scores(X, Y, bandwidth=None):
     """Per-sample MMD witness function w(x_l) = mean_i k(x_l,x_i) - mean_j k(x_l,y_j)
     -- large where X has too much mass relative to Y; |w| is the importance score
     for backsel selection. X, Y detached and moved to CPU internally regardless
     of input device."""
-    kernel = kernel or RBF()
     with torch.no_grad():
-        # CPU here matches MMDLoss/RBF's own default device and avoids a device
-        # mismatch with select_backsel_mask's CPU-only torch.Generator downstream.
+        # CPU here avoids a device mismatch with select_backsel_mask's
+        # CPU-only torch.Generator downstream.
         X = X.detach().cpu()
         Y = Y.detach().cpu()
-        n = X.shape[0]
-        K = kernel(torch.vstack([X, Y]))
-        K_xx = K[:n, :n]
-        K_xy = K[:n, n:]
+        if bandwidth is None:
+            bandwidth = estimate_bandwidth(X, Y)
+        K_xx = rbf_kernel(X, X, bandwidth)
+        K_xy = rbf_kernel(X, Y, bandwidth)
         scores = K_xx.mean(dim=1) - K_xy.mean(dim=1)
     return scores
 

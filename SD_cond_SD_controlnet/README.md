@@ -29,6 +29,7 @@ SD_cond_SD_controlnet/
 │   │   ├── eval_all_results.json             # cached N=2000 MMD results across all experiments
 │   │   └── vjp_results_lightning.csv         # VJP memory/speed benchmark results
 │   ├── eval_all_experiments.ipynb            # N=2000 MMD + gender evaluation across all experiments
+│   ├── eval_pgd_experiments.ipynb            # short N=2000 eval, source/lgd_cm/pgd only
 │   ├── eval_scribbl_interpolation.ipynb      # gender interpolation scribble evaluation
 │   ├── eval_scribbl_interpolation_age.ipynb  # age interpolation scribble evaluation
 │   ├── gender_saliency_eval.ipynb            # CLIP gender saliency + scribble diff analysis
@@ -280,6 +281,7 @@ They use relative paths — no path configuration needed.
 | Notebook | Purpose |
 |----------|---------|
 | `eval_all_experiments.ipynb` | Full N=2000 MMD + gender classification across all 4 experiments and all methods |
+| `eval_pgd_experiments.ipynb` | Short version of the above, scoped to `source`/`lgd_cm`/`pgd` only — for evaluating a new PGD result placed at `experiments/<Experiment>/scribble_pgd.png` |
 | `eval_scribbl_interpolation.ipynb` | Evaluate MLGD-F scribble on the gender interpolation experiment; 5-class cosine softmax classification and PCA |
 | `eval_scribbl_interpolation_age.ipynb` | Evaluate MLGD-F scribble on the age interpolation experiment; fit age axis via PCA on age-40 vs age-79 embeddings, pick photos evenly along the axis |
 | `gender_saliency_eval.ipynb` | CLIP gender saliency heatmaps, scribble pixel diff visualisation, confidence boxplots |

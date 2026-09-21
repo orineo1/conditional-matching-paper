@@ -3,15 +3,15 @@ from torch import nn
 
 #### MMD Loss #####
 #
-# Mirrors SD_cond_SD_controlnet/src/metrics.py's compute_mmd exactly (same
-# estimator everywhere: single Gaussian RBF kernel, detached median-heuristic
-# bandwidth, unbiased MMD^2_U statistic, report sqrt(|U| + eps)) so the
-# synthetic and SD experiments are not silently using three different MMD
-# definitions. Previously this module used a 5-bandwidth kernel mixture, a
-# mean-distance bandwidth computed WITH autograd on (gradient leaked into the
-# loss through sigma, not just through the samples), and a V-statistic
-# (diagonal included, biased) reported without a square root -- none of which
-# matched SD or the theory appendix's plain U-statistic.
+# Same kernel/bandwidth machinery as SD_cond_SD_controlnet/src/metrics.py's
+# compute_mmd (single Gaussian RBF kernel, detached median-heuristic
+# bandwidth), but compute_mmd here reports the plain unbiased MMD^2_U
+# statistic (eq:mmd-ustat-def in the theory appendix), not its square root --
+# see compute_mmd's docstring. Previously this module used a 5-bandwidth
+# kernel mixture, a mean-distance bandwidth computed WITH autograd on
+# (gradient leaked into the loss through sigma, not just through the
+# samples), and a V-statistic (diagonal included, biased) -- none of which
+# matched the theory appendix's plain U-statistic.
 
 
 def rbf_kernel(a, b, bw, alpha=1.0):
@@ -42,8 +42,20 @@ def estimate_bandwidth(x, y, bandwidth_scale=1.0):
 
 def compute_mmd(x, y, bandwidth=None, bandwidth_scale=1.0, kernel_alpha=1.0):
     """
-    Unbiased Maximum Mean Discrepancy with a generalised RBF kernel -- identical
-    estimator to SD_cond_SD_controlnet/src/metrics.py's compute_mmd.
+    Unbiased MMD^2_U with a generalised RBF kernel, matching the theory
+    appendix's eq:mmd-ustat-def exactly (plain U-statistic, no sqrt):
+
+        MMD^2_U(x,y) = 1/(n(n-1)) sum_{i!=i'} k(x_i,x_i')
+                     - 2/(nm) sum_{i,j} k(x_i,y_j)
+                     + 1/(m(m-1)) sum_{j!=j'} k(y_j,y_j')
+
+    Differs from SD_cond_SD_controlnet/src/metrics.py's compute_mmd, which
+    reports sqrt(|MMD^2_U| + eps) instead (a real-valued distance rather than
+    the paper's squared statistic) -- kept a plain U-statistic here so the
+    synthetic-experiment loss matches the theory appendix's definition
+    directly. The unbiased estimator can be legitimately slightly negative
+    when the two samples are very close; that is expected and left as-is
+    (no abs()/floor), exactly as defined above.
 
     Args:
         x:               [n, d] generated samples (grad flows through).
@@ -53,7 +65,7 @@ def compute_mmd(x, y, bandwidth=None, bandwidth_scale=1.0, kernel_alpha=1.0):
         kernel_alpha:    RBF exponent. 1 = standard Gaussian.
 
     Returns:
-        Scalar MMD estimate (sqrt of unbiased MMD^2).
+        Scalar MMD^2_U estimate (unbiased, squared -- NOT square-rooted).
     """
     dev = x.device
     x = x.float().to(dev)
@@ -79,8 +91,7 @@ def compute_mmd(x, y, bandwidth=None, bandwidth_scale=1.0, kernel_alpha=1.0):
     xy_term = 2 * K_xy.sum() / (n * m)
 
     mmd_sq = xx_term - xy_term + yy_term
-    # abs() before sqrt handles slightly-negative unbiased estimates
-    return torch.sqrt(mmd_sq.abs() + 1e-8)
+    return mmd_sq
 
 
 class RBF(nn.Module):

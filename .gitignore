@@ -105,3 +105,6 @@ models/fairface/
 .agents/
 autoresearch/
 .claude/
+
+# ── Scratch notebook for developing the avg_latent baseline; not merged to main ──
+SD_cond_SD_controlnet/notebooks/eval_avg_latent_experiments.ipynb

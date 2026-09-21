@@ -156,6 +156,12 @@ def parse_args():
     p.add_argument("--methods", nargs="+", choices=["LGD", "LGD-CM"], default=["LGD", "LGD-CM"])
     p.add_argument("--n_runs", type=int, default=25)
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--run_tag", default=None,
+                   help="Extra label appended to every output filename (JSON/CSV/plots dir), e.g. "
+                        "'baseline' or 'control2_zetahalf'. Use this to keep multiple runs that "
+                        "share (num_x_t, seed, methods) -- e.g. this repo's zuk-control sbatch "
+                        "scripts, which all run methods=LGD-CM -- from overwriting each other's "
+                        "results. Default: no tag (original filenames, unchanged).")
     p.add_argument("--force_retrain", action="store_true")
     p.add_argument("--base_dir", default=None,
                    help="Defaults to simulations/ (parent of this script's directory).")
@@ -327,6 +333,8 @@ def main():
     # --methods LGD-CM, split across two machines) never overwrite each other's
     # JSON/CSVs -- those were previously named only by (num_x_t, seed).
     methods_tag = "-".join(methods)
+    if args.run_tag:
+        methods_tag = f"{methods_tag}_{args.run_tag}"
     nsamples_list = args.nsamples_list
     k_fracs = sorted(set(args.k_fracs) | {1.0})  # always include the 1.0 baseline point
     rules = args.rules
@@ -419,6 +427,7 @@ def main():
             "diag_steps": args.diag_steps,
             "grad_ref_n": args.grad_ref_n,
             "methods": methods,
+            "run_tag": args.run_tag,
             "x_star": x_star.detach().cpu().tolist() if isinstance(x_star, torch.Tensor) else x_star,
         },
         "results": {

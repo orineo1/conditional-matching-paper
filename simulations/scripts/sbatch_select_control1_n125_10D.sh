@@ -6,7 +6,8 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
-#SBATCH --partition=YOUR_PARTITION   # <-- change to your cluster partition
+#SBATCH --partition=YOUR_PARTITION   # <-- change to your cluster partition, or override at
+                                      #     submit time: sbatch --partition=<name> sbatch_select_control1_n125_10D.sh
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Control 1: All with n = nsel = 125 (tests: is the win just fewer terms overall,
@@ -29,6 +30,7 @@ WITNESS_FLOOR=0.3
 BACKSEL_REPLACEMENT=false
 NORMALIZE_BY_K_FRAC=false
 USE_INV_SQRT_ALPHA_SCALE=false
+RUN_TAG="control1_n125"
 ZETA=1.0
 FORCE_RETRAIN=false
 
@@ -77,6 +79,7 @@ echo "    backsel_replacement  : $BACKSEL_REPLACEMENT"
 echo "    normalize_by_k_frac  : $NORMALIZE_BY_K_FRAC"
 echo "    use_inv_sqrt_alpha   : $USE_INV_SQRT_ALPHA_SCALE"
 echo "    zeta                 : $ZETA"
+echo "    run_tag              : $RUN_TAG"
 echo "    force_retrain        : $FORCE_RETRAIN"
 python -c "import torch; print(f'GPU available: {torch.cuda.is_available()}')"
 echo "============================================"
@@ -103,7 +106,8 @@ CMD="python run_backsel_witness_sweep.py \
     --k_fracs               $K_FRACS \
     --rules                 $RULES \
     --witness_floor        $WITNESS_FLOOR \
-    --zeta                 $ZETA"
+    --zeta                 $ZETA \
+    --run_tag              $RUN_TAG"
 
 [ "$BACKSEL_REPLACEMENT" = "true" ] && CMD="$CMD --backsel_replacement"
 [ "$NORMALIZE_BY_K_FRAC" = "true" ] && CMD="$CMD --normalize_by_k_frac"

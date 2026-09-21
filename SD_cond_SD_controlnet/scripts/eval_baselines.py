@@ -268,6 +268,49 @@ def build_avg_scribble(cfg, source_scribble, sprinter, hed, device):
     return Image.fromarray(avg_np)
 
 
+def build_avg_scribble_latent(cfg, source_scribble, sprinter, hed, device):
+    """
+    Same idea as build_avg_scribble, but the average is taken in the VAE latent
+    space instead of pixel space: generate each group's latent (no decode),
+    weighted-average the latents, decode once, then run HED on that single image.
+    """
+    from image_utils import latent_to_pil
+
+    SEED     = cfg['seed']
+    cn_scale = cfg['controlnet_scale']
+    mode     = cfg['mode']
+
+    if mode == 'age':
+        ages = list(range(cfg['age_min'], cfg['age_max'], cfg['age_step']))
+        prompts = [
+            f'a superrealistic portrait photograph of a {age}-year-old man, studio lighting, sharp focus, photographic'
+            for age in ages]
+        fracs = [1.0 / len(ages)] * len(ages)
+    else:
+        prompts = [g['prompt'] for g in cfg['groups']]
+        fracs   = [g['frac']   for g in cfg['groups']]
+
+    sprinter.vae.to(dtype=torch.float16)
+    avg_latent = None
+    for i, (prompt, frac) in enumerate(zip(prompts, fracs)):
+        gen = torch.Generator(device=sprinter.device).manual_seed(SEED + i)
+        with torch.no_grad():
+            latent = sprinter(
+                prompt=[prompt], image=[source_scribble],
+                num_inference_steps=2, guidance_scale=0.0,
+                controlnet_conditioning_scale=cn_scale,
+                output_type='latent', generator=gen,
+            ).images
+        avg_latent = frac * latent if avg_latent is None else avg_latent + frac * latent
+
+    with torch.no_grad():
+        portrait = latent_to_pil(avg_latent, sprinter.vae, sprinter.image_processor)
+    sprinter.vae.to(dtype=torch.float32)
+
+    avg_np = np.array(hed(portrait, scribble=True)).astype(np.uint8)
+    return Image.fromarray(avg_np)
+
+
 # ── SAVE HELPERS ──────────────────────────────────────────────────────────────
 
 def save_scribble_grid(scribbles_dict, out_dir):
@@ -398,6 +441,7 @@ def main():
     # ── Avg scribble ──
     print('\nBuilding avg scribble...')
     avg_scribble = build_avg_scribble(cfg, source_scribble, sprinter, hed, device)
+    avg_scribble_latent = build_avg_scribble_latent(cfg, source_scribble, sprinter, hed, device)
 
     # ── Guided SDEdit scribble ──
     print('\nBuilding guided SDEdit scribble...')
@@ -435,6 +479,7 @@ def main():
         'source':      source_scribble,
         'lgd_cm':      lgd_scribble,
         'avg':         avg_scribble,
+        'avg_latent':  avg_scribble_latent,
         'sdedit':      sdedit_scribble,
         'sdedit_cand0': first_cand,
     }
@@ -495,6 +540,7 @@ def main():
     scribbles_dict = {
         'source':      source_scribble,
         'avg':         avg_scribble,
+        'avg_latent':  avg_scribble_latent,
         'sdedit':      sdedit_scribble,
         'sdedit_best': sdedit_best,
         'lgd_cm':      lgd_scribble,
@@ -508,6 +554,7 @@ def main():
         'best_candidate_mmd': candidate_mmds[best_idx],
         'scribble/source':      wandb.Image(source_scribble),
         'scribble/avg':         wandb.Image(avg_scribble),
+        'scribble/avg_latent':  wandb.Image(avg_scribble_latent),
         'scribble/sdedit':      wandb.Image(sdedit_scribble),
         'scribble/sdedit_best': wandb.Image(sdedit_best),
         'scribble/lgd_cm':      wandb.Image(lgd_scribble),

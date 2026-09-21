@@ -131,6 +131,12 @@ def parse_args():
     p.add_argument("--use_inv_sqrt_alpha_scale", action="store_true",
                    help="Scale the guidance gradient by 1/sqrt(model_uncond.alphas[t]) instead "
                         "of the constant zeta. Default: off (use zeta).")
+    p.add_argument("--zeta", type=float, default=1.0,
+                   help="Guidance strength applied to every grid point in this run (a fixed "
+                        "control for this whole invocation, not swept). Use e.g. --zeta 0.5 with "
+                        "--k_fracs 1.0 to test whether an 'All'-selection run at half step size "
+                        "reproduces a subsampled run's behavior (a step-size confound check). "
+                        "Ignored when --use_inv_sqrt_alpha_scale is set.")
     p.add_argument("--diag_steps", type=int, nargs="+", default=None,
                    help="Diffusion timesteps (t-values) at which to log the extra "
                         "gradient-error / witness-scenario diagnostics (see "
@@ -160,7 +166,7 @@ def run_grid_point(model_uncond, cond_model, CM_flag, num_x_t, nsamples, backsel
                    witness_floor, backsel_replacement, n_runs, global_seed, device,
                    mu_list, Sigma_list, alpha, mog_means, mog_variances, weights, x_star, label,
                    diag_steps=None, grad_ref_n=2000, normalize_by_k_frac=False,
-                   use_inv_sqrt_alpha_scale=False):
+                   use_inv_sqrt_alpha_scale=False, zeta=1.0):
     """
     Returns (metrics, diag) where metrics = {"final_loss", "l2_gmm", "l2_x", "times"} (unchanged
     from before diagnostics existed -- this is what feeds the JSON/summary CSV/plots), and
@@ -183,7 +189,7 @@ def run_grid_point(model_uncond, cond_model, CM_flag, num_x_t, nsamples, backsel
             backsel_k=backsel_k, backsel_rule=backsel_rule,
             witness_floor=witness_floor, backsel_replacement=backsel_replacement,
             backsel_generator=backsel_generator, normalize_by_k_frac=normalize_by_k_frac,
-            use_inv_sqrt_alpha_scale=use_inv_sqrt_alpha_scale,
+            use_inv_sqrt_alpha_scale=use_inv_sqrt_alpha_scale, zeta=zeta,
             return_history=diag_steps is not None, diag_steps=diag_steps, grad_ref_n=grad_ref_n,
         )
         if diag_steps is not None:
@@ -348,7 +354,7 @@ def main():
                 mu_list, Sigma_list, alpha, mog_means, mog_variances, weights, x_star,
                 label=f"{method}-full", diag_steps=args.diag_steps, grad_ref_n=args.grad_ref_n,
                 normalize_by_k_frac=args.normalize_by_k_frac,
-                use_inv_sqrt_alpha_scale=args.use_inv_sqrt_alpha_scale,
+                use_inv_sqrt_alpha_scale=args.use_inv_sqrt_alpha_scale, zeta=args.zeta,
             )
             for rule in rules:
                 results[method][n][rule] = {}
@@ -372,7 +378,7 @@ def main():
                                 mu_list, Sigma_list, alpha, mog_means, mog_variances, weights, x_star,
                                 label=f"{method}-witness-alpha{a}", diag_steps=args.diag_steps,
                                 grad_ref_n=args.grad_ref_n, normalize_by_k_frac=args.normalize_by_k_frac,
-                                use_inv_sqrt_alpha_scale=args.use_inv_sqrt_alpha_scale,
+                                use_inv_sqrt_alpha_scale=args.use_inv_sqrt_alpha_scale, zeta=args.zeta,
                             )
                             diag_history[method][n][rule][kf][a] = diag_a
                             if a == canonical_alpha:
@@ -391,7 +397,7 @@ def main():
                             mu_list, Sigma_list, alpha, mog_means, mog_variances, weights, x_star,
                             label=f"{method}-{rule}", diag_steps=args.diag_steps,
                             grad_ref_n=args.grad_ref_n, normalize_by_k_frac=args.normalize_by_k_frac,
-                            use_inv_sqrt_alpha_scale=args.use_inv_sqrt_alpha_scale,
+                            use_inv_sqrt_alpha_scale=args.use_inv_sqrt_alpha_scale, zeta=args.zeta,
                         )
 
     out = {
@@ -409,6 +415,7 @@ def main():
             "backsel_replacement": args.backsel_replacement,
             "normalize_by_k_frac": args.normalize_by_k_frac,
             "use_inv_sqrt_alpha_scale": args.use_inv_sqrt_alpha_scale,
+            "zeta": args.zeta,
             "diag_steps": args.diag_steps,
             "grad_ref_n": args.grad_ref_n,
             "methods": methods,

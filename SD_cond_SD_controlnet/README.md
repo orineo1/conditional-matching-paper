@@ -139,11 +139,31 @@ python scripts/run_mlgd_f.py \
 
 `scripts/run_pgd.py` is an alternative to MLGD-F's DPS-style guidance, following
 Shah & Hegde-style PGD for generative priors: alternate an unconstrained gradient
-step in pixel space with a projection back onto the Architect VAE decoder's range
-(found by Adam-searching its latent input, matching the paper's own
+step in pixel space with a projection back onto a generator's range (found by
+Adam-searching its input space, matching the paper's own
 `P_G(w) = G(argmin_z ‖w - G(z)‖)`). Sprinter+CLIP play the same role as in
-MLGD-F — the measurement operator the loss is computed on — but PGD never touches
-the Architect's UNet/diffusion trajectory, only its VAE. When `--experiment` names
+MLGD-F — the measurement operator the loss is computed on.
+
+**This branch (`claude/pgd-generative-projection`) makes `G` a real generative
+model**, unlike `claude/pgd-competitor`'s VAE-only `G`. The PGD paper assumes
+sampling `z` from a bounded prior and decoding it yields a realistic image — a
+raw VAE decoder doesn't have that property (arbitrary/optimized latents can
+decode to unrealistic images; the actual generative prior in this stack lives
+in the Architect's diffusion UNet, not its VAE). So here, `G(z)` = a short
+*unconditional* denoising rollout of the Architect's own UNet+scheduler,
+starting from the current latent partially noised with `z` — literally
+MLGD-F's own "regular" (unguided) path, run standalone, with `z` as the noise
+input being searched over. This is a genuinely generative sampling process
+(unlike a bare VAE decode), at the cost of each Adam iteration now backpropping
+through a multi-step UNet rollout instead of one VAE decode — `--proj_adam_steps`
+defaults much lower here (20 vs. 100) to stay tractable, and `--proj_n_steps`/
+`--proj_start_step` control how many actual denoising steps that rollout runs
+(default: 3, out of a 30-step schedule — lower `--proj_start_step` for a more
+faithful generative `G` at higher cost). Everything else — the optimization
+step, target-building, experiment presets, budget matching, CLI surface — is
+unchanged from `claude/pgd-competitor`.
+
+When `--experiment` names
 one with an existing `experiments/<Experiment>/` folder (`SkewedTarget`,
 `BalancedTarget`, `GenderInterpolation`, `AgeInterpolation`), PGD reuses that
 run's exact `scribble_source.png` as its own starting scribble instead of
@@ -202,8 +222,12 @@ within that fixed budget.
 | `--loss_fn` | `mmd` | `mmd` (full distribution) or `l2` (mean-CLIP-embedding matching only) |
 | `--opt_steps` | 3 | Ambient/pixel-space gradient steps per round |
 | `--opt_lr` | 0.05 | Step size for the ambient gradient step |
-| `--proj_adam_steps` | 100 | Adam iterations for the projection search (paper's CelebA setting) |
+| `--proj_adam_steps` | 20 | Adam iterations for the projection search (lower than the VAE-only variant's 100 -- each iteration now backprops through a UNet rollout) |
 | `--proj_lr` | 0.1 | Adam learning rate for the projection search (paper's CelebA setting) |
+| `--proj_n_steps` | 30 | Total denoising schedule length G's rollout is a tail slice of (matches MLGD-F's `--n_steps`) |
+| `--proj_start_step` | 27 | G runs `timesteps[proj_start_step:]` -- i.e. `proj_n_steps - proj_start_step` actual UNet steps per Adam iteration (default: 3) |
+| `--guidance_scale` | 0.0 | CFG scale for G's internal UNet calls (unconditional, matches MLGD-F's default) |
+| `--prompt`/`--negative_prompt` | `""` | Prompt for G's internal UNet calls (matches MLGD-F's own unguided path) |
 | `--target_minutes` | *(required)* | Wall-clock budget, matched to the compared MLGD-F run |
 | `--n_eval` | 10 | Sprinter samples for the quick init/per-round MMD check |
 | `--n_eval_final` | 250 | Sprinter samples for the final, higher-fidelity MMD (`final_pgd_mmd_250`) |

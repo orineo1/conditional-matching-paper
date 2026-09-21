@@ -2,6 +2,22 @@
 run_pgd.py — PGD pipeline entry point, the projected-gradient-descent
 competitor to MLGD-F (run_mlgd_f.py).
 
+*** GENERATIVE-PROJECTION VARIANT ***
+This branch makes G a real generative model instead of the plain VAE decoder
+used on claude/pgd-competitor. The PGD paper assumes G is trained so that
+sampling z from a bounded prior and decoding it yields a realistic image
+(K = G(prior) is the manifold of plausible images) -- a raw VAE decoder does
+NOT have that property (arbitrary/optimized latents can decode to
+unrealistic images; the thing that actually supplies the generative prior in
+this stack is the Architect's diffusion UNet, via its multi-step denoising
+trajectory). So here, G(z) = run the Architect's own UNet+scheduler for a
+short unconditional denoising rollout starting from a partially-noised
+current latent, with z as the noise input being searched over -- a
+structured, bounded input to a genuinely generative sampling process, same
+as the paper's premise. See projection_step()/generative_denoise() below.
+Everything else (optimization step, target-building, budget matching,
+experiment presets, CLI surface) is unchanged from claude/pgd-competitor.
+
 Follows Shah & Hegde-style PGD for generative priors: alternate an
 unconstrained gradient step in ambient (pixel) space with a projection back
 onto the generator's range, found by Adam-searching the generator's own
@@ -9,9 +25,12 @@ input space (exactly the paper's P_G(w) = G(argmin_z ||w - G(z)||)).
 
 Mapped onto this codebase:
     - "Ambient space"   = pixel-space scribble (Architect VAE decode output).
-    - "Generator G"     = the Architect's VAE decoder ONLY (no UNet/diffusion
-                          trajectory — matches the paper's own experiments,
-                          which use a plain VAE/GAN decoder as G).
+    - "Generator G"     = the Architect's own UNet+scheduler: a short,
+                          unconditional (no correction) denoising rollout of
+                          proj_n_steps-proj_start_step steps, run from a
+                          partially-noised current latent with z as the
+                          noise component -- literally MLGD-F's own
+                          "regular" (unguided) path, run standalone.
     - "Measurement op"  = Sprinter (+ ControlNet) + CLIP, exactly as in
                           MLGD-F: turns a scribble into CLIP embeddings of
                           conditioned portraits, which is what the L2/MMD
@@ -22,8 +41,15 @@ One round:
        w <- w - opt_lr * grad_w L(w), L in {l2, mmd} on Sprinter+CLIP samples
        conditioned on w. Ambient/pixel-space, unconstrained.
     2. Projection step (proj_adam_steps Adam iters): z* = argmin_z
-       ||w - decode(z)||_2, initialised at the current latent x.
-    3. x <- z*.
+       ||w - decode(G(z))||_2, where G(z) partially noises the current
+       latent x with z and denoises it back via a short Architect UNet
+       rollout (see generative_denoise()).
+    3. x <- G(z*).
+
+This is substantially more expensive per Adam iteration than the VAE-only
+variant, since each iteration now backprops through a multi-step UNet
+rollout instead of a single VAE decode -- proj_adam_steps/proj_start_step
+default much lower here to stay tractable; see README for the tradeoff.
 
 Total rounds are picked to match a target wall-clock budget (the
 corresponding MLGD-F run's runtime), the same pattern eval_baselines.py uses
@@ -35,6 +61,7 @@ Usage:
 """
 
 import argparse
+import copy
 import gc
 import json
 import os
@@ -56,6 +83,7 @@ if _SCRIPT_DIR not in sys.path:
     sys.path.insert(0, _SCRIPT_DIR)
 
 from clip_utils import encode_images_clip, load_clip_model
+from generation import predict_noise_cfg
 from image_utils import build_base_image, sobel_proxy
 from metrics import compute_l2, compute_mmd, evaluate_distribution_mmd
 from models import load_models, setup_gradient_checkpointing
@@ -193,14 +221,35 @@ def parse_args():
                    help="Ambient (pixel-space) gradient steps per round")
     p.add_argument("--opt_lr",           type=float, default=0.05,
                    help="Step size nu for the ambient gradient step")
-    p.add_argument("--proj_adam_steps",  type=int,   default=100,
+    p.add_argument("--proj_adam_steps",  type=int,   default=20,
                    help="Adam iterations for the projection's inner "
-                        "argmin_z ||w - decode(z)|| search (100 = paper's "
-                        "CelebA setting -- faces, closer to our task than "
-                        "their MNIST setting of 200 steps @ lr=0.03)")
+                        "argmin_z ||w - decode(G(z))|| search. Much lower "
+                        "than the VAE-only variant's default (100, the "
+                        "paper's CelebA setting) since G is now a "
+                        "proj_n_steps-proj_start_step-step UNet rollout, so "
+                        "each Adam iteration backprops through that whole "
+                        "rollout instead of one VAE decode -- raise this "
+                        "only if your budget can absorb the extra cost.")
     p.add_argument("--proj_lr",          type=float, default=0.1,
                    help="Adam learning rate for the projection search "
                         "(0.1 = paper's CelebA setting)")
+    p.add_argument("--proj_n_steps",     type=int,   default=30,
+                   help="Total denoising schedule length G's rollout is a "
+                        "tail slice of (matches MLGD-F's --n_steps default)")
+    p.add_argument("--proj_start_step",  type=int,   default=27,
+                   help="G runs timesteps[proj_start_step:] of the "
+                        "proj_n_steps schedule -- i.e. proj_n_steps - "
+                        "proj_start_step actual UNet denoising steps per "
+                        "Adam iteration (default: 3 steps). Lower this for "
+                        "a more genuinely generative G at higher cost; "
+                        "matches MLGD-F's --start_step convention.")
+    p.add_argument("--guidance_scale",   type=float, default=0.0,
+                   help="CFG scale for G's internal UNet calls (0.0 = "
+                        "unconditional, matches MLGD-F's own default)")
+    p.add_argument("--prompt",           type=str,   default="",
+                   help="Prompt for G's internal UNet calls (default: none, "
+                        "matches MLGD-F's own unguided/regular path)")
+    p.add_argument("--negative_prompt",  type=str,   default="")
 
     # Logging
     p.add_argument("--n_photos_per_round", type=int, default=5,
@@ -265,7 +314,9 @@ def parse_args():
 
 
 # ---------------------------------------------------------------------------
-# Pixel-space VAE helpers (Architect VAE only -- the PGD "generator" G)
+# Pixel <-> latent helpers (plain VAE encode/decode, used for pixel-space
+# I/O -- NOT the projection's generator G in this variant; see
+# generative_denoise() below for that).
 # ---------------------------------------------------------------------------
 
 def encode_01(pixel_01, vae):
@@ -377,22 +428,97 @@ def optimization_step(x_latent, architect, sprinter, clip_model, clip_processor,
     return w.detach(), last_loss, last_gen_embs, last_grad_norm
 
 
-def projection_step(w_pixels, x_init, architect, args):
-    """z* = argmin_z ||w_pixels - decode(z)||_2 via Adam, init z = x_init.
+def prepare_projection_conditioning(architect, args, device):
+    """One-time setup for the projection's generator G: encode the (default:
+    empty/unconditional) prompt once, and fix the short denoising schedule
+    every G(z) call runs -- both are round-independent, so this is computed
+    once in main() rather than inside the per-round/per-Adam-iteration loop.
+    Mirrors run_mlgd_f.py's own prompt/added_cond_kwargs setup exactly."""
+    height, width = 512, 512
+    with torch.no_grad():
+        (prompt_embeds, negative_prompt_embeds,
+         pooled_prompt_embeds, negative_pooled_prompt_embeds) = architect.encode_prompt(
+            prompt=args.prompt, negative_prompt=args.negative_prompt,
+            device=device, do_classifier_free_guidance=True, num_images_per_prompt=1,
+        )
+    add_time_ids = torch.tensor(
+        [[height, width, 0, 0, height, width]], dtype=prompt_embeds.dtype, device=device)
+    added_cond_kwargs = {
+        "text_embeds": torch.cat([negative_pooled_prompt_embeds, pooled_prompt_embeds], dim=0),
+        "time_ids":    add_time_ids.repeat(2, 1),
+    }
+    cfg_encoder_states = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
 
-    Returns (z, init_proj_loss, final_proj_loss, final_grad_norm) -- the
-    init/final pair lets callers confirm the Adam search actually decreases
-    its own reconstruction loss each round rather than reporting a single
-    opaque number, and final_grad_norm/the NaN guard mirror
-    optimization_step's gradient checks (a NaN gradient here would otherwise
-    silently corrupt z via Adam's moment estimates)."""
-    z = x_init.detach().clone().float().requires_grad_(True)
+    architect.scheduler.set_timesteps(args.proj_n_steps, device=device)
+    timesteps = architect.scheduler.timesteps
+    t_start   = timesteps[args.proj_start_step]
+    alpha     = architect.scheduler.alphas_cumprod[t_start.long()].to(device).float()
+
+    return dict(
+        cfg_encoder_states=cfg_encoder_states,
+        added_cond_kwargs=added_cond_kwargs,
+        timesteps_to_run=timesteps[args.proj_start_step:],
+        alpha=alpha,
+        guidance_scale=args.guidance_scale,
+    )
+
+
+def generative_denoise(z, x_init, architect, cond):
+    """G(z): the projection's generator. Partially noises x_init with z as
+    the noise component (SDEdit-style mix, same formula run_mlgd_f.py uses
+    for its own SDEdit init), then denoises via cond['timesteps_to_run'] of
+    the Architect's own UNet+scheduler -- unconditional, no correction, i.e.
+    exactly MLGD-F's "regular" (unguided) path, run standalone. Returns the
+    resulting clean LATENT (caller decodes to pixels separately).
+
+    Does NOT use generation.denoise_step, which detaches its output to bound
+    MLGD-F's own per-step memory during its guidance loop -- here the whole
+    point is to backprop through the rollout to z, so scheduler.step() is
+    called directly and the graph is kept intact end to end.
+    """
+    alpha = cond["alpha"]
+    noisy   = (alpha ** 0.5) * x_init.detach().float() + ((1.0 - alpha) ** 0.5) * z
+    latents = noisy.to(torch.float16)
+
+    # Fresh copy so this rollout's step_index doesn't collide with another
+    # call's (each Adam iteration calls this function once) or with
+    # architect.scheduler's own shared state -- same pattern run_mlgd_f.py
+    # uses for its scheduler_regular.
+    scheduler = copy.deepcopy(architect.scheduler)
+    for t in cond["timesteps_to_run"]:
+        noise_pred = predict_noise_cfg(
+            architect.unet, scheduler, latents, t,
+            cond["cfg_encoder_states"], cond["added_cond_kwargs"], cond["guidance_scale"],
+        )
+        latents = scheduler.step(noise_pred, t, latents, return_dict=True).prev_sample
+    return latents
+
+
+def projection_step(w_pixels, x_init, architect, cond, args):
+    """z* = argmin_z ||w_pixels - decode(G(z))||_2 via Adam, where G is the
+    generative_denoise() UNet rollout above -- z is the noise input to a real
+    generative sampling process, not a raw VAE latent (see module docstring).
+    z is initialised at N(0,1) noise -- the paper's "arbitrary initial
+    vector", and the actual noise scale the UNet expects at this timestep
+    (initialising at zero would feed it a merely-rescaled, noise-free
+    latent, out of distribution for what it was trained to denoise).
+
+    Returns (x_next, init_proj_loss, final_proj_loss, final_grad_norm) --
+    same interface as the VAE-only projection_step: the init/final loss pair
+    lets callers confirm the Adam search actually improves each round rather
+    than reporting one opaque number, and final_grad_norm/the NaN guard
+    mirror optimization_step's gradient checks (a NaN gradient here would
+    otherwise silently corrupt z via Adam's moment estimates). x_next is the
+    clean LATENT G(z*) -- not z* itself -- exactly as the paper's
+    P_G(w) = G(argmin_z ...) returns G's output, not the latent that found it."""
+    z = torch.randn_like(x_init, dtype=torch.float32).requires_grad_(True)
     opt = torch.optim.Adam([z], lr=args.proj_lr)
     init_proj_loss, final_proj_loss, final_grad_norm = None, None, None
     for i in range(args.proj_adam_steps):
         opt.zero_grad()
-        decoded = decode_01(z, architect.vae)
-        proj_loss = ((decoded - w_pixels) ** 2).mean()
+        decoded_latent = generative_denoise(z, x_init, architect, cond)
+        decoded_pixels = decode_01(decoded_latent, architect.vae)
+        proj_loss = ((decoded_pixels - w_pixels) ** 2).mean()
         proj_loss.backward()
 
         if torch.isnan(z.grad).any():
@@ -407,7 +533,9 @@ def projection_step(w_pixels, x_init, architect, args):
             init_proj_loss = proj_loss.item()
         final_proj_loss = proj_loss.item()
 
-    return z.detach().to(x_init.dtype), init_proj_loss, final_proj_loss, final_grad_norm
+    with torch.no_grad():
+        x_next = generative_denoise(z.detach(), x_init, architect, cond)
+    return x_next.detach().to(x_init.dtype), init_proj_loss, final_proj_loss, final_grad_norm
 
 
 # ---------------------------------------------------------------------------
@@ -487,6 +615,11 @@ def main():
         scribble_01 = TF.to_tensor(scribble_pil).unsqueeze(0).to(device).float()
         x = encode_01(scribble_01, architect.vae)
 
+    proj_cond = prepare_projection_conditioning(architect, args, device)
+    print(f"Projection G: {len(proj_cond['timesteps_to_run'])} UNet steps/Adam iter "
+          f"(proj_n_steps={args.proj_n_steps}, proj_start_step={args.proj_start_step})",
+          flush=True)
+
     n_eval = args.n_eval
     print("Evaluating initial (pre-PGD) MMD...", flush=True)
     init_mmd, _, _ = evaluate_distribution_mmd(
@@ -509,7 +642,7 @@ def main():
             x, architect, sprinter, clip_model, clip_processor,
             all_clip_embeddings, loss_fn, args,
         )
-        x, proj_loss_init, proj_loss, proj_grad_norm = projection_step(w, x, architect, args)
+        x, proj_loss_init, proj_loss, proj_grad_norm = projection_step(w, x, architect, proj_cond, args)
         round_time = time.time() - t0
         round_idx += 1
 

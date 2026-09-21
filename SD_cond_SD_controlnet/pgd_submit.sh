@@ -75,12 +75,15 @@ OUTPUT_DIR="$REPO/output/pgd_${EXPERIMENT}_optlr${OPT_LR}_${SLURM_JOB_ID}"
 mkdir -p "$OUTPUT_DIR"
 
 # Optimization-step (pixel-space gradient descent) vs. projection-step
-# (Adam search onto the VAE decoder's range) split within the fixed
-# target_minutes budget -- tune these to compare splits at equal total cost.
-# proj_adam_steps/proj_lr match the PGD paper's CelebA setting (faces,
-# closer to our task than their MNIST setting of 200 steps @ lr=0.03).
+# (Adam search over G's noise input, G = a short Architect UNet rollout --
+# see run_pgd.py's module docstring) split within the fixed target_minutes
+# budget -- tune these to compare splits at equal total cost.
+# PROJ_ADAM_STEPS is much lower than the VAE-only variant's 100 (the paper's
+# CelebA setting) because each Adam iteration here backprops through a full
+# UNet rollout (proj_n_steps/proj_start_step below, defaults in run_pgd.py)
+# instead of a single VAE decode -- raise it only if your budget allows.
 OPT_STEPS=3
-PROJ_ADAM_STEPS=100
+PROJ_ADAM_STEPS=20
 
 # ── 5. Run ────────────────────────────────────────────────────────────────────
 python scripts/run_pgd.py \

@@ -73,8 +73,17 @@ echo "============================================"
 # ../checkpoints, ../results) resolves the same way it does when run
 # interactively from simulations/notebooks/. -p FORCE_RETRAIN overrides the
 # notebook's own default via its "parameters"-tagged Config cell.
+#
+# papermill -p uses Python's ast.literal_eval on the value, falling back to
+# the raw string on failure -- ast.literal_eval("false") (bash-style
+# lowercase) raises and falls back to the STRING "false", which is truthy in
+# Python, silently flipping `if not force_retrain: load else train` the
+# wrong way. Capitalize to the Python literal ("True"/"False") so
+# literal_eval actually parses it as a bool.
+FORCE_RETRAIN_PY="$(tr '[:lower:]' '[:upper:]' <<< "${FORCE_RETRAIN:0:1}")${FORCE_RETRAIN:1}"
+echo "papermill -p FORCE_RETRAIN $FORCE_RETRAIN_PY"
 papermill "$IN_NB" "$OUT_NB" --cwd "$NOTEBOOKS_DIR" --log-output \
-    -p FORCE_RETRAIN "$FORCE_RETRAIN"
+    -p FORCE_RETRAIN "$FORCE_RETRAIN_PY"
 
 EXIT_CODE=$?
 echo "=== JOB ${SLURM_JOB_ID} FINISHED (exit ${EXIT_CODE}) ==="

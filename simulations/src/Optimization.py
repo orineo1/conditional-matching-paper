@@ -144,7 +144,9 @@ def optimize_LGD(model_uncond, model_cond, mog_means, mog_variances, weights, mu
     best_mmd_loss = float("inf")
     best_x0_sample = None
 
-    x_t = torch.zeros(model_uncond.nfeatures, device=device, requires_grad=True)
+    # Reverse diffusion starts from x_T ~ N(0, I), matching the forward process's
+    # terminal distribution -- a deterministic zero vector is not a noise sample.
+    x_t = torch.randn(model_uncond.nfeatures, device=device, requires_grad=True)
     x_t = x_t.unsqueeze(0)
     pbar = tqdm(range(model_uncond.diffusion_steps - 1, 0, -1)) if FLAG else range(model_uncond.diffusion_steps - 1, 0, -1)
     history = []

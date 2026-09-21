@@ -9,3 +9,4 @@ flow_matching
 POT
 jupyter
 ipykernel
+papermill

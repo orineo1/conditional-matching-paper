@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --job-name=witness-state-var
-#SBATCH --output=state_variance_%j.log   # written to wherever you run `sbatch` from
-#SBATCH --error=state_variance_%j.err
+#SBATCH --job-name=select-statevar-normOFF-10D
+#SBATCH --output=select_statevar_normOFF_10D_%j.log   # written to wherever you run `sbatch` from
+#SBATCH --error=select_statevar_normOFF_10D_%j.err
 #SBATCH --time=04:00:00
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
@@ -17,9 +17,9 @@
 # ══════════════════════════════════════════════════════════════════════════════
 
 # Which experiment?  2D_cond_1D | 5D_cond_1D | 10D_cond_1D
-EXPERIMENT="5D_cond_1D"
+EXPERIMENT="10D_cond_1D"
 
-METHODS="LGD"                  # any of: LGD LGD-CM
+METHODS="LGD-CM"                  # any of: LGD LGD-CM
 STATE_SEEDS="1 2 3"            # trajectory seeds to capture states from (2-3 recommended)
 STEP_FRACS="0.1 0.5 0.9"       # early/mid/late positions along the denoising trajectory
                                 # (0.0=earliest/noisiest, 1.0=latest/cleanest)

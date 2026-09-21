@@ -17,10 +17,17 @@
 #   EXPERIMENT=2D_cond_1D  sbatch --job-name=exp-2d  run_exp_cond_1d.sh
 #   EXPERIMENT=5D_cond_1D  sbatch --job-name=exp-5d  run_exp_cond_1d.sh
 #   EXPERIMENT=10D_cond_1D sbatch --job-name=exp-10d run_exp_cond_1d.sh
+#
+# FORCE_RETRAIN defaults to true here: each notebook's Config cell is tagged
+# "parameters", so this script overrides it via `papermill -p` regardless of
+# what's checked into the notebook -- always trains the CM/diffusion models
+# from scratch instead of loading a cached checkpoint. Pass
+# FORCE_RETRAIN=false to reuse existing checkpoints instead.
 # ══════════════════════════════════════════════════════════════════════════════
 
 # Which experiment?  2D_cond_1D | 5D_cond_1D | 10D_cond_1D
 EXPERIMENT="${EXPERIMENT:-2D_cond_1D}"
+FORCE_RETRAIN="${FORCE_RETRAIN:-true}"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 1. Environment
@@ -51,10 +58,11 @@ OUT_NB="$OUT_DIR/Exp_${EXPERIMENT}_executed_${SLURM_JOB_ID:-local}.ipynb"
 # 4. Info
 # ══════════════════════════════════════════════════════════════════════════════
 echo "=== JOB ${SLURM_JOB_ID} ON $(hostname) ==="
-echo "    REPO_ROOT  : $REPO_ROOT"
-echo "    experiment : $EXPERIMENT"
-echo "    input nb   : $IN_NB"
-echo "    output nb  : $OUT_NB"
+echo "    REPO_ROOT      : $REPO_ROOT"
+echo "    experiment     : $EXPERIMENT"
+echo "    force_retrain  : $FORCE_RETRAIN"
+echo "    input nb       : $IN_NB"
+echo "    output nb      : $OUT_NB"
 python -c "import torch; print(f'GPU available: {torch.cuda.is_available()}')"
 echo "============================================"
 
@@ -63,8 +71,10 @@ echo "============================================"
 # ══════════════════════════════════════════════════════════════════════════════
 # --cwd so the notebook's own `os.getcwd()`-relative BASE_DIR (../params,
 # ../checkpoints, ../results) resolves the same way it does when run
-# interactively from simulations/notebooks/.
-papermill "$IN_NB" "$OUT_NB" --cwd "$NOTEBOOKS_DIR" --log-output
+# interactively from simulations/notebooks/. -p FORCE_RETRAIN overrides the
+# notebook's own default via its "parameters"-tagged Config cell.
+papermill "$IN_NB" "$OUT_NB" --cwd "$NOTEBOOKS_DIR" --log-output \
+    -p FORCE_RETRAIN "$FORCE_RETRAIN"
 
 EXIT_CODE=$?
 echo "=== JOB ${SLURM_JOB_ID} FINISHED (exit ${EXIT_CODE}) ==="

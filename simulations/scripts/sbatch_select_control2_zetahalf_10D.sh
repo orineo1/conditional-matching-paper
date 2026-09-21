@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --job-name=witness-backsel-sweep
-#SBATCH --output=witness_sweep_%j.log   # written to wherever you run `sbatch` from
-#SBATCH --error=witness_sweep_%j.err
+#SBATCH --job-name=select-control2-zetahalf-10D
+#SBATCH --output=select_control2_zetahalf_10D_%j.log   # written to wherever you run `sbatch` from
+#SBATCH --error=select_control2_zetahalf_10D_%j.err
 #SBATCH --time=24:00:00
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
@@ -9,46 +9,34 @@
 #SBATCH --partition=YOUR_PARTITION   # <-- change to your cluster partition
 
 # ══════════════════════════════════════════════════════════════════════════════
-# End-to-end L2/MMD grid: nsamples x k_frac x rule (uniform/witness) vs. the
-# full (no-subsampling) baseline. See run_backsel_witness_sweep.py's docstring
-# for full details. For gradient-variance diagnostics instead, use the
-# separate run_backsel_state_variance.sh.
+# Control 2: All with zeta/2 at n=250 (tests: is the win just a smaller
+# effective step size, vs. the n=250,k_frac=1.0,zeta=1.0 baseline?)
+# Before submitting: export REPO_ROOT=/path/to/conditional-matching-paper
+#                     export ENV_PATH=/path/to/your/venv
 # ══════════════════════════════════════════════════════════════════════════════
 
-# Which experiment?  2D_cond_1D | 5D_cond_1D | 10D_cond_1D
-EXPERIMENT="5D_cond_1D"
+EXPERIMENT="10D_cond_1D"
 
 # ── Shared hyperparameters ────────────────────────────────────────────────────
-NUM_X_T=1                     # fixed, not swept
+NUM_X_T=1
 N_RUNS=25
 SEED=42
-METHODS="${METHODS:-LGD LGD-CM}"  # any of: LGD LGD-CM; overridable via env (see
-                                   # "SPLITTING INTO TWO JOBS" below)
-NSAMPLES_LIST="50 100 250 500" # the "n" axis
-K_FRACS="0.1 0.2 0.5 1.0"      # the "proportion" axis (backsel_k / nsamples);
-                                # 1.0 (full baseline) is always included
-RULES="uniform witness"        # any of: uniform witness
-WITNESS_FLOOR=0.3              # defensive-mixture floor for rule=witness (0.3-0.5)
-BACKSEL_REPLACEMENT=false      # true = sample backsel_k indices with replacement
-NORMALIZE_BY_K_FRAC=false      # true = rescale grad by 1/k_frac (magnitude-normalize
-                                # across k_frac); no-op at k_frac=1.0
-USE_INV_SQRT_ALPHA_SCALE=false # true = scale grad by 1/sqrt(alpha_t) instead of zeta
-ZETA=1.0                       # fixed guidance strength for this whole run (ignored
-                                # if USE_INV_SQRT_ALPHA_SCALE=true)
-FORCE_RETRAIN=false            # true = always retrain, overwriting saved checkpoints
+METHODS="${METHODS:-LGD LGD-CM}"
+NSAMPLES_LIST="250"
+K_FRACS="1.0"
+RULES="uniform witness"
+WITNESS_FLOOR=0.3
+BACKSEL_REPLACEMENT=false
+NORMALIZE_BY_K_FRAC=false
+USE_INV_SQRT_ALPHA_SCALE=false
+ZETA=0.5
+FORCE_RETRAIN=false
 
-# ── Diagnostics (see run_backsel_witness_sweep.py's docstring for detail) ──────
-DIAG_STEPS="99 75 50 25 1"     # t-values to log grad_norm_error(_vs_ref) at;
-                                # empty = disabled. RAW per-seed values only, not
-                                # a variance analysis (use run_backsel_state_
-                                # variance.sh for that)
-GRAD_REF_N=2000                # sample size for the true/population reference
-                                # gradient used by grad_norm_error_vs_ref
-ALPHA_LIST=""                  # sweep witness_floor over these values; empty =
-                                # just WITNESS_FLOOR
+DIAG_STEPS=""
+GRAD_REF_N=2000
+ALPHA_LIST=""
 
-# ── Misc ──────────────────────────────────────────────────────────────────────
-SMOKE_TEST=false               # true = 2 runs / tiny grid only, for quick debug
+SMOKE_TEST=false
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 1. Environment
@@ -89,9 +77,6 @@ echo "    backsel_replacement  : $BACKSEL_REPLACEMENT"
 echo "    normalize_by_k_frac  : $NORMALIZE_BY_K_FRAC"
 echo "    use_inv_sqrt_alpha   : $USE_INV_SQRT_ALPHA_SCALE"
 echo "    zeta                 : $ZETA"
-echo "    diag_steps           : ${DIAG_STEPS:-(disabled)}"
-echo "    grad_ref_n           : $GRAD_REF_N"
-echo "    alpha_list           : ${ALPHA_LIST:-(just witness_floor)}"
 echo "    force_retrain        : $FORCE_RETRAIN"
 python -c "import torch; print(f'GPU available: {torch.cuda.is_available()}')"
 echo "============================================"
@@ -133,18 +118,3 @@ eval $CMD
 EXIT_CODE=$?
 echo "=== JOB ${SLURM_JOB_ID} FINISHED (exit ${EXIT_CODE}) ==="
 exit $EXIT_CODE
-
-# ══════════════════════════════════════════════════════════════════════════════
-# SPLITTING INTO TWO JOBS (LGD on one machine, LGD-CM on another)
-# ══════════════════════════════════════════════════════════════════════════════
-# Safe -- outputs are per-method already -- but load_or_train_models() always
-# loads/trains all three models regardless of --methods, so two jobs starting
-# simultaneously with no cached checkpoints would race. Fix: run one small
-# warm-up job first, then the two real jobs:
-#
-#   export REPO_ROOT=... ENV_PATH=...
-#   METHODS="LGD LGD-CM" sbatch --job-name=warmup \
-#       --export=ALL,SMOKE_TEST=true run_backsel_witness_sweep.sh
-#   # wait for it to finish, then:
-#   METHODS="LGD"    sbatch --job-name=witness-LGD    run_backsel_witness_sweep.sh
-#   METHODS="LGD-CM" sbatch --job-name=witness-LGD-CM run_backsel_witness_sweep.sh

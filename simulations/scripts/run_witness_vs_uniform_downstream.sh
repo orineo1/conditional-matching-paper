@@ -10,24 +10,26 @@
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Runs witness_vs_uniform_paired_downstream_test.py -- the matched-compute,
-# paired head-to-head of Witness vs. Uniform backsel selection at ONE fixed
-# k_frac (not a sweep), with the exact per-row HT/importance rescaling wired
-# into the actual guidance step (backsel_ht_rescale=True) and every restart
-# using identical randomness (x_T, target draws, sampler noise) for both
-# rules, so only the selection rule differs. Reports paired differences
-# (mean +/- bootstrap 95% CI, Wilcoxon signed-rank p-value, win-count) on
-# final MMD loss, L2 to the target GMM, and L2 to x*, for both "All restarts"
-# and "Top-10" subsets. See the script docstring for the full design and why
-# it differs from run_backsel_witness_sweep.py's (unpaired, swept) grid.
+# paired head-to-head of backsel selection "arms" (Uniform, and one or more
+# Witness temperatures) at ONE fixed k_frac (not a sweep), with every restart
+# using identical randomness (x_T, target draws, sampler noise) across ALL
+# arms, so only the selection rule/temperature/rescale-mode differs. Reports
+# paired differences (mean +/- bootstrap 95% CI, Wilcoxon signed-rank
+# p-value, win-count) on final MMD loss, L2 to the target GMM, and L2 to x*,
+# for every pair of arms, for both "All restarts" and "Top-10" subsets. See
+# the script docstring for the full design and why it differs from
+# run_backsel_witness_sweep.py's (unpaired, swept) grid.
 #
 # All of these can be overridden without editing the file, e.g.:
-#   sbatch --partition=catfish --export=ALL,EXPERIMENT=10D_cond_1D,N_RESTARTS=30 \
+#   sbatch --partition=catfish --export=ALL,EXPERIMENT=10D_cond_1D,WITNESS_TEMPERATURES="1.0 0.3" \
 #       scripts/run_witness_vs_uniform_downstream.sh
 # (sbatch itself only accepts its own flags -- so a job-specific setting like
 # EXPERIMENT has to travel in via --export, not as a made-up "--EXPERIMENT=..."
 # flag on the sbatch command line. The leading "ALL," is required -- without
 # it, --export REPLACES the whole environment instead of adding to it, and
-# this script's already-exported ENV_PATH/REPO_ROOT would be lost.)
+# this script's already-exported ENV_PATH/REPO_ROOT would be lost. Multi-value
+# settings like WITNESS_TEMPERATURES/RESCALE_MODES must be one quoted,
+# space-separated string, e.g. WITNESS_TEMPERATURES="1.0 0.3".)
 # ══════════════════════════════════════════════════════════════════════════════
 
 EXPERIMENT="${EXPERIMENT:-5D_cond_1D}"          # 2D_cond_1D | 5D_cond_1D | 10D_cond_1D
@@ -36,9 +38,18 @@ NUM_X_T="${NUM_X_T:-3}"
 NSAMPLES="${NSAMPLES:-250}"
 K_FRAC="${K_FRAC:-0.5}"                         # FIXED nsel/ncond -- not swept, per the task spec
 WITNESS_FLOOR="${WITNESS_FLOOR:-0.3}"
-WITNESS_TEMPERATURE="${WITNESS_TEMPERATURE:-1.0}"  # <1 sharpens toward high-witness samples, >1 flattens
+# One Witness arm per value (space-separated), labeled witness_T<value>. Include 1.0 for
+# "no temperature" (the original plain-|scores| weighting) alongside any sharpened value(s),
+# e.g. "1.0 0.3", to get a full Uniform / no-temperature-Witness / temperature-Witness comparison.
+WITNESS_TEMPERATURES="${WITNESS_TEMPERATURES:-1.0}"
+# Which gradient-rescale correction(s) to run (space-separated): 'ht' (exact per-row correction,
+# unbiased for either rule -- the default), 'raw' (no rescaling at all -- the original/production
+# apply_backsel behavior), 'kfrac' (flat post-hoc 1/k_frac correction, exact only for uniform).
+# Pass e.g. "ht raw" to see how much the correction itself matters, not just the selection rule.
+RESCALE_MODES="${RESCALE_MODES:-ht}"
 N_RESTARTS="${N_RESTARTS:-25}"                  # R, paired restarts (>=25 recommended)
-TOP10_RANK_BY="${TOP10_RANK_BY:-min}"           # min | max | mean | witness | uniform
+TOP10_METRIC="${TOP10_METRIC:-l2_gmm}"          # final_loss | l2_gmm | l2_x
+TOP10_RANK_BY="${TOP10_RANK_BY:-min}"           # min | max | mean | a | b
 SEED="${SEED:-42}"
 FORCE_RETRAIN="${FORCE_RETRAIN:-false}"
 
@@ -91,10 +102,12 @@ CMD="python witness_vs_uniform_paired_downstream_test.py \
     --nsamples            $NSAMPLES \
     --k_frac               $K_FRAC \
     --witness_floor          $WITNESS_FLOOR \
-    --witness_temperature      $WITNESS_TEMPERATURE \
-    --n_restarts               $N_RESTARTS \
-    --top10_rank_by              $TOP10_RANK_BY \
-    --seed                        $SEED"
+    --witness_temperatures     $WITNESS_TEMPERATURES \
+    --rescale_modes               $RESCALE_MODES \
+    --n_restarts                    $N_RESTARTS \
+    --top10_metric                    $TOP10_METRIC \
+    --top10_rank_by                     $TOP10_RANK_BY \
+    --seed                                $SEED"
 
 [ "$FORCE_RETRAIN" = "true" ] && CMD="$CMD --force_retrain"
 

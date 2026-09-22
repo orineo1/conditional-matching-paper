@@ -6,13 +6,22 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=48G
-#SBATCH --partition=salmon
+#SBATCH --partition=salmon   # <-- change here, or override at submit time:
+                              #     sbatch --partition=<name> age_submit_mlgd_f.sh
 
 # ── 1. Environment ────────────────────────────────────────────────────────────
 # Set ENV_PATH to your Python environment before submitting:
 #   export ENV_PATH=/path/to/your/env
-#   sbatch submit_mlgd_f_age.sh
+#   sbatch age_submit_mlgd_f.sh
 source "$ENV_PATH/bin/activate"
+
+# ── Configurable settings (env-overridable; edit the defaults here, or export
+# before submitting, e.g. REPO_PATH=/my/path WANDB_PROJECT=my-proj SEED=42 \
+#     sbatch age_submit_mlgd_f.sh) ─────────────────────────────────────────────
+REPO_PATH="${REPO_PATH:?REPO_PATH is not set. Export it before submitting (path to the outer git repo root, containing SD_cond_SD_controlnet/).}"
+WANDB_PROJECT="${WANDB_PROJECT:-mlgdf-age}"
+WANDB_API_KEY="${WANDB_API_KEY:?WANDB_API_KEY is not set. Export it before submitting.}"
+SEED="${SEED:-1}"
 
 # ── 2. Caches — redirect to lab storage to avoid home quota issues ────────────
 # Uncomment and set LAB_ROOT to a writable directory on your cluster:
@@ -24,16 +33,19 @@ source "$ENV_PATH/bin/activate"
 
 # ── 3. Verification ───────────────────────────────────────────────────────────
 echo "=== JOB STARTING ON $(hostname) ==="
+echo "    REPO_PATH     : $REPO_PATH"
+echo "    WANDB_PROJECT : $WANDB_PROJECT"
+echo "    SEED          : $SEED"
 python -c "import torch; print(f'GPU: {torch.cuda.is_available()}')"
 echo "============================================"
 
 # ── 4. Runtime configs ────────────────────────────────────────────────────────
-export WANDB_API_KEY=YOUR_WANDB_API_KEY_HERE
+export WANDB_API_KEY
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-# Path to THIS subdirectory (SD_cond_SD_controlnet/), not the outer git repo root —
-# scripts/run_mlgd_f.py below is resolved relative to this path.
-REPO="YOUR_REPO_PATH_HERE/SD_cond_SD_controlnet"
+# scripts/run_mlgd_f.py below is resolved relative to this path (THIS
+# subdirectory, SD_cond_SD_controlnet/, not the outer git repo root).
+REPO="$REPO_PATH/SD_cond_SD_controlnet"
 cd "$REPO"
 
 OUTPUT_DIR="output/mlgd_f_age_${SLURM_JOB_ID}"
@@ -54,7 +66,7 @@ mkdir -p "$OUTPUT_DIR"
 # ── 5. Run ────────────────────────────────────────────────────────────────────
 python scripts/run_mlgd_f.py \
     --output_dir "$OUTPUT_DIR" \
-    --wandb_project "mlgdf-age" \
+    --wandb_project "$WANDB_PROJECT" \
     --mode age \
     --age_min 10 \
     --age_max 80 \
@@ -72,7 +84,7 @@ python scripts/run_mlgd_f.py \
     --guidance_scale 0.0 \
     --controlnet_scale 0.5 \
     --loss_fn mmd \
-    --seed 1
+    --seed "$SEED"
 
 # ── 6. Offline analysis (run manually when needed) ────────────────────────────
 # python src/analysis.py --run_dir "$OUTPUT_DIR" --plots_dir "$OUTPUT_DIR/plots"

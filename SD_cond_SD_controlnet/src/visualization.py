@@ -45,15 +45,20 @@ def visualize_step(
     group_names=None, group_sizes=None,
 ):
     """
-    Generate the per-step 2×(2+num_cond+1) visualization grid.
+    Generate the per-step visualization grid: 2×(2+num_cond+1) when regular
+    (unguided) step data is present in sd, or 1×(2+num_cond+1) otherwise.
 
-    Row 0: Regular path  — x_t, pred_x0, blank columns.
-    Row 1: MLGD-F path  — x_t, pred_x0, num_cond sprinter samples, CLIP PCA.
+    Row 0 (only when sd has regular-path keys): Regular path — x_t, pred_x0,
+      blank columns.
+    Last row: MLGD-F path — x_t, pred_x0, num_cond sprinter samples, CLIP PCA.
 
     Logs to wandb and optionally saves to disk.
 
     Args:
-        sd:             step data dict from the MLGD-F loop.
+        sd:             step data dict from the MLGD-F loop. Regular-path keys
+                        (latents_step_regular_cpu, pred_x0_regular_cpu) are
+                        optional -- omit or set to None to skip Row 0 entirely
+                        (e.g. when run_mlgd_f.py's --run_unguided is off).
         architect:      Architect pipeline (for VAE decode).
         sprinter:       Sprinter pipeline.
         target_clip_np: [N, 768] numpy array of target CLIP embeddings.
@@ -62,20 +67,22 @@ def visualize_step(
         pca_fixed:      optional fitted PCA for consistent projection across steps.
     """
     i = sd["step"]
+    has_regular = sd.get("latents_step_regular_cpu") is not None
     # fallback: treat all targets as one group if metadata not provided
     if group_names is None:
         group_names = ["Target"]
     if group_sizes is None:
         group_sizes = [target_clip_np.shape[0]]
     with torch.no_grad():
-        img_xt_reg = latent_to_pil(
-            sd["latents_step_regular_cpu"].to(architect.device),
-            architect.vae, architect.image_processor,
-        )
-        img_x0_reg = latent_to_pil(
-            sd["pred_x0_regular_cpu"].to(architect.device),
-            architect.vae, architect.image_processor,
-        )
+        if has_regular:
+            img_xt_reg = latent_to_pil(
+                sd["latents_step_regular_cpu"].to(architect.device),
+                architect.vae, architect.image_processor,
+            )
+            img_x0_reg = latent_to_pil(
+                sd["pred_x0_regular_cpu"].to(architect.device),
+                architect.vae, architect.image_processor,
+            )
         img_xt_dps = latent_to_pil(
             sd["latents_step_cpu"].to(architect.device),
             architect.vae, architect.image_processor,
@@ -129,32 +136,36 @@ def visualize_step(
                 "mediumpurple", "gold", "deepskyblue", "hotpink"]
     _MARKERS = ["o", "x", "^", "s", "D", "P", "v", "<"]
 
-    n_cols = 2 + num_cond + 1
-    fig, axes = plt.subplots(2, n_cols, figsize=(4 * n_cols, 8))
+    n_cols   = 2 + num_cond + 1
+    n_rows   = 2 if has_regular else 1
+    dps_row  = 1 if has_regular else 0
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 4 * n_rows))
+    axes = np.atleast_2d(axes)
     fig.suptitle(
         f"Step {i + 1}  (t={sd['timestep']:.0f})", fontsize=14, fontweight="bold"
     )
 
-    axes[0, 0].imshow(img_xt_reg)
-    axes[0, 0].set_title("Regular x_t")
-    axes[0, 1].imshow(img_x0_reg)
-    axes[0, 1].set_title("Regular pred x_0")
-    for j in range(2, n_cols):
-        axes[0, j].text(
-            0.5, 0.5, "N/A", ha="center", va="center",
-            transform=axes[0, j].transAxes,
-        )
-        axes[0, j].set_facecolor("#f0f0f0")
+    if has_regular:
+        axes[0, 0].imshow(img_xt_reg)
+        axes[0, 0].set_title("Regular x_t")
+        axes[0, 1].imshow(img_x0_reg)
+        axes[0, 1].set_title("Regular pred x_0")
+        for j in range(2, n_cols):
+            axes[0, j].text(
+                0.5, 0.5, "N/A", ha="center", va="center",
+                transform=axes[0, j].transAxes,
+            )
+            axes[0, j].set_facecolor("#f0f0f0")
 
-    axes[1, 0].imshow(img_xt_dps)
-    axes[1, 0].set_title(f"MLGD-F x_t  ζ={sd['zeta_i']:.4f}")
-    axes[1, 1].imshow(img_x0_dps)
-    axes[1, 1].set_title(f"MLGD-F x_0  MMD={sd['mmd_loss']:.6f}")
+    axes[dps_row, 0].imshow(img_xt_dps)
+    axes[dps_row, 0].set_title(f"MLGD-F x_t  ζ={sd['zeta_i']:.4f}")
+    axes[dps_row, 1].imshow(img_x0_dps)
+    axes[dps_row, 1].set_title(f"MLGD-F x_0  MMD={sd['mmd_loss']:.6f}")
     for j, ci in enumerate(cond_imgs):
-        axes[1, j + 2].imshow(ci)
-        axes[1, j + 2].set_title(f"Cond {j + 1}")
+        axes[dps_row, j + 2].imshow(ci)
+        axes[dps_row, j + 2].set_title(f"Cond {j + 1}")
 
-    ax = axes[1, n_cols - 1]
+    ax = axes[dps_row, n_cols - 1]
     n_groups_plot = len(group_pca_slices)
     for g_idx, (g_pca, g_name) in enumerate(zip(group_pca_slices, group_names)):
         if n_groups_plot <= 4:
@@ -185,7 +196,7 @@ def visualize_step(
     for row in axes:
         for ax_ in row:
             ax_.axis("off")
-    axes[1, n_cols - 1].axis("on")
+    axes[dps_row, n_cols - 1].axis("on")
 
     plt.tight_layout()
     wandb.log({"step_visualization": wandb.Image(fig)}, step=i + 1, commit=True)

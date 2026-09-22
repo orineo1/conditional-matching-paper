@@ -31,6 +31,7 @@ UNIFORM_NORMALIZE_BY_NSEL="${UNIFORM_NORMALIZE_BY_NSEL:-false}"  # true = Horvit
                                                                   # rescale for backsel_rule=uniform
 BASE_ZETA="${BASE_ZETA:-5.0}"
 GUIDANCE_SCALE="${GUIDANCE_SCALE:-0.0}"
+CONTROLNET_SCALE="${CONTROLNET_SCALE:-0.5}"
 AGE_MIN="${AGE_MIN:-10}"
 AGE_MAX="${AGE_MAX:-80}"      # exclusive: AGE_MIN..AGE_MAX-1
 AGE_STEP="${AGE_STEP:-1}"
@@ -58,6 +59,7 @@ echo "    BACKSEL_RULE   : $BACKSEL_RULE"
 echo "    UNIFORM_NORMALIZE_BY_NSEL : $UNIFORM_NORMALIZE_BY_NSEL"
 echo "    BASE_ZETA      : $BASE_ZETA"
 echo "    GUIDANCE_SCALE : $GUIDANCE_SCALE"
+echo "    CONTROLNET_SCALE : $CONTROLNET_SCALE"
 echo "    AGE_MIN/MAX/STEP : $AGE_MIN/$AGE_MAX/$AGE_STEP"
 echo "    N_PER_AGE      : $N_PER_AGE"
 echo "    AGE_GENDER     : $AGE_GENDER"
@@ -107,7 +109,7 @@ CMD_ARGS=(
     --witness_temperature 1.0
     --base_zeta "$BASE_ZETA"
     --guidance_scale "$GUIDANCE_SCALE"
-    --controlnet_scale 0.5
+    --controlnet_scale "$CONTROLNET_SCALE"
     --loss_fn mmd
     --seed "$SEED"
 )

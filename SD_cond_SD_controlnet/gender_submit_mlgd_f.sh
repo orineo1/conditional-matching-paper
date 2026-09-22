@@ -25,7 +25,7 @@ SEED="${SEED:-1}"
 N_STEPS="${N_STEPS:-30}"
 START_STEP="${START_STEP:-15}"
 NUM_VARIATIONS="${NUM_VARIATIONS:-6}"
-BACKSEL_K="${BACKSEL_K:-20}"
+BACKSEL_K="${BACKSEL_K:-$((NUM_VARIATIONS / 2))}"  # default: half of NUM_VARIATIONS
 BACKSEL_RULE="${BACKSEL_RULE:-uniform}"
 UNIFORM_NORMALIZE_BY_NSEL="${UNIFORM_NORMALIZE_BY_NSEL:-false}"  # true = Horvitz-Thompson
                                                                   # rescale for backsel_rule=uniform

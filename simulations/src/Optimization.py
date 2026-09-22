@@ -16,7 +16,7 @@ import math
 import torch
 from torch import optim
 from tqdm import tqdm
-from witness_utils import apply_backsel, compute_witness_scores, witness_scenario_stats
+from witness_utils import apply_backsel, apply_backsel_ht, compute_witness_scores, witness_scenario_stats
 
 
 def _step_loss(loss_name, mmd_loss, target_samples, mog_samples):
@@ -133,12 +133,33 @@ def optimize_LGD(model_uncond, model_cond, mog_means, mog_variances, weights, mu
                  normalize_by_k_frac=False,  # rescale the applied gradient by 1/k_frac so its
                                              # magnitude is comparable across k_frac settings
                                              # (MMDLoss averages, so raw grad otherwise scales
-                                             # ~linearly with k_frac); no-op when backsel_k is None
+                                             # ~linearly with k_frac); no-op when backsel_k is None.
+                                             # Exact for 'uniform' (a flat constant factor commutes
+                                             # with autograd summation) but NOT exact for 'witness'
+                                             # (needs a different weight per selected row) -- use
+                                             # backsel_ht_rescale instead when witness's gradient
+                                             # itself (not just its loss value) needs to be unbiased.
+                 backsel_ht_rescale=False,   # use apply_backsel_ht instead of apply_backsel: every
+                                             # selected row's gradient is rescaled in place by its
+                                             # exact Horvitz-Thompson ('uniform') or importance-
+                                             # sampling ('witness') weight, so `grad` below is an
+                                             # unbiased estimator of the full-n gradient under EITHER
+                                             # rule -- required for a fair Witness-vs-Uniform
+                                             # downstream comparison. Do not also set
+                                             # normalize_by_k_frac=True: that would double-correct
+                                             # uniform and wrongly flat-correct witness on top of this.
                  return_history=False,       # also return per-step diagnostics
                  diag_steps=None,            # t-values at which to log the extra gradient-error /
                                              # witness-scenario diagnostics (needs return_history=True)
                  grad_ref_n=2000):           # sample size for the analytic population reference
                                              # gradient at diag_steps (no network forward -- cheap)
+
+    if backsel_ht_rescale and normalize_by_k_frac:
+        raise ValueError(
+            "backsel_ht_rescale and normalize_by_k_frac are two different rescale strategies "
+            "for the same gradient -- combining them double-corrects 'uniform' and wrongly "
+            "flat-corrects 'witness' on top of its already-exact per-row weights. Pick one."
+        )
 
     mmd_loss = MMDLoss(kernel=RBF())
     best_mmd_loss = float("inf")
@@ -204,11 +225,17 @@ def optimize_LGD(model_uncond, model_cond, mog_means, mog_variances, weights, mu
                 if diag_this_step:
                     loss_val_full = _step_loss(loss, mmd_loss, target_samples, mog_samples)
                     losses_full.append(-loss_val_full)
-                target_samples, step_backsel_info = apply_backsel(
-                    target_samples, mog_samples, backsel_k, rule=backsel_rule,
-                    witness_floor=witness_floor, generator=backsel_generator,
-                    replacement=backsel_replacement,
-                )
+                if backsel_ht_rescale:
+                    target_samples, step_backsel_info = apply_backsel_ht(
+                        target_samples, mog_samples, backsel_k, rule=backsel_rule,
+                        witness_floor=witness_floor, generator=backsel_generator,
+                    )
+                else:
+                    target_samples, step_backsel_info = apply_backsel(
+                        target_samples, mog_samples, backsel_k, rule=backsel_rule,
+                        witness_floor=witness_floor, generator=backsel_generator,
+                        replacement=backsel_replacement,
+                    )
 
             loss_val = _step_loss(loss, mmd_loss, target_samples, mog_samples)
             losses.append(-loss_val)

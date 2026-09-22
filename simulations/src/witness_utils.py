@@ -86,6 +86,86 @@ def select_backsel_mask(scores, k, rule="uniform", witness_floor=0.3, generator=
     return mask, counts, probs.float()
 
 
+class _ScaleGrad(torch.autograd.Function):
+    """Identity in the forward pass; multiplies the backward-pass gradient
+    through this tensor by a per-row `scale`. Used by apply_backsel_ht to make
+    each selected row's gradient contribution exactly Horvitz-Thompson/
+    importance-sampling-corrected without perturbing the forward loss value."""
+    @staticmethod
+    def forward(ctx, x, scale):
+        ctx.save_for_backward(scale)
+        return x
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        (scale,) = ctx.saved_tensors
+        return grad_out * scale.view(-1, *([1] * (grad_out.dim() - 1))), None
+
+
+def scale_grad(x, scale):
+    return _ScaleGrad.apply(x, scale.to(x.dtype).to(x.device))
+
+
+def apply_backsel_ht(samples, target_samples_for_scoring, k, rule="uniform",
+                     witness_floor=0.3, generator=None):
+    """Like apply_backsel, but exactly Horvitz-Thompson/importance-sampling
+    rescaled, for BOTH rules -- apply_backsel's plain detach-or-keep leaves the
+    selected rows' gradient unrescaled, which is only made comparable across
+    k/n choices by a flat post-hoc `normalize_by_k_frac` factor (see
+    Optimization._compute_step_gradients); that flat factor is exactly correct
+    for 'uniform' (SRSWOR, same weight n/k on every selected row -- a global
+    constant commutes with autograd summation, so post-hoc == per-row here) but
+    WRONG for 'witness' (each selected row needs its OWN weight, which a single
+    flat multiplier can't reproduce whenever p_i isn't uniform). This rescales
+    each selected row's gradient in place (forward value untouched, via
+    scale_grad) so d(loss)/dx is unbiased for the true full-n gradient (summing
+    every row's chain-rule contribution with all n rows present at their real
+    values -- the "what if every row were differentiable" gradient) under
+    EITHER rule -- the correction the downstream Witness-vs-Uniform comparison
+    needs actually wired into `zeta * grad`, not just diagnosed after the fact.
+
+    uniform: k of n rows, SRSWOR (no replacement). Marginal inclusion probability
+             is k/n for every row, so each selected row is scaled by n/k
+             (E[row scaled] = (k/n)*(n/k) = 1, matching an always-included row).
+    witness: k of n rows, drawn WITH replacement proportional to the
+             witness_floor-mixed |scores| distribution (select_backsel_mask).
+             Row i's EXPECTED draw count is k*p_i, so scaling each of its
+             counts[i] actual draws by 1/(k*p_i) gives E[counts[i]/(k*p_i)] =
+             (k*p_i)/(k*p_i) = 1 -- NOT 1/(n*p_i) (that denominator belongs to a
+             different estimator, the self-normalized-by-n sample MEAN over k
+             draws, and applied here would shrink the gradient by a spurious
+             k/n factor). Row i's total scale is counts[i]/(k*p_i); autograd
+             sums its (possibly >1) draws' contributions automatically.
+
+    Do not also pass normalize_by_k_frac=True alongside this -- see
+    Optimization.optimize_LGD's backsel_ht_rescale docstring.
+
+    Returns (batch, info) like apply_backsel; info adds "row_weight" (the
+    per-row rescale actually applied).
+    """
+    n = samples.shape[0]
+    k = max(0, min(int(k), n))
+    replacement = (rule == "witness")
+    scores = compute_witness_scores(samples, target_samples_for_scoring) \
+        if rule == "witness" else torch.zeros(n)
+    mask, counts, probs = select_backsel_mask(
+        scores, k, rule=rule, witness_floor=witness_floor,
+        generator=generator, replacement=replacement,
+    )
+    if rule == "uniform":
+        row_weight = torch.full((n,), n / k, dtype=torch.float64) if k > 0 else torch.zeros(n, dtype=torch.float64)
+    elif rule == "witness":
+        probs = probs.double().clamp_min(1e-12)
+        row_weight = counts.double() / (k * probs)
+    else:
+        raise ValueError(f"unknown backsel_rule {rule!r} (known: 'uniform', 'witness')")
+
+    scale = torch.where(mask, row_weight, torch.zeros_like(row_weight))
+    batch = scale_grad(samples, scale)
+    info = {"mask": mask, "counts": counts, "probs": probs, "scores": scores, "row_weight": row_weight}
+    return batch, info
+
+
 def apply_backsel(samples, target_samples_for_scoring, k, rule="uniform",
                   witness_floor=0.3, generator=None, replacement=False):
     """Build the differentiable-subsample batch for the guidance loss: unselected

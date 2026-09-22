@@ -49,7 +49,7 @@ from generation import (
     run_dps_step_clip,
 )
 from image_utils import build_base_image, latent_to_pil, sobel_proxy
-from metrics import compute_mmd, compute_swd, evaluate_distribution_mmd
+from metrics import compute_mmd, compute_swd, evaluate_distribution_mmd, mmd_report
 from models import DEFAULT_CONTROLNET_MODEL_ID, load_models, setup_gradient_checkpointing
 from visualization import plot_row, visualize_step
 
@@ -800,7 +800,12 @@ def main():
 
         grad_norm = grad.norm().item()
         zeta_val  = zeta_i.item() if isinstance(zeta_i, torch.Tensor) else zeta_i
-        print(f"  MMD={mmd_loss.item():.6f}  ζi={zeta_val:.4f}  ∥∇∥={grad_norm:.6f}", flush=True)
+        # Display-only: mmd_loss is the plain squared MMD^2_U statistic (what zeta_i's
+        # scaling and the gradient actually used) when --loss_fn=mmd; report its square
+        # root for a human-readable number. Left as-is for --loss_fn=swd, which is
+        # already a real-valued distance, not a squared statistic.
+        mmd_display = mmd_report(mmd_loss) if args.loss_fn == "mmd" else mmd_loss
+        print(f"  MMD={mmd_display.item():.6f}  ζi={zeta_val:.4f}  ∥∇∥={grad_norm:.6f}", flush=True)
 
         adam_log = {}
         if torch.isnan(grad).any():
@@ -838,7 +843,7 @@ def main():
             "step":            i + 1,
             "timestep":        t.item(),
             "gradient_norm":   grad_norm,
-            "mmd_loss":        mmd_loss.item(),
+            "mmd_loss":        mmd_display.item(),
             "zeta_i":          zeta_val,
             "loss_norm":       loss_norm.item(),
             "correction_norm": correction_norm,
@@ -847,7 +852,7 @@ def main():
 
         wandb_log = {
             "step":            i + 1,
-            "mmd_loss":        mmd_loss.item(),
+            "mmd_loss":        mmd_display.item(),
             "gradient_norm":   grad_norm,
             "zeta":            zeta_val,
             "correction_norm": correction_norm,
@@ -855,6 +860,8 @@ def main():
         }
 
         if i % eval_interval == 0:
+            # unguided_mmd is already mmd_report()'d inside evaluate_distribution_mmd,
+            # so this stays an apples-to-apples comparison with mmd_display.
             unguided_mmd, _, _ = evaluate_distribution_mmd(
                 pred_x0_regular.detach(), architect.vae, architect.image_processor,
                 sprinter, clip_model, clip_processor,
@@ -862,10 +869,10 @@ def main():
                 n_eval=n_eval, device=device,
             )
             wandb_log["intermediate/unguided_cond_mmd"] = unguided_mmd
-            wandb_log["intermediate/mlgd_f_cond_mmd"]   = mmd_loss.item()
-            wandb_log["intermediate/cond_mmd_delta"]     = mmd_loss.item() - unguided_mmd
-            print(f"  [eval] mlgd_f={mmd_loss.item():.6f}  unguided={unguided_mmd:.6f}  "
-                  f"delta={mmd_loss.item()-unguided_mmd:.6f}", flush=True)
+            wandb_log["intermediate/mlgd_f_cond_mmd"]   = mmd_display.item()
+            wandb_log["intermediate/cond_mmd_delta"]     = mmd_display.item() - unguided_mmd
+            print(f"  [eval] mlgd_f={mmd_display.item():.6f}  unguided={unguided_mmd:.6f}  "
+                  f"delta={mmd_display.item()-unguided_mmd:.6f}", flush=True)
 
         wandb.log(wandb_log, commit=False)
 
@@ -873,7 +880,7 @@ def main():
             sd = {
                 "step":                     i + 1,
                 "timestep":                 t.item(),
-                "mmd_loss":                 mmd_loss.item(),
+                "mmd_loss":                 mmd_display.item(),
                 "zeta_i":                   zeta_val,
                 "latents_step_cpu":         latents_step.detach().cpu(),
                 "latents_step_regular_cpu": latents_step_regular.detach().cpu(),
@@ -895,7 +902,7 @@ def main():
                 scheduler_regular, noise_pred_regular, t, latents_step_regular
             )
 
-        del grad, mmd_loss, loss_norm, zeta_i, correction
+        del grad, mmd_loss, mmd_display, loss_norm, zeta_i, correction
         del pixel_x0, pixel_x0_norm, pred_x0, pred_x0_regular
         del latents_step_regular, noise_pred_regular
         gc.collect(); torch.cuda.empty_cache()

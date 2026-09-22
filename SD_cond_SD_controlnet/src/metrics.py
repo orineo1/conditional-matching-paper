@@ -2,7 +2,11 @@
 metrics.py — Loss functions and distribution evaluation for MLGD-F.
 
 Functions:
-    compute_mmd               Unbiased MMD with generalised RBF kernel.
+    compute_mmd               Unbiased MMD^2_U with generalised RBF kernel (plain
+                              squared statistic -- this is what's actually used
+                              for the loss/gradients/zeta scaling everywhere).
+    mmd_report                sqrt(|MMD^2_U|) for DISPLAY ONLY -- never feed into
+                              a loss or further computation.
     compute_swd                Sliced Wasserstein Distance (adaptive projections).
     compute_witness_scores    Per-sample MMD witness function (for importance backsel).
     evaluate_distribution_mmd Decode latent -> scribble -> photos -> CLIP -> MMD.
@@ -69,9 +73,26 @@ def compute_witness_scores(x, y, bandwidth=None, bandwidth_scale=1.0, kernel_alp
     return scores, bandwidth
 
 
+def mmd_report(mmd_sq):
+    """sqrt(|MMD^2_U|) for DISPLAY ONLY (printing/logging/plotting a human-
+    readable MMD number) -- never feed this into a loss, zeta scaling, or
+    any further computation; compute_mmd's own return value (the plain
+    squared statistic) is what the algorithm actually uses everywhere.
+    Identical to simulations/src/LossFunctions.py's mmd_report."""
+    if isinstance(mmd_sq, np.ndarray):
+        return np.sqrt(np.abs(mmd_sq))
+    if torch.is_tensor(mmd_sq):
+        return torch.sqrt(mmd_sq.abs())
+    return abs(mmd_sq) ** 0.5
+
+
 def compute_mmd(x, y, bandwidth=None, bandwidth_scale=1.0, kernel_alpha=1.0):
     """
-    Unbiased Maximum Mean Discrepancy with a generalised RBF kernel.
+    Unbiased MMD^2_U with a generalised RBF kernel -- identical estimator to
+    simulations/src/LossFunctions.py's compute_mmd. Returns the PLAIN squared
+    U-statistic, no sqrt applied: this is what the algorithm actually uses
+    (loss, gradients, zeta_i adaptive step-size scaling in run_mlgd_f.py) --
+    use mmd_report() above to take a square root for display only.
 
     Args:
         x:               [n, d] generated embeddings (grad flows through).
@@ -82,7 +103,7 @@ def compute_mmd(x, y, bandwidth=None, bandwidth_scale=1.0, kernel_alpha=1.0):
                          >1 = flatter centre, sharper falloff.
 
     Returns:
-        Scalar MMD estimate (sqrt of unbiased MMD²).
+        Scalar MMD^2_U estimate (unbiased, squared -- NOT square-rooted).
     """
     if isinstance(x, np.ndarray):
         x = torch.from_numpy(x)
@@ -113,12 +134,7 @@ def compute_mmd(x, y, bandwidth=None, bandwidth_scale=1.0, kernel_alpha=1.0):
     xy_term = 2 * K_xy.sum() / (n * m)
 
     mmd_sq = xx_term - xy_term + yy_term
-    # abs() before sqrt handles slightly-negative unbiased estimates. No +eps floor,
-    # matching simulations/src/LossFunctions.py's compute_mmd exactly -- torch.sqrt
-    # has an infinite/undefined gradient at exactly 0, so a batch landing exactly on
-    # mmd_sq == 0 would produce a nan/inf gradient there; rare in practice for
-    # continuous embeddings.
-    return torch.sqrt(mmd_sq.abs())
+    return mmd_sq
 
 
 def compute_swd(
@@ -237,7 +253,8 @@ def evaluate_distribution_mmd(
         device:                  torch device string.
 
     Returns:
-        (mmd_scalar, eval_photos_list, clip_embs)
+        (mmd_scalar, eval_photos_list, clip_embs) -- mmd_scalar is
+        mmd_report()'d (sqrt of the unbiased MMD^2_U), for display/comparison.
     """
     from clip_utils import encode_images_clip
     from image_utils import latent_to_pil
@@ -270,6 +287,10 @@ def evaluate_distribution_mmd(
         clip_embs = encode_images_clip(photo_tensor, clip_model, clip_processor)
     clip_model.to("cpu")
 
-    mmd = compute_mmd(clip_embs, all_clip_embeddings).item()
+    # Report-only value: this function exists purely to log/compare an MMD number
+    # (called under torch.no_grad(), never feeds a loss), so return the square root
+    # for a human-readable, apples-to-apples comparison with run_dps_step_clip's own
+    # reported mmd_loss (also mmd_report()'d) rather than the plain squared statistic.
+    mmd = mmd_report(compute_mmd(clip_embs, all_clip_embeddings)).item()
 
     return mmd, eval_photos, clip_embs

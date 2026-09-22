@@ -1,7 +1,7 @@
 
 import importlib
 import Diffusion
-from LossFunctions import MMDLoss,RBF
+from LossFunctions import MMDLoss,RBF,mmd_report
 from dist_utils import generate_mog_samples,generate_mog_samples_not_differentiable
 import ConsistencyModels
 import dist_utils
@@ -246,6 +246,11 @@ def optimize_LGD(model_uncond, model_cond, mog_means, mog_variances, weights, mu
         target_samples = target_samples[:, model_cond.condition_on:]
     mog_samples = generate_mog_samples_not_differentiable(nsamples, mog_means, mog_variances, weights)
     final_loss = _step_loss(loss, mmd_loss, target_samples, mog_samples)
+    if loss == "MMD":
+        # Display only: final_loss from here on is purely a reported/logged metric
+        # (nothing downstream uses it for further computation), so report sqrt(|U|)
+        # rather than the plain squared statistic the algorithm itself used.
+        final_loss = mmd_report(final_loss)
 
     x_t_final = x_t.detach().clone()
     del x_t, condition, target_samples, mog_samples

@@ -410,7 +410,7 @@ def main():
 
     # ── Measure first candidate time, then compute budget ──
     print('\nMeasuring first SDEdit candidate...')
-    from metrics import compute_mmd
+    from metrics import compute_mmd, mmd_report
     t0 = time.time()
     first_cand = run_sdedit(
         source_scribble, seed=SEED,
@@ -421,7 +421,7 @@ def main():
     first_imgs = gen_images(sprinter, first_cand, cfg['neutral_prompt'],
                             cfg['n_eval_search'], cfg['controlnet_scale'], seed=SEED)
     first_embs = clip_embed(first_imgs, clip_model, clip_processor, device)
-    first_mmd  = compute_mmd(first_embs, target_clip).item()
+    first_mmd  = mmd_report(compute_mmd(first_embs, target_clip)).item()
     sec_per_candidate = time.time() - t0
 
     n_candidates = max(1, int(args.lgd_cm_minutes * 60 / sec_per_candidate))
@@ -480,7 +480,7 @@ def main():
         imgs = gen_images(sprinter, cand, cfg['neutral_prompt'],
                           cfg['n_eval_search'], cfg['controlnet_scale'], seed=SEED)
         embs = clip_embed(imgs, clip_model, clip_processor, device)
-        mmd  = compute_mmd(embs, target_clip).item()
+        mmd  = mmd_report(compute_mmd(embs, target_clip)).item()
         candidate_mmds.append(mmd)
         candidate_scribbles.append(cand)
         tqdm.write(f'  [{i+1}/{n_candidates}] seed={SEED+i}  MMD={mmd:.5f}')

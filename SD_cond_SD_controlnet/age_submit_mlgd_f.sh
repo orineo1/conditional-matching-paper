@@ -22,6 +22,13 @@ REPO_PATH="${REPO_PATH:?REPO_PATH is not set. Export it before submitting (path 
 WANDB_PROJECT="${WANDB_PROJECT:-mlgdf-age}"
 WANDB_API_KEY="${WANDB_API_KEY:?WANDB_API_KEY is not set. Export it before submitting.}"
 SEED="${SEED:-1}"
+N_STEPS="${N_STEPS:-30}"
+START_STEP="${START_STEP:-15}"
+NUM_VARIATIONS="${NUM_VARIATIONS:-6}"
+BACKSEL_K="${BACKSEL_K:-20}"
+BACKSEL_RULE="${BACKSEL_RULE:-uniform}"
+BASE_ZETA="${BASE_ZETA:-5.0}"
+GUIDANCE_SCALE="${GUIDANCE_SCALE:-0.0}"
 
 # ── 2. Caches — redirect to lab storage to avoid home quota issues ────────────
 # Uncomment and set LAB_ROOT to a writable directory on your cluster:
@@ -33,9 +40,16 @@ SEED="${SEED:-1}"
 
 # ── 3. Verification ───────────────────────────────────────────────────────────
 echo "=== JOB STARTING ON $(hostname) ==="
-echo "    REPO_PATH     : $REPO_PATH"
-echo "    WANDB_PROJECT : $WANDB_PROJECT"
-echo "    SEED          : $SEED"
+echo "    REPO_PATH      : $REPO_PATH"
+echo "    WANDB_PROJECT  : $WANDB_PROJECT"
+echo "    SEED           : $SEED"
+echo "    N_STEPS        : $N_STEPS"
+echo "    START_STEP     : $START_STEP"
+echo "    NUM_VARIATIONS : $NUM_VARIATIONS"
+echo "    BACKSEL_K      : $BACKSEL_K"
+echo "    BACKSEL_RULE   : $BACKSEL_RULE"
+echo "    BASE_ZETA      : $BASE_ZETA"
+echo "    GUIDANCE_SCALE : $GUIDANCE_SCALE"
 python -c "import torch; print(f'GPU: {torch.cuda.is_available()}')"
 echo "============================================"
 
@@ -73,15 +87,15 @@ python scripts/run_mlgd_f.py \
     --age_step 1 \
     --n_per_age 0 \
     --age_gender man \
-    --n_steps 30 \
-    --start_step 15 \
-    --num_variations 6 \
-    --backsel_k 20 \
-    --backsel_rule uniform \
+    --n_steps "$N_STEPS" \
+    --start_step "$START_STEP" \
+    --num_variations "$NUM_VARIATIONS" \
+    --backsel_k "$BACKSEL_K" \
+    --backsel_rule "$BACKSEL_RULE" \
     --witness_floor 0.3 \
     --witness_temperature 1.0 \
-    --base_zeta 5.0 \
-    --guidance_scale 0.0 \
+    --base_zeta "$BASE_ZETA" \
+    --guidance_scale "$GUIDANCE_SCALE" \
     --controlnet_scale 0.5 \
     --loss_fn mmd \
     --seed "$SEED"

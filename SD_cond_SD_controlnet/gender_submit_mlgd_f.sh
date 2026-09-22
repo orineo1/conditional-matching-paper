@@ -27,6 +27,8 @@ START_STEP="${START_STEP:-15}"
 NUM_VARIATIONS="${NUM_VARIATIONS:-6}"
 BACKSEL_K="${BACKSEL_K:-20}"
 BACKSEL_RULE="${BACKSEL_RULE:-uniform}"
+UNIFORM_NORMALIZE_BY_NSEL="${UNIFORM_NORMALIZE_BY_NSEL:-false}"  # true = Horvitz-Thompson
+                                                                  # rescale for backsel_rule=uniform
 BASE_ZETA="${BASE_ZETA:-5.0}"
 GUIDANCE_SCALE="${GUIDANCE_SCALE:-0.0}"
 # Each "name:prompt:n" triple separated by '|' (prompts themselves may contain
@@ -50,6 +52,7 @@ echo "    START_STEP     : $START_STEP"
 echo "    NUM_VARIATIONS : $NUM_VARIATIONS"
 echo "    BACKSEL_K      : $BACKSEL_K"
 echo "    BACKSEL_RULE   : $BACKSEL_RULE"
+echo "    UNIFORM_NORMALIZE_BY_NSEL : $UNIFORM_NORMALIZE_BY_NSEL"
 echo "    BASE_ZETA      : $BASE_ZETA"
 echo "    GUIDANCE_SCALE : $GUIDANCE_SCALE"
 echo "    TARGET_PROMPTS : $TARGET_PROMPTS"
@@ -81,23 +84,27 @@ mkdir -p "$OUTPUT_DIR"
 #                                 --adam_beta2/--adam_eps, default 0.01/0.9/0.999/1e-8)
 
 # ── 5. Run ────────────────────────────────────────────────────────────────────
-python scripts/run_mlgd_f.py \
-    --output_dir "$OUTPUT_DIR" \
-    --wandb_project "$WANDB_PROJECT" \
-    --mode gender \
-    --n_steps "$N_STEPS" \
-    --start_step "$START_STEP" \
-    --num_variations "$NUM_VARIATIONS" \
-    --backsel_k "$BACKSEL_K" \
-    --backsel_rule "$BACKSEL_RULE" \
-    --witness_floor 0.3 \
-    --witness_temperature 1.0 \
-    --base_zeta "$BASE_ZETA" \
-    --guidance_scale "$GUIDANCE_SCALE" \
-    --controlnet_scale 0.5 \
-    --loss_fn mmd \
-    --target_prompts "${TARGET_PROMPTS_ARR[@]}" \
+CMD_ARGS=(
+    --output_dir "$OUTPUT_DIR"
+    --wandb_project "$WANDB_PROJECT"
+    --mode gender
+    --n_steps "$N_STEPS"
+    --start_step "$START_STEP"
+    --num_variations "$NUM_VARIATIONS"
+    --backsel_k "$BACKSEL_K"
+    --backsel_rule "$BACKSEL_RULE"
+    --witness_floor 0.3
+    --witness_temperature 1.0
+    --base_zeta "$BASE_ZETA"
+    --guidance_scale "$GUIDANCE_SCALE"
+    --controlnet_scale 0.5
+    --loss_fn mmd
+    --target_prompts "${TARGET_PROMPTS_ARR[@]}"
     --seed "$SEED"
+)
+[ "$UNIFORM_NORMALIZE_BY_NSEL" = "true" ] && CMD_ARGS+=(--uniform_normalize_by_nsel)
+
+python scripts/run_mlgd_f.py "${CMD_ARGS[@]}"
 
 
 

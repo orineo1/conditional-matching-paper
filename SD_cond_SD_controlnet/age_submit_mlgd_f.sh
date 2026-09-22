@@ -37,6 +37,7 @@ AGE_MAX="${AGE_MAX:-80}"      # exclusive: AGE_MIN..AGE_MAX-1
 AGE_STEP="${AGE_STEP:-1}"
 N_PER_AGE="${N_PER_AGE:-0}"
 AGE_GENDER="${AGE_GENDER:-man}"
+AGE_SOURCE="${AGE_SOURCE:-mid}"  # min|mid|max -- which age's portrait the init scribble comes from
 
 # ── 2. Caches — redirect to lab storage to avoid home quota issues ────────────
 # Uncomment and set LAB_ROOT to a writable directory on your cluster:
@@ -63,6 +64,7 @@ echo "    CONTROLNET_SCALE : $CONTROLNET_SCALE"
 echo "    AGE_MIN/MAX/STEP : $AGE_MIN/$AGE_MAX/$AGE_STEP"
 echo "    N_PER_AGE      : $N_PER_AGE"
 echo "    AGE_GENDER     : $AGE_GENDER"
+echo "    AGE_SOURCE     : $AGE_SOURCE"
 python -c "import torch; print(f'GPU: {torch.cuda.is_available()}')"
 echo "============================================"
 
@@ -100,6 +102,7 @@ CMD_ARGS=(
     --age_step "$AGE_STEP"
     --n_per_age "$N_PER_AGE"
     --age_gender "$AGE_GENDER"
+    --age_source "$AGE_SOURCE"
     --n_steps "$N_STEPS"
     --start_step "$START_STEP"
     --num_variations "$NUM_VARIATIONS"

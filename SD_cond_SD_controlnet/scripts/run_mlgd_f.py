@@ -209,6 +209,8 @@ def parse_args():
                    help="Images per age value. 0 = auto (~100 total)")
     p.add_argument("--age_gender", type=str,   default="man",
                    help="Gender word used in age prompt (man/woman)")
+    p.add_argument("--age_source", type=str,   default="mid", choices=["min", "mid", "max"],
+                   help="Which age's portrait to extract the init HED scribble from")
 
     return p.parse_args()
 
@@ -456,10 +458,11 @@ def build_targets_age(args, sprinter, clip_model, clip_processor, device,
         plot_row(target_images_per_group[str(age)], f"Age {age}",
                  save_path=os.path.join(args.output_dir, f"target_samples_age{age}.png"))
 
-    # Extract HED scribble from a male portrait at middle age
-    mid_age = ages[len(ages) // 2]
-    print(f"Extracting HED scribble from age-{mid_age} portrait...", flush=True)
-    source_image = target_images_per_group[str(mid_age)][0]
+    # Extract HED scribble from a portrait at the requested age (min/mid/max
+    # of the sweep) -- default "mid" matches prior runs.
+    source_age = {"min": ages[0], "mid": ages[len(ages) // 2], "max": ages[-1]}[args.age_source]
+    print(f"Extracting HED scribble from age-{source_age} portrait ({args.age_source})...", flush=True)
+    source_image = target_images_per_group[str(source_age)][0]
     scribble_pil = extract_scribble_hed(source_image)
 
     # Encode to CLIP

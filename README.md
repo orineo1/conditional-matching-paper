@@ -75,7 +75,9 @@ Pretrained checkpoints for 2D, 5D, and 10D are hosted on HuggingFace:
 cd simulations
 pip install -r requirements.txt
 # Open notebooks/Exp_2D_cond_1D.ipynb (or 5D / 10D variants)
-# β-sweep demo: notebooks/toy_example_with_beta_sweep.ipynb
+# Toy example + β-sweep (paper's introductory CDMS illustration, guidance-
+# strength sweep over the closed-form L2-GMM sampler):
+# notebooks/toy_example_with_beta_sweep.ipynb
 ```
 
 See [`simulations/README.md`](simulations/README.md) for full details.

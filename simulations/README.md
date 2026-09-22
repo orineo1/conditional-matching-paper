@@ -60,6 +60,21 @@ The `toy_example_with_beta_sweep.ipynb` notebook does not have pre-trained weigh
 
 To force retraining from scratch for any notebook, set `FORCE_RETRAIN = True` in the configuration cell.
 
+## Toy example with β-sweep
+
+`notebooks/toy_example_with_beta_sweep.ipynb` is the paper's introductory 1D-x/1D-y toy
+illustration of CDMS: a 2-component GMM (`x=-3` and `x=3`, weights 0.5/0.5) where
+`x_star = -3` defines the target conditional `G = P(Y | X = x_star)`. It trains both a
+Consistency Model and a Diffusion model for `P(Y|X=x)` plus the unconditional Diffusion
+prior `P(X=x)`, sanity-checks the CM against the Diffusion conditional, then runs both guided
+optimizers (MLGD with the slow Diffusion inner sampler, and MLGD-F with the fast Consistency
+Model inner sampler) side by side.
+
+The final sections add a closed-form (`Analytical Q(x; β)`) L2-GMM sampler and sweep the
+guidance strength β through it, tracing how the guided sampler's stationary distribution over
+x shifts from the unconditional prior toward `x_star` as β increases -- this is the β-sweep
+plot referenced in the paper's toy example figure.
+
 ## nonstar MMD-vs-L2 guidance ablation (trained models)
 
 `notebooks/Exp_nonstar_mmd_target_ablation.ipynb` is a trained-model (not closed-form

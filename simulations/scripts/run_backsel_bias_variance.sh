@@ -18,20 +18,26 @@
 # comparison -- see the script docstring for why that distinction matters.
 # ══════════════════════════════════════════════════════════════════════════════
 
-# Which experiment?  2D_cond_1D | 5D_cond_1D | 10D_cond_1D
-EXPERIMENT="5D_cond_1D"
+# All of these can be overridden without editing the file, e.g.:
+#   sbatch --partition=catfish --export=ALL,EXPERIMENT=10D_cond_1D scripts/run_backsel_bias_variance.sh
+# (sbatch itself only accepts its own flags -- #SBATCH/scheduler options -- so a
+# job-specific setting like EXPERIMENT has to travel in via --export, not as a
+# made-up "--EXPERIMENT=..." flag on the sbatch command line. The leading "ALL,"
+# is required -- without it, --export REPLACES the whole environment instead of
+# adding to it, and this script's already-exported ENV_PATH/REPO_ROOT would be lost.)
 
-METHODS="LGD"                  # any of: LGD LGD-CM
-STATE_SEEDS="1 2 3"            # trajectory seeds to capture states from (2-3 recommended)
-STEP_FRACS="0.1 0.5 0.9"       # early/mid/late positions along the denoising trajectory
-                                # (0.0=earliest/noisiest, 1.0=latest/cleanest)
-NSAMPLES=250
-K_FRAC=0.2                     # backsel_k / nsamples, held fixed for this diagnostic
-WITNESS_FLOOR=0.3
-N_REDRAWS=200                  # independent redraws per state per rule
-GRAD_REF_N=2000                # sample size for the TRUE/population reference gradient
-SEED=42
-FORCE_RETRAIN=false
+EXPERIMENT="${EXPERIMENT:-5D_cond_1D}"          # 2D_cond_1D | 5D_cond_1D | 10D_cond_1D
+METHODS="${METHODS:-LGD}"                       # any of: LGD LGD-CM
+STATE_SEEDS="${STATE_SEEDS:-1 2 3}"             # trajectory seeds to capture states from (2-3 recommended)
+STEP_FRACS="${STEP_FRACS:-0.1 0.5 0.9}"         # early/mid/late positions along the denoising trajectory
+                                                 # (0.0=earliest/noisiest, 1.0=latest/cleanest)
+NSAMPLES="${NSAMPLES:-250}"
+K_FRAC="${K_FRAC:-0.2}"                         # backsel_k / nsamples, held fixed for this diagnostic
+WITNESS_FLOOR="${WITNESS_FLOOR:-0.3}"
+N_REDRAWS="${N_REDRAWS:-200}"                   # independent redraws per state per rule
+GRAD_REF_N="${GRAD_REF_N:-2000}"                # sample size for the TRUE/population reference gradient
+SEED="${SEED:-42}"
+FORCE_RETRAIN="${FORCE_RETRAIN:-false}"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 1. Environment

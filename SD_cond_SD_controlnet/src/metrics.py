@@ -145,6 +145,7 @@ def compute_swd(
     min_projections=10,
     step=10,
     max_projections=500,
+    seed=None,
 ):
     """
     Sliced Wasserstein Distance between two sets of embeddings.
@@ -158,6 +159,12 @@ def compute_swd(
         min_projections: starting number for adaptive mode.
         step:          projections added per iteration in adaptive mode.
         max_projections: hard cap for adaptive mode.
+        seed:          if given, the random projection directions are drawn from a
+                       dedicated Generator seeded with this value, so the SAME
+                       projections (hence the exact same SWD value) are reproduced
+                       across runs regardless of what else has consumed the global
+                       torch RNG beforehand. None (default) uses the global RNG
+                       unseeded, as before -- not reproducible run to run.
 
     Returns:
         Scalar SWD estimate.
@@ -177,9 +184,10 @@ def compute_swd(
         y = y.reshape(y.shape[0], -1)
 
     d = x.shape[1]
+    generator = torch.Generator(device=dev).manual_seed(seed) if seed is not None else None
 
     def _swd_fixed(n_proj):
-        projections = torch.randn(n_proj, d, device=dev)
+        projections = torch.randn(n_proj, d, device=dev, generator=generator)
         projections = projections / projections.norm(dim=1, keepdim=True)
 
         x_proj = projections @ x.T  # [n_proj, n]

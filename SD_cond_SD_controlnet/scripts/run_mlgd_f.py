@@ -493,6 +493,19 @@ def build_targets_age(args, sprinter, clip_model, clip_processor, device,
             pca_fixed, source_image, scribble_pil, N_total, target_groups, pca_path)
 
 
+def sample_target_embeddings(all_clip_embeddings, n, generator=None):
+    """Draw exactly n rows from all_clip_embeddings, for a fixed-sample-size final
+    MMD comparison independent of however many target images the run happened to
+    build. Without replacement when there are >= n distinct target embeddings
+    already available; with replacement (bootstrap) otherwise."""
+    total = all_clip_embeddings.shape[0]
+    if total >= n:
+        idx = torch.randperm(total, generator=generator)[:n]
+    else:
+        idx = torch.randint(0, total, (n,), generator=generator)
+    return all_clip_embeddings[idx.to(all_clip_embeddings.device)]
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -557,6 +570,7 @@ def main():
         project=args.wandb_project,
         entity=args.wandb_entity or None,  # None = use whoever is logged in
         config={
+            "seed":                         args.seed,
             "prompt":                       args.prompt,
             "negative_prompt":              args.negative_prompt,
             "n_targets":                    N_total,
@@ -912,25 +926,42 @@ def main():
     print(f"\n✅ MLGD-F complete! {len(step_vis_data)} steps stored.", flush=True)
 
     # ── 10. Final MMD evaluation ────────────────────────────────────────────
-    print("Computing final MMD (regular)...", flush=True)
+    # Uses a larger, fixed sample size (FINAL_MMD_N=250 on both sides) than the
+    # per-step n_eval, for a lower-variance final number independent of however
+    # many target images this run happened to build (N_total). Target side is
+    # resampled from the existing all_clip_embeddings pool (bootstrap if it has
+    # fewer than 250 rows) rather than regenerated from scratch.
+    FINAL_MMD_N = 250
+    final_mmd_generator = torch.Generator().manual_seed(args.seed) if args.seed is not None else None
+    final_target_clip = sample_target_embeddings(
+        all_clip_embeddings, FINAL_MMD_N, generator=final_mmd_generator
+    )
+
+    print(f"Computing final MMD (regular, n={FINAL_MMD_N})...", flush=True)
     regular_mmd, regular_eval_photos, _ = evaluate_distribution_mmd(
         latents_regular, architect.vae, architect.image_processor,
         sprinter, clip_model, clip_processor,
-        all_clip_embeddings, eval_prompt=args.sprinter_eval_prompt,
-        n_eval=n_eval, device=device,
+        final_target_clip, eval_prompt=args.sprinter_eval_prompt,
+        n_eval=FINAL_MMD_N, device=device,
     )
 
-    print("Computing final MMD (MLGD-F)...", flush=True)
+    print(f"Computing final MMD (MLGD-F, n={FINAL_MMD_N})...", flush=True)
     mlgd_f_mmd, mlgd_f_eval_photos, _ = evaluate_distribution_mmd(
         latents, architect.vae, architect.image_processor,
         sprinter, clip_model, clip_processor,
-        all_clip_embeddings, eval_prompt=args.sprinter_eval_prompt,
-        n_eval=n_eval, device=device,
+        final_target_clip, eval_prompt=args.sprinter_eval_prompt,
+        n_eval=FINAL_MMD_N, device=device,
     )
 
     print(f"Regular MMD : {regular_mmd:.6f}", flush=True)
     print(f"MLGD-F MMD  : {mlgd_f_mmd:.6f}",  flush=True)
     print(f"Delta (↓ better for MLGD-F): {regular_mmd - mlgd_f_mmd:.6f}", flush=True)
+
+    wandb.log({
+        "final/regular_mmd_n250": regular_mmd,
+        "final/mlgd_f_mmd_n250":  mlgd_f_mmd,
+        "final/mmd_delta_n250":   regular_mmd - mlgd_f_mmd,
+    }, commit=False)
 
     # ── 11. Final visualisations ────────────────────────────────────────────
     with torch.no_grad():

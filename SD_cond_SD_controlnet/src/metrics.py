@@ -236,6 +236,7 @@ def evaluate_distribution_mmd(
     eval_prompt,
     n_eval=10,
     device="cuda",
+    controlnet_scale=0.8,
 ):
     """
     Full evaluation: latent -> scribble PIL -> sprinter photos -> CLIP -> MMD.
@@ -251,6 +252,11 @@ def evaluate_distribution_mmd(
         eval_prompt:             Text prompt for Sprinter generation.
         n_eval:                  Number of Sprinter photos to generate.
         device:                  torch device string.
+        controlnet_scale:        ControlNet conditioning scale -- must match whatever
+                                 scale built the target distribution and whatever scale
+                                 the guidance loop (run_dps_step_clip) uses, so eval is
+                                 conditioned consistently with the rest of the pipeline
+                                 (run_mlgd_f.py passes args.controlnet_scale).
 
     Returns:
         (mmd_scalar, eval_photos_list, clip_embs) -- mmd_scalar is
@@ -273,7 +279,7 @@ def evaluate_distribution_mmd(
                 image=[scribble_pil] * bs,
                 num_inference_steps=2,
                 guidance_scale=0.0,
-                controlnet_conditioning_scale=0.8,
+                controlnet_conditioning_scale=controlnet_scale,
                 output_type="pil",
                 return_dict=True,
             )

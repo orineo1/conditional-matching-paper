@@ -42,7 +42,7 @@ def plot_row(images, title, count=5, save_path=None):
 def visualize_step(
     sd, architect, sprinter, target_clip_np,
     num_cond=4, save_path=None, pca_fixed=None,
-    group_names=None, group_sizes=None,
+    group_names=None, group_sizes=None, controlnet_scale=0.8,
 ):
     """
     Generate the per-step visualization grid: 2×(2+num_cond+1) when regular
@@ -65,6 +65,11 @@ def visualize_step(
         num_cond:       number of Sprinter conditioning samples to show.
         save_path:      optional file path.
         pca_fixed:      optional fitted PCA for consistent projection across steps.
+        controlnet_scale: ControlNet conditioning scale for the "Cond N" sample
+                          images -- must match whatever scale the rest of the
+                          pipeline uses (target-building, guidance, eval), so this
+                          plot's samples are conditioned consistently with them
+                          (run_mlgd_f.py passes args.controlnet_scale).
     """
     i = sd["step"]
     has_regular = sd.get("latents_step_regular_cpu") is not None
@@ -106,7 +111,7 @@ def visualize_step(
                 image=px_norm,
                 num_inference_steps=2,
                 guidance_scale=0.0,
-                controlnet_conditioning_scale=0.8,
+                controlnet_conditioning_scale=controlnet_scale,
                 output_type="pil",
             ).images[0]
             for _ in range(num_cond)

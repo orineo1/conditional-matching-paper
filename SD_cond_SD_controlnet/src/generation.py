@@ -285,6 +285,7 @@ def run_dps_step_clip(
     variation_prompt,
     loss_fn=compute_mmd,
     loss_scale=1.0,
+    controlnet_scale=0.8,
     backsel_k=None,
     backsel_rule="uniform",
     backsel_generator=None,
@@ -308,6 +309,11 @@ def run_dps_step_clip(
     Args:
         loss_fn:              callable with signature loss_fn(generated, targets) -> scalar.
         loss_scale:           multiply loss before grad to amplify weak gradients.
+        controlnet_scale:     ControlNet conditioning scale for the Sprinter forward
+                               passes here -- must match whatever scale built the
+                               target distribution and whatever scale evaluation uses,
+                               so the whole pipeline is conditioned consistently end to
+                               end (run_mlgd_f.py passes args.controlnet_scale).
         backsel_k:             of the freshly-generated variations, how many to backprop
                                through (None = all). The rest are generated under
                                torch.no_grad() -- still counted in the loss, no gradient.
@@ -366,7 +372,7 @@ def run_dps_step_clip(
             image=ctrl,
             num_inference_steps=2,
             guidance_scale=0.0,
-            controlnet_conditioning_scale=0.8,
+            controlnet_conditioning_scale=controlnet_scale,
             output_type="latent",
             return_dict=True,
         ).images

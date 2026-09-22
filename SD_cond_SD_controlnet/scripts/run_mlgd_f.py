@@ -759,7 +759,8 @@ def main():
 
     visualize_step(sd_baseline, architect, sprinter, target_clip_np,
                    num_cond=4, save_path=os.path.join(steps_dir, "step_baseline.png"),
-                   pca_fixed=pca_fixed, group_names=group_names, group_sizes=group_sizes)
+                   pca_fixed=pca_fixed, group_names=group_names, group_sizes=group_sizes,
+                   controlnet_scale=args.controlnet_scale)
     print("✅ Baseline visualisation saved.", flush=True)
 
     # ── 9. MLGD-F guidance loop ─────────────────────────────────────────────
@@ -816,6 +817,7 @@ def main():
             variation_prompt=args.sprinter_variation_prompt,
             loss_fn=loss_fn,
             loss_scale=args.loss_scale,
+            controlnet_scale=args.controlnet_scale,
             backsel_k=args.backsel_k,
             backsel_rule=args.backsel_rule,
             backsel_generator=backsel_generator,
@@ -895,7 +897,7 @@ def main():
                 pred_x0_regular.detach(), architect.vae, architect.image_processor,
                 sprinter, clip_model, clip_processor,
                 all_clip_embeddings, args.sprinter_eval_prompt,
-                n_eval=n_eval, device=device,
+                n_eval=n_eval, device=device, controlnet_scale=args.controlnet_scale,
             )
             wandb_log["intermediate/unguided_cond_mmd"] = unguided_mmd
             wandb_log["intermediate/mlgd_f_cond_mmd"]   = mmd_display.item()
@@ -922,7 +924,8 @@ def main():
 
         visualize_step(sd, architect, sprinter, target_clip_np,
                        num_cond=5, save_path=os.path.join(steps_dir, f"step_{i:03d}.png"),
-                       pca_fixed=pca_fixed, group_names=group_names, group_sizes=group_sizes)
+                       pca_fixed=pca_fixed, group_names=group_names, group_sizes=group_sizes,
+                       controlnet_scale=args.controlnet_scale)
 
         latents = denoise_step(
             architect.scheduler, noise_pred, t, latents_step, correction=correction
@@ -962,7 +965,7 @@ def main():
             latents_regular, architect.vae, architect.image_processor,
             sprinter, clip_model, clip_processor,
             final_target_clip, eval_prompt=args.sprinter_eval_prompt,
-            n_eval=FINAL_MMD_N, device=device,
+            n_eval=FINAL_MMD_N, device=device, controlnet_scale=args.controlnet_scale,
         )
 
     print(f"Computing final MMD (MLGD-F, n={FINAL_MMD_N})...", flush=True)
@@ -970,7 +973,7 @@ def main():
         latents, architect.vae, architect.image_processor,
         sprinter, clip_model, clip_processor,
         final_target_clip, eval_prompt=args.sprinter_eval_prompt,
-        n_eval=FINAL_MMD_N, device=device,
+        n_eval=FINAL_MMD_N, device=device, controlnet_scale=args.controlnet_scale,
     )
 
     print(f"MLGD-F MMD  : {mlgd_f_mmd:.6f}",  flush=True)

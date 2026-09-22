@@ -14,9 +14,9 @@
 # noise -- see Optimization.optimize_LGD). Submit once per dimension:
 #
 #   export REPO_ROOT=... ENV_PATH=...
-#   EXPERIMENT=2D_cond_1D  sbatch --job-name=exp-2d  run_exp_cond_1d.sh
-#   EXPERIMENT=5D_cond_1D  sbatch --job-name=exp-5d  run_exp_cond_1d.sh
-#   EXPERIMENT=10D_cond_1D sbatch --job-name=exp-10d run_exp_cond_1d.sh
+#   EXPERIMENT=2D_cond_1D  sbatch --job-name=exp-2d  run_notebook_exp_cond_1d.sh
+#   EXPERIMENT=5D_cond_1D  sbatch --job-name=exp-5d  run_notebook_exp_cond_1d.sh
+#   EXPERIMENT=10D_cond_1D sbatch --job-name=exp-10d run_notebook_exp_cond_1d.sh
 #
 # FORCE_RETRAIN defaults to true here: each notebook's Config cell is tagged
 # "parameters", so this script overrides it via `papermill -p` regardless of

@@ -1,6 +1,6 @@
 `# MLGD-F
 
-**Marginal-distribution-guided Diffusion via Flow** — steers a diffusion model toward
+**Matching-Loss Guided Diffusion with a Fast inner sampler** — steers a diffusion model toward
 a target distribution using MMD loss in CLIP embedding space.
 
 ---

@@ -56,6 +56,15 @@ def load_or_generate_gmm_params(cfg, params_dir, results_dir, experiment_name, g
         mu_list = [mu.float() for mu in mu_list]
         Sigma_list = [cov.float() for cov in Sigma_list]
         alpha = alpha.float()
+        # mog_means/mog_variances/weights (the target-side conditional mixture at x_star)
+        # come from dist_utils.get_param_mog_with_target in float64 for the 5D/10D branch
+        # below -- cast here too so a cached load matches a fresh generate, and so
+        # mog_samples (built from these) share a dtype with target_samples (float32,
+        # from the float32 models) instead of crashing in compute_witness_scores/
+        # estimate_bandwidth with "expected m1 and m2 to have the same dtype".
+        mog_means = mog_means.float()
+        mog_variances = mog_variances.float()
+        weights = weights.float()
         print(f"[GMM] Loaded existing parameters for {experiment_name}")
         return mu_list, Sigma_list, alpha, mog_means, mog_variances, weights, x_star
 
@@ -95,6 +104,10 @@ def load_or_generate_gmm_params(cfg, params_dir, results_dir, experiment_name, g
         mu_list = [mu.float() for mu in mu_list]
         Sigma_list = [cov.float() for cov in Sigma_list]
         alpha = alpha.float()
+        # see the matching cast in the cached-load branch above for why this is needed
+        mog_means = mog_means.float()
+        mog_variances = mog_variances.float()
+        weights = weights.float()
 
     experiment_utils.save_gmm_params(
         mu_list, Sigma_list, alpha, mog_means, mog_variances, weights, x_star,

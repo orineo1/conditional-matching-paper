@@ -60,11 +60,18 @@ def _resolve_lora_path(lora_path: str) -> str:
     return local_path
 
 
+# Single source of truth for the default ControlNet, so eval (notebooks calling
+# load_models() with no override) and generation (run_mlgd_f.py's --controlnet_model_id
+# default) can't silently drift onto different weights -- both import this constant
+# instead of each hardcoding their own copy of the model id string.
+DEFAULT_CONTROLNET_MODEL_ID = "xinsir/controlnet-scribble-sdxl-1.0"
+
+
 def load_models(
     device,
     architect_lora_path=None,
     architect_unet_path=None,
-    controlnet_model_id="xinsir/controlnet-scribble-sdxl-1.0",
+    controlnet_model_id=DEFAULT_CONTROLNET_MODEL_ID,
     sprinter_model_id="stabilityai/sdxl-turbo",
     architect_model_id="stabilityai/stable-diffusion-xl-base-1.0",
 ):

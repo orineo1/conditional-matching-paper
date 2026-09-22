@@ -50,7 +50,7 @@ from generation import (
 )
 from image_utils import build_base_image, latent_to_pil, sobel_proxy
 from metrics import compute_mmd, compute_swd, evaluate_distribution_mmd
-from models import load_models, setup_gradient_checkpointing
+from models import DEFAULT_CONTROLNET_MODEL_ID, load_models, setup_gradient_checkpointing
 from visualization import plot_row, visualize_step
 
 LOSS_FNS = {"mmd": compute_mmd, "swd": compute_swd}
@@ -142,6 +142,13 @@ def parse_args():
                         "(recommended unless backsel_k is tiny relative to "
                         "num_variations) -- removes the 'same outlier picked "
                         "repeatedly' failure mode entirely.")
+    p.add_argument("--uniform_normalize_by_nsel", action="store_true",
+                   help="With --backsel_rule uniform, rescale the gradient by "
+                        "num_variations/backsel_k (Horvitz-Thompson-style), so its "
+                        "magnitude is comparable across different backsel_k choices "
+                        "instead of scaling ~linearly with backsel_k/num_variations. "
+                        "No-op for backsel_rule='witness' or backsel_k=None. "
+                        "Default: off (original, unnormalized behavior).")
 
     # Prompts
     p.add_argument("--prompt",          type=str, default="")
@@ -162,7 +169,13 @@ def parse_args():
 
     # Models
     p.add_argument("--controlnet_model_id", type=str,
-                   default="xinsir/controlnet-scribble-sdxl-1.0")
+                   default=DEFAULT_CONTROLNET_MODEL_ID,
+                   help="Must match the ControlNet eval uses (models.load_models()'s "
+                        "own default, e.g. eval_scribbl_interpolation*.ipynb / "
+                        "eval_all_experiments.ipynb calling load_models(device) with "
+                        "no override) -- both default to the same "
+                        "models.DEFAULT_CONTROLNET_MODEL_ID, so they can't silently "
+                        "drift apart unless this flag is explicitly overridden.")
     p.add_argument("--sprinter_model_id",   type=str,
                    default="stabilityai/sdxl-turbo")
     p.add_argument("--architect_model_id",  type=str,
@@ -556,6 +569,7 @@ def main():
             "num_variations":               args.num_variations,
             "backsel_k":                    args.backsel_k,
             "backsel_rule":                 args.backsel_rule,
+            "uniform_normalize_by_nsel":    args.uniform_normalize_by_nsel,
             "witness_floor":                args.witness_floor,
             "witness_temperature":          args.witness_temperature,
             "witness_replacement":          args.witness_replacement,
@@ -781,6 +795,7 @@ def main():
             witness_replacement=args.witness_replacement,
             witness_bandwidth_scale=args.bandwidth_scale,
             witness_kernel_alpha=args.kernel_alpha,
+            uniform_normalize_by_nsel=args.uniform_normalize_by_nsel,
         )
 
         grad_norm = grad.norm().item()

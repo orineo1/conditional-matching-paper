@@ -293,6 +293,7 @@ def run_dps_step_clip(
     witness_bandwidth_scale=1.0,
     witness_kernel_alpha=1.0,
     witness_replacement=False,
+    uniform_normalize_by_nsel=False,
 ):
     """
     CLIP-space MMD/SWD DPS step — core of the MLGD-F algorithm.
@@ -338,6 +339,14 @@ def run_dps_step_clip(
                                times (same checkpoint node, recomputed once, autograd sums
                                its gradient across uses), so it can carry >1x weight but is
                                more prone to concentrating on a few samples.
+        uniform_normalize_by_nsel:
+                               Horvitz-Thompson-style rescaling for backsel_rule='uniform'
+                               only: multiply the raw gradient by n_new/n_grad (the inverse
+                               inclusion probability) so its magnitude is comparable across
+                               different backsel_k choices instead of scaling ~linearly with
+                               n_grad/n_new (loss_fn averages, not sums). No-op when
+                               backsel_rule != 'uniform' or n_grad == n_new. Default: off
+                               (original, unnormalized behavior).
 
     Returns:
         (grad, loss_scaled, zeta_i, loss_norm, vl_clip_flat)
@@ -451,6 +460,9 @@ def run_dps_step_clip(
     grad = torch.autograd.grad(
         loss_scaled, latents_step, retain_graph=False, create_graph=False
     )[0]
+
+    if uniform_normalize_by_nsel and backsel_rule == "uniform" and n_grad < n_new:
+        grad = grad / max(n_grad / n_new, 1e-12)
 
     vl_clip_flat = variation_clip_embs.detach().cpu().numpy()
     del variation_clip_list, variation_clip_embs

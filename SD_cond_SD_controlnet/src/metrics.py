@@ -113,8 +113,12 @@ def compute_mmd(x, y, bandwidth=None, bandwidth_scale=1.0, kernel_alpha=1.0):
     xy_term = 2 * K_xy.sum() / (n * m)
 
     mmd_sq = xx_term - xy_term + yy_term
-    # abs() before sqrt handles slightly-negative unbiased estimates
-    return torch.sqrt(mmd_sq.abs() + 1e-8)
+    # abs() before sqrt handles slightly-negative unbiased estimates. No +eps floor,
+    # matching simulations/src/LossFunctions.py's compute_mmd exactly -- torch.sqrt
+    # has an infinite/undefined gradient at exactly 0, so a batch landing exactly on
+    # mmd_sq == 0 would produce a nan/inf gradient there; rare in practice for
+    # continuous embeddings.
+    return torch.sqrt(mmd_sq.abs())
 
 
 def compute_swd(

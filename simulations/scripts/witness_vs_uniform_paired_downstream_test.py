@@ -134,19 +134,22 @@ def paired_stats(witness_vals, uniform_vals):
     }
 
 
-def rank_indices_for_top10(records, rank_by):
-    losses_w = np.array([r["witness"]["final_loss"] for r in records])
-    losses_u = np.array([r["uniform"]["final_loss"] for r in records])
+def rank_indices_for_top10(records, rank_by, metric="final_loss"):
+    """metric selects WHICH per-restart quantity ranks the pairs (final_loss,
+    l2_gmm, or l2_x -- all "lower is better"); rank_by selects HOW the two
+    rules' values for that metric are combined into one per-restart score."""
+    vals_w = np.array([r["witness"][metric] for r in records])
+    vals_u = np.array([r["uniform"][metric] for r in records])
     if rank_by == "min":
-        score = np.minimum(losses_w, losses_u)
+        score = np.minimum(vals_w, vals_u)
     elif rank_by == "max":
-        score = np.maximum(losses_w, losses_u)
+        score = np.maximum(vals_w, vals_u)
     elif rank_by == "witness":
-        score = losses_w
+        score = vals_w
     elif rank_by == "uniform":
-        score = losses_u
+        score = vals_u
     elif rank_by == "mean":
-        score = (losses_w + losses_u) / 2.0
+        score = (vals_w + vals_u) / 2.0
     else:
         raise ValueError(f"unknown top10_rank_by {rank_by!r}")
     k = min(10, len(records))
@@ -176,16 +179,20 @@ def print_table(title, records, indices):
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--experiment", required=True, choices=list(EXPERIMENT_CONFIGS.keys()))
-    p.add_argument("--methods", nargs="+", choices=["LGD", "LGD-CM"], default=["LGD"])
+    p.add_argument("--methods", nargs="+", choices=["LGD", "LGD-CM"], default=["LGD-CM"])
     p.add_argument("--num_x_t", type=int, default=3)
     p.add_argument("--nsamples", type=int, default=250)
     p.add_argument("--k_frac", type=float, default=0.5,
                    help="backsel_k / nsamples, FIXED (not swept) -- one head-to-head comparison.")
     p.add_argument("--witness_floor", type=float, default=0.3)
     p.add_argument("--n_restarts", type=int, default=25, help="R, number of paired restarts (>=25 recommended).")
+    p.add_argument("--top10_metric", choices=["final_loss", "l2_gmm", "l2_x"], default="l2_gmm",
+                   help="WHICH per-restart quantity ranks the Top-10 subset (default: L2 distance to "
+                        "the target GMM).")
     p.add_argument("--top10_rank_by", choices=["min", "max", "mean", "witness", "uniform"], default="min",
-                   help="Which per-pair score ranks restarts for the Top-10 table (default: the pair's "
-                        "best-of-both final loss, i.e. restarts where guidance actually found a good mode).")
+                   help="HOW the two rules' --top10_metric values are combined into one per-restart "
+                        "score (default: the pair's best-of-both value, i.e. restarts where guidance "
+                        "actually found a good mode on at least one rule).")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--force_retrain", action="store_true")
     p.add_argument("--base_dir", default=None)
@@ -242,14 +249,17 @@ def main():
                   f"L2x W={witness_res['l2_x']:.6f} U={uniform_res['l2_x']:.6f}", flush=True)
 
         all_idx = np.arange(len(records))
-        top10_idx = rank_indices_for_top10(records, args.top10_rank_by)
+        top10_idx = rank_indices_for_top10(records, args.top10_rank_by, metric=args.top10_metric)
 
         table_all = print_table(f"{method}: All {len(records)}", records, all_idx)
-        table_top10 = print_table(f"{method}: Top-10 (ranked by {args.top10_rank_by})", records, top10_idx)
+        table_top10 = print_table(
+            f"{method}: Top-10 (ranked by {args.top10_rank_by} of {args.top10_metric})", records, top10_idx
+        )
 
         all_out[method] = {
             "backsel_k": backsel_k, "nsamples": args.nsamples, "k_frac": args.k_frac,
             "n_restarts": args.n_restarts, "top10_rank_by": args.top10_rank_by,
+            "top10_metric": args.top10_metric,
             "records": records,
             "table_all": table_all,
             "table_top10": table_top10,

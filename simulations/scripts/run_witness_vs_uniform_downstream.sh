@@ -31,7 +31,7 @@
 # ══════════════════════════════════════════════════════════════════════════════
 
 EXPERIMENT="${EXPERIMENT:-5D_cond_1D}"          # 2D_cond_1D | 5D_cond_1D | 10D_cond_1D
-METHODS="${METHODS:-LGD}"                       # any of: LGD LGD-CM
+METHODS="${METHODS:-LGD-CM}"                    # any of: LGD LGD-CM
 NUM_X_T="${NUM_X_T:-3}"
 NSAMPLES="${NSAMPLES:-250}"
 K_FRAC="${K_FRAC:-0.5}"                         # FIXED nsel/ncond -- not swept, per the task spec

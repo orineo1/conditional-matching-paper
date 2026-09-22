@@ -27,7 +27,7 @@
 # adding to it, and this script's already-exported ENV_PATH/REPO_ROOT would be lost.)
 
 EXPERIMENT="${EXPERIMENT:-5D_cond_1D}"          # 2D_cond_1D | 5D_cond_1D | 10D_cond_1D
-METHODS="${METHODS:-LGD}"                       # any of: LGD LGD-CM
+METHODS="${METHODS:-LGD-CM}"                    # any of: LGD LGD-CM
 STATE_SEEDS="${STATE_SEEDS:-1 2 3}"             # trajectory seeds to capture states from (2-3 recommended)
 STEP_FRACS="${STEP_FRACS:-0.1 0.5 0.9}"         # early/mid/late positions along the denoising trajectory
                                                  # (0.0=earliest/noisiest, 1.0=latest/cleanest)

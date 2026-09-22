@@ -158,7 +158,7 @@ def stats_vs_ref(hats, ref):
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--experiment", required=True, choices=list(EXPERIMENT_CONFIGS.keys()))
-    p.add_argument("--methods", nargs="+", choices=["LGD", "LGD-CM"], default=["LGD"])
+    p.add_argument("--methods", nargs="+", choices=["LGD", "LGD-CM"], default=["LGD-CM"])
     p.add_argument("--state_seeds", type=int, nargs="+", default=[1, 2, 3])
     p.add_argument("--step_fracs", type=float, nargs="+", default=[0.1, 0.5, 0.9])
     p.add_argument("--nsamples", type=int, default=250)

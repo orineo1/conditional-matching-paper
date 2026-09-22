@@ -3,16 +3,22 @@ from torch import nn
 
 #### MMD Loss #####
 #
-# Identical estimator to SD_cond_SD_controlnet/src/metrics.py's compute_mmd
-# (single Gaussian RBF kernel, detached median-heuristic bandwidth, unbiased
-# MMD^2_U U-statistic (eq:mmd-ustat-def in the theory appendix), reported as
-# sqrt(|U| + eps)) -- one estimator everywhere, per review: report the root
-# of the U-statistic rather than the bare squared value. Previously this
-# module used a 5-bandwidth kernel mixture, a mean-distance bandwidth
-# computed WITH autograd on (gradient leaked into the loss through sigma,
-# not just through the samples), and a V-statistic (diagonal included,
-# biased) reported without a square root -- none of which matched SD or the
-# theory appendix's U-statistic.
+# Same kernel/bandwidth/U-statistic machinery as
+# SD_cond_SD_controlnet/src/metrics.py's compute_mmd (single Gaussian RBF
+# kernel, detached median-heuristic bandwidth, unbiased MMD^2_U U-statistic,
+# eq:mmd-ustat-def in the theory appendix), reported as sqrt(|U|) here --
+# one estimator everywhere, per review: report the root of the U-statistic
+# rather than the bare squared value. Differs from SD's compute_mmd only in
+# dropping the "+ eps" numerical floor before the sqrt (SD keeps it). Since
+# torch.sqrt has an infinite/undefined gradient at exactly 0, dropping eps
+# means a training step whose batch happens to land on mmd_sq == 0 exactly
+# will produce a nan/inf gradient there -- rare for continuous samples in
+# practice, but a real difference from SD's numerically-guarded version.
+# Previously this module used a 5-bandwidth kernel mixture, a mean-distance
+# bandwidth computed WITH autograd on (gradient leaked into the loss through
+# sigma, not just through the samples), and a V-statistic (diagonal
+# included, biased) reported without a square root -- none of which matched
+# SD or the theory appendix's U-statistic.
 
 
 def rbf_kernel(a, b, bw, alpha=1.0):
@@ -43,9 +49,10 @@ def estimate_bandwidth(x, y, bandwidth_scale=1.0):
 
 def compute_mmd(x, y, bandwidth=None, bandwidth_scale=1.0, kernel_alpha=1.0):
     """
-    Unbiased Maximum Mean Discrepancy with a generalised RBF kernel -- identical
-    estimator to SD_cond_SD_controlnet/src/metrics.py's compute_mmd. Computes
-    the theory appendix's MMD^2_U U-statistic (eq:mmd-ustat-def):
+    Unbiased Maximum Mean Discrepancy with a generalised RBF kernel -- same
+    kernel/bandwidth/U-statistic as SD_cond_SD_controlnet/src/metrics.py's
+    compute_mmd. Computes the theory appendix's MMD^2_U U-statistic
+    (eq:mmd-ustat-def):
 
         MMD^2_U(x,y) = 1/(n(n-1)) sum_{i!=i'} k(x_i,x_i')
                      - 2/(nm) sum_{i,j} k(x_i,y_j)
@@ -55,7 +62,9 @@ def compute_mmd(x, y, bandwidth=None, bandwidth_scale=1.0, kernel_alpha=1.0):
     per review, matching SD's convention) rather than the bare squared
     value. abs() before the sqrt handles the unbiased estimator's
     occasional slightly-negative values near convergence -- a real
-    numerical artifact of unbiasedness, not a bug.
+    numerical artifact of unbiasedness, not a bug. Unlike SD's compute_mmd,
+    no "+ eps" floor is added before the sqrt here; see the module-level
+    comment above for the resulting gradient caveat at mmd_sq == 0.
 
     Args:
         x:               [n, d] generated samples (grad flows through).
@@ -92,7 +101,7 @@ def compute_mmd(x, y, bandwidth=None, bandwidth_scale=1.0, kernel_alpha=1.0):
 
     mmd_sq = xx_term - xy_term + yy_term
     # abs() before sqrt handles slightly-negative unbiased estimates
-    return torch.sqrt(mmd_sq.abs() + 1e-8)
+    return torch.sqrt(mmd_sq.abs())
 
 
 class RBF(nn.Module):

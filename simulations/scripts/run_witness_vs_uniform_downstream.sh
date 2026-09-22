@@ -36,6 +36,7 @@ NUM_X_T="${NUM_X_T:-3}"
 NSAMPLES="${NSAMPLES:-250}"
 K_FRAC="${K_FRAC:-0.5}"                         # FIXED nsel/ncond -- not swept, per the task spec
 WITNESS_FLOOR="${WITNESS_FLOOR:-0.3}"
+WITNESS_TEMPERATURE="${WITNESS_TEMPERATURE:-1.0}"  # <1 sharpens toward high-witness samples, >1 flattens
 N_RESTARTS="${N_RESTARTS:-25}"                  # R, paired restarts (>=25 recommended)
 TOP10_RANK_BY="${TOP10_RANK_BY:-min}"           # min | max | mean | witness | uniform
 SEED="${SEED:-42}"
@@ -90,6 +91,7 @@ CMD="python witness_vs_uniform_paired_downstream_test.py \
     --nsamples            $NSAMPLES \
     --k_frac               $K_FRAC \
     --witness_floor          $WITNESS_FLOOR \
+    --witness_temperature      $WITNESS_TEMPERATURE \
     --n_restarts               $N_RESTARTS \
     --top10_rank_by              $TOP10_RANK_BY \
     --seed                        $SEED"

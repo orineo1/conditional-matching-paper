@@ -34,6 +34,7 @@ STEP_FRACS="${STEP_FRACS:-0.1 0.5 0.9}"         # early/mid/late positions along
 NSAMPLES="${NSAMPLES:-250}"
 K_FRAC="${K_FRAC:-0.2}"                         # backsel_k / nsamples, held fixed for this diagnostic
 WITNESS_FLOOR="${WITNESS_FLOOR:-0.3}"
+WITNESS_TEMPERATURE="${WITNESS_TEMPERATURE:-1.0}"  # <1 sharpens toward high-witness samples, >1 flattens
 N_REDRAWS="${N_REDRAWS:-200}"                   # independent redraws per state per rule
 GRAD_REF_N="${GRAD_REF_N:-2000}"                # sample size for the TRUE/population reference gradient
 SEED="${SEED:-42}"
@@ -90,6 +91,7 @@ CMD="python backsel_witness_bias_variance_test.py \
     --nsamples            $NSAMPLES \
     --k_frac               $K_FRAC \
     --witness_floor          $WITNESS_FLOOR \
+    --witness_temperature      $WITNESS_TEMPERATURE \
     --n_redraws               $N_REDRAWS \
     --grad_ref_n               $GRAD_REF_N \
     --seed                      $SEED"

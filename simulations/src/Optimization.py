@@ -128,6 +128,9 @@ def optimize_LGD(model_uncond, model_cond, mog_means, mog_variances, weights, mu
                                          # through for the guidance loss (None = all)
                  backsel_rule="uniform", # 'uniform' | 'witness' (see witness_utils.py)
                  witness_floor=0.3,      # defensive-mixture floor for backsel_rule='witness'
+                 witness_temperature=1.0,  # sharpens (T<1) or flattens (T>1) the witness selection
+                                           # distribution toward |scores|^(1/T); T=1 (default) is the
+                                           # original plain-|scores| weighting (see select_backsel_mask)
                  backsel_replacement=False,  # sample backsel_k indices with/without replacement
                  backsel_generator=None,     # optional torch.Generator for reproducible selection
                  normalize_by_k_frac=False,  # rescale the applied gradient by 1/k_frac so its
@@ -228,12 +231,14 @@ def optimize_LGD(model_uncond, model_cond, mog_means, mog_variances, weights, mu
                 if backsel_ht_rescale:
                     target_samples, step_backsel_info = apply_backsel_ht(
                         target_samples, mog_samples, backsel_k, rule=backsel_rule,
-                        witness_floor=witness_floor, generator=backsel_generator,
+                        witness_floor=witness_floor, witness_temperature=witness_temperature,
+                        generator=backsel_generator,
                     )
                 else:
                     target_samples, step_backsel_info = apply_backsel(
                         target_samples, mog_samples, backsel_k, rule=backsel_rule,
-                        witness_floor=witness_floor, generator=backsel_generator,
+                        witness_floor=witness_floor, witness_temperature=witness_temperature,
+                        generator=backsel_generator,
                         replacement=backsel_replacement,
                     )
 

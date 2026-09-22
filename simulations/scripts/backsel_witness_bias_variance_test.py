@@ -100,7 +100,8 @@ def rescaled_batch(samples, mask, weights):
 
 
 def unbiased_gradient(x0_sample, model_cond, CM, mog_means, mog_variances, weights_gmm,
-                       nsamples, backsel_k, rule, witness_floor, device, mmd_loss, generator):
+                       nsamples, backsel_k, rule, witness_floor, witness_temperature,
+                       device, mmd_loss, generator):
     """One redraw: fresh target_samples + mog_samples + selection, one
     backward pass, returns the RESCALED gradient d(loss)/d(x0_sample) --
     an unbiased estimator of the full-batch gradient for 'uniform'/'witness',
@@ -119,6 +120,7 @@ def unbiased_gradient(x0_sample, model_cond, CM, mog_means, mog_variances, weigh
         scores = compute_witness_scores(target_samples, mog_samples) if rule == "witness" else torch.zeros(n)
         mask, counts, probs = select_backsel_mask(
             scores, backsel_k, rule=rule, witness_floor=witness_floor,
+            witness_temperature=witness_temperature,
             generator=generator, replacement=(rule == "witness"),
         )
         mask = mask.to(device)
@@ -127,9 +129,14 @@ def unbiased_gradient(x0_sample, model_cond, CM, mog_means, mog_variances, weigh
             row_weight = torch.full((n,), n / backsel_k, dtype=torch.float32)
         else:  # witness, sampled WITH replacement: importance-sampling correction,
             # counts[i]>1 means row i was drawn more than once -- each draw
-            # contributes its own 1/(n*p_i) term, so weight by counts, not just mask.
+            # contributes its own 1/(k*p_i) term, so weight by counts, not just mask.
+            # NOTE: denominator is backsel_k (draws), NOT n (population) -- row i's
+            # EXPECTED draw count is k*p_i, so counts[i]/(k*p_i) is what makes
+            # E[row_weight]=1 (see witness_utils.apply_backsel_ht's docstring for the
+            # full derivation); a n*p_i denominator silently shrinks the gradient by
+            # a spurious k/n factor, which is what this script had before this fix.
             probs = probs.clamp_min(1e-12)
-            row_weight = counts.to(torch.float32) / (n * probs)
+            row_weight = counts.to(torch.float32) / (backsel_k * probs)
         batch = rescaled_batch(target_samples, mask, row_weight.to(device))
 
     loss = mmd_loss(batch, mog_samples)
@@ -164,6 +171,9 @@ def main():
     p.add_argument("--nsamples", type=int, default=250)
     p.add_argument("--k_frac", type=float, default=0.2, help="backsel_k / nsamples for both rules.")
     p.add_argument("--witness_floor", type=float, default=0.3)
+    p.add_argument("--witness_temperature", type=float, default=1.0,
+                   help="Sharpens (T<1) or flattens (T>1) witness selection toward "
+                        "|scores|^(1/T); T=1 (default) is the original plain-|scores| weighting.")
     p.add_argument("--n_redraws", type=int, default=200)
     p.add_argument("--grad_ref_n", type=int, default=2000, help="sample size for the TRUE/population reference gradient.")
     p.add_argument("--seed", type=int, default=42)
@@ -242,7 +252,8 @@ def main():
                     generator = torch.Generator().manual_seed(rng_seed * 100_000 + r)
                     g = unbiased_gradient(
                         x_fixed, cond_model, CM_flag, mog_means, mog_variances, weights,
-                        args.nsamples, backsel_k, rule, args.witness_floor, device, mmd_loss, generator,
+                        args.nsamples, backsel_k, rule, args.witness_floor, args.witness_temperature,
+                        device, mmd_loss, generator,
                     )
                     grads.append(g)
                 grads = np.stack(grads, axis=0)  # [n_redraws, dim], same flat shape as grad_true
@@ -273,6 +284,7 @@ def main():
             "k_frac": args.k_frac,
             "backsel_k": backsel_k,
             "witness_floor": args.witness_floor,
+            "witness_temperature": args.witness_temperature,
             "n_redraws": args.n_redraws,
             "grad_ref_n": args.grad_ref_n,
             "state_seeds": args.state_seeds,

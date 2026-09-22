@@ -63,7 +63,7 @@ from gmm_experiment_setup import EXPERIMENT_CONFIGS, load_or_generate_gmm_params
 METRICS = [("final_loss", "MMD"), ("l2_gmm", "L2 GMM"), ("l2_x", "L2 to x*")]
 
 
-def run_one(cond_model, CM_flag, num_x_t, nsamples, backsel_k, rule, witness_floor,
+def run_one(cond_model, CM_flag, num_x_t, nsamples, backsel_k, rule, witness_floor, witness_temperature,
             run_seed, mu_list, Sigma_list, alpha, mog_means, mog_variances, weights,
             x_star, device, model_uncond):
     """One optimize_LGD call with the HT-exact rescaling wired in, plus this
@@ -83,6 +83,7 @@ def run_one(cond_model, CM_flag, num_x_t, nsamples, backsel_k, rule, witness_flo
         nsamples=nsamples, loss="MMD", device=device,
         num_x_t=num_x_t, CM=CM_flag,
         backsel_k=backsel_k, backsel_rule=rule, witness_floor=witness_floor,
+        witness_temperature=witness_temperature,
         backsel_generator=backsel_generator,
         backsel_ht_rescale=True, normalize_by_k_frac=False,
     )
@@ -185,6 +186,9 @@ def main():
     p.add_argument("--k_frac", type=float, default=0.5,
                    help="backsel_k / nsamples, FIXED (not swept) -- one head-to-head comparison.")
     p.add_argument("--witness_floor", type=float, default=0.3)
+    p.add_argument("--witness_temperature", type=float, default=1.0,
+                   help="Sharpens (T<1) or flattens (T>1) witness selection toward "
+                        "|scores|^(1/T); T=1 (default) is the original plain-|scores| weighting.")
     p.add_argument("--n_restarts", type=int, default=25, help="R, number of paired restarts (>=25 recommended).")
     p.add_argument("--top10_metric", choices=["final_loss", "l2_gmm", "l2_x"], default="l2_gmm",
                    help="WHICH per-restart quantity ranks the Top-10 subset (default: L2 distance to "
@@ -234,12 +238,12 @@ def main():
             run_seed = args.seed * 1000 + r  # one seed per restart, shared by both rules
             witness_res = run_one(
                 cond_model, CM_flag, args.num_x_t, args.nsamples, backsel_k, "witness",
-                args.witness_floor, run_seed, mu_list, Sigma_list, alpha,
+                args.witness_floor, args.witness_temperature, run_seed, mu_list, Sigma_list, alpha,
                 mog_means, mog_variances, weights, x_star, device, model_uncond,
             )
             uniform_res = run_one(
                 cond_model, CM_flag, args.num_x_t, args.nsamples, backsel_k, "uniform",
-                args.witness_floor, run_seed, mu_list, Sigma_list, alpha,
+                args.witness_floor, args.witness_temperature, run_seed, mu_list, Sigma_list, alpha,
                 mog_means, mog_variances, weights, x_star, device, model_uncond,
             )
             records.append({"restart": r, "seed": run_seed, "witness": witness_res, "uniform": uniform_res})
@@ -267,7 +271,8 @@ def main():
 
     out = {
         "experiment": args.experiment, "seed": args.seed,
-        "witness_floor": args.witness_floor, "results": all_out,
+        "witness_floor": args.witness_floor, "witness_temperature": args.witness_temperature,
+        "results": all_out,
     }
     out_path = os.path.join(
         results_dir,

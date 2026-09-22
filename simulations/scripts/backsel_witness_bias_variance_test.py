@@ -220,14 +220,17 @@ def main():
         state_results = []
         for si, state in enumerate(states):
             base_seed = args.seed * args.redraw_seed_offset + si
-            x0 = state["x0_sample"]
+            # flat (condition_on,) vector: compute_conditionals's indexing (and unbiased_gradient's
+            # view(1,-1).repeat below) both need this, not the (1, condition_on) batch shape
+            # capture_states produces.
+            x_fixed = state["x0_sample"].view(-1)
 
             target_ref_samples = generate_mog_samples_not_differentiable(
                 args.grad_ref_n, mog_means, mog_variances, weights
             ).to(device)
             grad_true, grad_true_norm = true_reference_gradient(
                 dist_utils, mmd_loss, mu_list, Sigma_list, alpha,
-                x0, target_ref_samples, args.grad_ref_n, device,
+                x_fixed, target_ref_samples, args.grad_ref_n, device,
             )
 
             entry = {"state_index": si, "state_seed": state["state_seed"], "t": state["t"], "rules": {}}
@@ -238,11 +241,11 @@ def main():
                     experiment_utils.set_run_seed(rng_seed, r)
                     generator = torch.Generator().manual_seed(rng_seed * 100_000 + r)
                     g = unbiased_gradient(
-                        x0, cond_model, CM_flag, mog_means, mog_variances, weights,
+                        x_fixed, cond_model, CM_flag, mog_means, mog_variances, weights,
                         args.nsamples, backsel_k, rule, args.witness_floor, device, mmd_loss, generator,
                     )
                     grads.append(g)
-                grads = np.stack(grads, axis=0)
+                grads = np.stack(grads, axis=0)  # [n_redraws, dim], same flat shape as grad_true
                 entry["rules"][rule] = {"grads": grads}
 
             grad_full = entry["rules"]["all"]["grads"].mean(axis=0)  # 'all' rule IS the full-batch gradient

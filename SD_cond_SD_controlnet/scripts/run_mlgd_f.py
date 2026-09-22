@@ -988,6 +988,9 @@ def main():
             photo.save(os.path.join(photo_dir, f"photo_{idx:03d}.png"))
 
     # ── 12. wandb final logs ────────────────────────────────────────────────
+    # Not uploading mlgd_f_eval_photos/regular_eval_photos (250 each, per the
+    # FINAL_MMD_N=250 evaluation above) to wandb -- too expensive to upload every
+    # run. They're still saved locally below (npy + individual PNGs in step 11).
     wandb.log({
         "final_mlgd_f_mmd":         mlgd_f_mmd,
         "final_regular_mmd":        regular_mmd,
@@ -995,8 +998,6 @@ def main():
         "mmd_relative_improvement": (regular_mmd - mlgd_f_mmd) / (regular_mmd + 1e-8),
         "final_scribble_mlgd_f":    wandb.Image(final_mlgd_f_pil),
         "final_scribble_regular":   wandb.Image(final_regular_pil),
-        "mlgd_f_eval_photos":       [wandb.Image(p) for p in mlgd_f_eval_photos],
-        "regular_eval_photos":      [wandb.Image(p) for p in regular_eval_photos],
         "scribble_heatmap":         wandb.Image(heatmap_path),
     })
     wandb.summary["final_mlgd_f_mmd"]  = mlgd_f_mmd

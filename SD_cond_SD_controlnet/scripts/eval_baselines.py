@@ -41,7 +41,6 @@ EXPERIMENT_CONFIGS = {
         sdedit_cfg       = 7.5,
         sdedit_prompt    = 'a face scribble sketch, mostly feminine features sometimes with masculine features',
         neutral_prompt   = 'a superrealistic professional photograph of',
-        controlnet_scale = 0.5,
         mode             = 'binary',
         groups = [
             dict(label='Man',   prompt='a superrealistic portrait photograph of a man, studio lighting',   frac=0.25),
@@ -58,7 +57,6 @@ EXPERIMENT_CONFIGS = {
         sdedit_cfg       = 7.5,
         sdedit_prompt    = 'a face scribble sketch of man or woman',
         neutral_prompt   = 'a superrealistic professional photograph of',
-        controlnet_scale = 0.5,
         mode             = 'binary',
         groups = [
             dict(label='Man',   prompt='a superrealistic portrait photograph of a man, studio lighting',   frac=0.5),
@@ -75,7 +73,6 @@ EXPERIMENT_CONFIGS = {
         sdedit_cfg       = 7.5,
         sdedit_prompt    = 'a face scribble sketch, with a range of feminine to masculine features',
         neutral_prompt   = 'a superrealistic professional photograph of',
-        controlnet_scale = 0.5,
         mode             = 'multiclass',
         groups = [
             dict(label='Woman',                  prompt='superrealistic portrait photograph of a woman, extremely feminine features, studio lighting',                                                               frac=0.25),
@@ -94,7 +91,6 @@ EXPERIMENT_CONFIGS = {
         sdedit_cfg       = 7.5,
         sdedit_prompt    = 'a face scribble sketch of a man between 40 and 79 years old',
         neutral_prompt   = 'a superrealistic professional photograph of',
-        controlnet_scale = 0.5,
         mode             = 'age',
         age_min          = 40,
         age_max          = 79,
@@ -376,11 +372,18 @@ def main():
     parser.add_argument('--wandb_project',  type=str, default='eval-baselines')
     parser.add_argument('--wandb_entity',   type=str, default='',
                         help='wandb entity/team (leave empty to use logged-in user)')
+    parser.add_argument('--controlnet_scale', type=float, default=0.5,
+                        help='ControlNet conditioning scale, used consistently everywhere '
+                             'in this script (target building, avg/avg_latent baselines, '
+                             'sanity checks, SDEdit search) -- must match whatever scale '
+                             'built the experiment\'s target distribution and the run_mlgd_f.py '
+                             'run being compared against.')
     args = parser.parse_args()
 
     repo_path = Path(args.repo_path).resolve()
 
-    cfg     = EXPERIMENT_CONFIGS[args.experiment]
+    cfg = dict(EXPERIMENT_CONFIGS[args.experiment])  # copy: don't mutate the module-level dict
+    cfg['controlnet_scale'] = args.controlnet_scale
     device  = 'cuda' if torch.cuda.is_available() else 'cpu'
     SEED    = cfg['seed']
     jid     = cfg['best_jid']
@@ -465,7 +468,11 @@ def main():
     first_imgs = gen_images(sprinter, first_cand, cfg['neutral_prompt'],
                             cfg['n_eval_search'], cfg['controlnet_scale'], seed=SEED)
     first_embs = clip_embed(first_imgs, clip_model, clip_processor, device)
-    first_mmd  = mmd_report(compute_mmd(first_embs, target_clip)).item()
+    # candidate_mmds holds the plain unbiased MMD^2_U (no sqrt, no eps) -- the same
+    # statistic used everywhere else in the algorithm -- since it drives the actual
+    # best-candidate selection and gets saved to baselines_meta.json/wandb; mmd_report
+    # (sqrt) is applied only at the console-print boundary, for a human-readable number.
+    first_mmd = compute_mmd(first_embs, target_clip).item()
     sec_per_candidate = time.time() - t0
 
     n_candidates = max(1, int(args.lgd_cm_minutes * 60 / sec_per_candidate))
@@ -512,7 +519,7 @@ def main():
     print('\nSearching SDEdit best...')
     candidate_mmds      = [first_mmd]
     candidate_scribbles = [first_cand]
-    tqdm.write(f'  [1/{n_candidates}] seed={SEED}  MMD={first_mmd:.5f}')
+    tqdm.write(f'  [1/{n_candidates}] seed={SEED}  MMD={mmd_report(first_mmd):.5f}')
     wandb.log({'candidate_mmd': first_mmd, 'candidate_idx': 1})
 
     for i in tqdm(range(1, n_candidates), desc='SDEdit candidates'):
@@ -525,15 +532,17 @@ def main():
         imgs = gen_images(sprinter, cand, cfg['neutral_prompt'],
                           cfg['n_eval_search'], cfg['controlnet_scale'], seed=SEED)
         embs = clip_embed(imgs, clip_model, clip_processor, device)
-        mmd  = mmd_report(compute_mmd(embs, target_clip)).item()
+        # Raw unbiased MMD^2_U again -- this is what drives best_idx selection and
+        # gets saved below, not a sqrt'd display value.
+        mmd = compute_mmd(embs, target_clip).item()
         candidate_mmds.append(mmd)
         candidate_scribbles.append(cand)
-        tqdm.write(f'  [{i+1}/{n_candidates}] seed={SEED+i}  MMD={mmd:.5f}')
+        tqdm.write(f'  [{i+1}/{n_candidates}] seed={SEED+i}  MMD={mmd_report(mmd):.5f}')
         wandb.log({'candidate_mmd': mmd, 'candidate_idx': i + 1})
 
     best_idx    = int(np.argmin(candidate_mmds))
     sdedit_best = candidate_scribbles[best_idx]
-    print(f'\nBest: seed={SEED + best_idx}  MMD={candidate_mmds[best_idx]:.5f}')
+    print(f'\nBest: seed={SEED + best_idx}  MMD={mmd_report(candidate_mmds[best_idx]):.5f}')
 
     # ── Save everything ──
     print('\nSaving outputs...')

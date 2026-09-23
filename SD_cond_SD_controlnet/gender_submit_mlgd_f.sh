@@ -37,6 +37,11 @@ CONTROLNET_SCALE="${CONTROLNET_SCALE:-0.5}"
 #   TARGET_PROMPTS='Man:a photo of a man:5|Woman:a photo of a woman:15' sbatch ...
 TARGET_PROMPTS="${TARGET_PROMPTS:-Man:a superrealistic portrait photograph of a man, studio lighting:10|Woman:a superrealistic portrait photograph of a woman, studio lighting:10}"
 IFS='|' read -r -a TARGET_PROMPTS_ARR <<< "$TARGET_PROMPTS"
+PARTICLE_FILTER="${PARTICLE_FILTER:-false}"  # true = P-MLGD-F (SMC particle filter) instead of single trajectory
+NUM_PARTICLES="${NUM_PARTICLES:-10}"
+BETA_MIN="${BETA_MIN:-0.0}"
+BETA_MAX="${BETA_MAX:-50.0}"
+RESAMPLE_SCHEME="${RESAMPLE_SCHEME:-systematic}"
 
 # ── 2. Caches (optional — redirect if your home quota is limited) ─────────────
 # export HF_HOME=/path/to/hf_cache
@@ -58,6 +63,10 @@ echo "    BASE_ZETA      : $BASE_ZETA"
 echo "    GUIDANCE_SCALE : $GUIDANCE_SCALE"
 echo "    CONTROLNET_SCALE : $CONTROLNET_SCALE"
 echo "    TARGET_PROMPTS : $TARGET_PROMPTS"
+echo "    PARTICLE_FILTER : $PARTICLE_FILTER"
+echo "    NUM_PARTICLES  : $NUM_PARTICLES"
+echo "    BETA_MIN/MAX   : $BETA_MIN/$BETA_MAX"
+echo "    RESAMPLE_SCHEME : $RESAMPLE_SCHEME"
 python -c "import torch; print(f'GPU: {torch.cuda.is_available()}')"
 echo "============================================"
 
@@ -105,6 +114,15 @@ CMD_ARGS=(
     --seed "$SEED"
 )
 [ "$UNIFORM_NORMALIZE_BY_NSEL" = "true" ] && CMD_ARGS+=(--uniform_normalize_by_nsel)
+if [ "$PARTICLE_FILTER" = "true" ]; then
+    CMD_ARGS+=(
+        --particle_filter
+        --num_particles "$NUM_PARTICLES"
+        --beta_min "$BETA_MIN"
+        --beta_max "$BETA_MAX"
+        --resample_scheme "$RESAMPLE_SCHEME"
+    )
+fi
 
 python scripts/run_mlgd_f.py "${CMD_ARGS[@]}"
 

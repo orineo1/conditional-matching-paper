@@ -63,6 +63,33 @@ LOSS_FNS = {"mmd": compute_mmd, "swd": compute_swd}
 
 
 # ---------------------------------------------------------------------------
+# Particle filter (P-MLGD-F) helper
+# ---------------------------------------------------------------------------
+
+def systematic_resample(weights, generator=None):
+    """
+    Standard systematic (a.k.a. stratified-systematic) resampling: N=len(weights)
+    equally-spaced strata with one shared random offset, giving lower-variance
+    index draws than plain multinomial resampling while remaining unbiased.
+
+    Args:
+        weights:   [N] tensor of normalized (sum to 1) particle weights.
+        generator: optional torch.Generator for reproducibility.
+
+    Returns:
+        [N] LongTensor of ancestor indices (with replacement; a high-weight
+        index typically appears multiple times, a low-weight one may not appear).
+    """
+    n = weights.shape[0]
+    u0 = torch.rand(1, generator=generator).item() / n
+    positions = u0 + torch.arange(n, dtype=torch.float64) / n
+    cumsum = torch.cumsum(weights.double(), dim=0)
+    cumsum[-1] = 1.0  # guard against floating-point drift leaving position 1 unmatched
+    idx = torch.searchsorted(cumsum, positions)
+    return idx.clamp(max=n - 1)
+
+
+# ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
 
@@ -112,6 +139,32 @@ def parse_args():
     p.add_argument("--adam_beta1", type=float, default=0.9)
     p.add_argument("--adam_beta2", type=float, default=0.999)
     p.add_argument("--adam_eps",   type=float, default=1e-8)
+
+    # Particle filter (P-MLGD-F): replaces the "R independent restarts, keep the
+    # best by final loss" protocol with a proper sequential Monte Carlo scheme --
+    # num_particles trajectories run in lockstep, reweighted each step toward the
+    # tilted target Q(x) ∝ P(x) exp(-beta * loss(x)), and resampled (systematic)
+    # whenever the effective sample size drops below half the particle count.
+    p.add_argument("--particle_filter", action="store_true",
+                   help="Run P-MLGD-F: num_particles trajectories in lockstep with "
+                        "SMC-style reweighting/resampling, instead of a single "
+                        "trajectory. Not compatible with --run_unguided.")
+    p.add_argument("--num_particles", type=int, default=10,
+                   help="Number of particles (only used with --particle_filter)")
+    p.add_argument("--beta_min", type=float, default=0.0,
+                   help="Annealed tilting strength at the first guidance step "
+                        "(only used with --particle_filter)")
+    p.add_argument("--beta_max", type=float, default=50.0,
+                   help="Annealed tilting strength at the last guidance step -- "
+                        "beta_t is linearly interpolated between beta_min and "
+                        "beta_max over the guidance trajectory (only used with "
+                        "--particle_filter). Needs empirical tuning: too small "
+                        "barely reweights particles, too large collapses onto one "
+                        "particle immediately.")
+    p.add_argument("--resample_scheme", type=str, default="systematic",
+                   choices=["systematic"],
+                   help="Resampling scheme used when ESS < num_particles/2 "
+                        "(only used with --particle_filter)")
 
     # Variations / eval
     p.add_argument("--num_variations", type=int, default=6)
@@ -526,6 +579,11 @@ def sample_target_embeddings(all_clip_embeddings, n, generator=None):
 
 def main():
     args   = parse_args()
+    if args.particle_filter and args.run_unguided:
+        raise ValueError("--particle_filter and --run_unguided are not supported "
+                          "together: the regular path is a single unguided "
+                          "trajectory, which doesn't have a natural particle-filter "
+                          "counterpart here.")
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Device: {device}", flush=True)
 
@@ -624,6 +682,11 @@ def main():
             "adam_beta1":                   args.adam_beta1,
             "adam_beta2":                   args.adam_beta2,
             "adam_eps":                     args.adam_eps,
+            "particle_filter":              args.particle_filter,
+            "num_particles":                args.num_particles if args.particle_filter else None,
+            "beta_min":                     args.beta_min if args.particle_filter else None,
+            "beta_max":                     args.beta_max if args.particle_filter else None,
+            "resample_scheme":              args.resample_scheme if args.particle_filter else None,
         },
     )
     print(f"✅ wandb run: {run.name}", flush=True)
@@ -686,6 +749,18 @@ def main():
     latents        = ((alpha ** 0.5) * scribble_latent + ((1 - alpha) ** 0.5) * noise).to(torch.float16)
     latents_regular = latents.detach().clone()
 
+    if args.particle_filter:
+        # Independently-noised particles from the same SDEdit scribble latent --
+        # the initial (unweighted) particle cloud. scribble_latent is [1,C,H,W]
+        # and broadcasts against the [B,C,H,W] particle noise below.
+        particle_noise = torch.randn(
+            args.num_particles, *scribble_latent.shape[1:],
+            device=device, dtype=scribble_latent.dtype,
+        )
+        latents = (
+            (alpha ** 0.5) * scribble_latent + ((1 - alpha) ** 0.5) * particle_noise
+        ).to(torch.float16)
+
     timesteps_to_run = timesteps[start_step:]
     print(f"✅ Ready. Starting from step {start_step}/{n_steps}  (t={t_start.item():.0f})", flush=True)
     print(f"   Running {len(timesteps_to_run)} MLGD-F steps...", flush=True)
@@ -701,7 +776,10 @@ def main():
     # are always tracked in fp32 and only the final update is cast back down.
     adam_m = torch.zeros_like(latents, dtype=torch.float32)
     adam_v = torch.zeros_like(latents, dtype=torch.float32)
-    adam_t = 0
+    # Per-particle step counters in particle-filter mode (a duplicated particle
+    # carries its ancestor's counter forward after resampling); a single shared
+    # counter otherwise.
+    adam_t = [0] * args.num_particles if args.particle_filter else 0
     target_clip_np = all_clip_embeddings.cpu().numpy()
     softmax_man_prompt   = target_groups[-1][1]   # last group (most masculine)
     softmax_woman_prompt = target_groups[0][1]    # first group (most feminine)
@@ -713,13 +791,17 @@ def main():
         loss_fn = LOSS_FNS[args.loss_fn]
 
     # ── Baseline visualisation (before any correction) ──────────────────────
+    # In particle-filter mode this only shows particle 0's baseline -- the full
+    # particle cloud's step-0 state is shown by the first per-step
+    # visualize_particle_step call inside the main loop instead.
     with torch.no_grad():
+        baseline_latents = latents[0:1].detach() if args.particle_filter else latents.detach()
         baseline_noise_pred = predict_noise_cfg(
-            architect.unet, architect.scheduler, latents.detach(),
+            architect.unet, architect.scheduler, baseline_latents,
             timesteps_to_run[0], cfg_encoder_states, added_cond_kwargs, args.guidance_scale,
         )
         baseline_pred_x0 = compute_pred_x0_direct(
-            architect.scheduler, baseline_noise_pred, timesteps_to_run[0], latents.detach(),
+            architect.scheduler, baseline_noise_pred, timesteps_to_run[0], baseline_latents,
         )
         baseline_px = architect.vae.decode(
             (baseline_pred_x0 / architect.vae.config.scaling_factor).to(architect.vae.dtype)
@@ -752,12 +834,12 @@ def main():
         sd_baseline = {
             "step": 0, "timestep": timesteps_to_run[0].item(),
             "mmd_loss": 0.0, "zeta_i": 0.0,
-            "latents_step_cpu":         latents.detach().cpu(),
+            "latents_step_cpu":         baseline_latents.cpu(),
             "pred_x0_cpu":              baseline_pred_x0.detach().cpu(),
             "variation_clip_flat":      baseline_clip_flat,
         }
         if args.run_unguided:
-            sd_baseline["latents_step_regular_cpu"] = latents.detach().cpu()
+            sd_baseline["latents_step_regular_cpu"] = baseline_latents.cpu()
             sd_baseline["pred_x0_regular_cpu"]       = baseline_pred_x0.detach().cpu()
 
     visualize_step(sd_baseline, architect, sprinter, target_clip_np,
@@ -772,6 +854,174 @@ def main():
         print(f"\n{'='*60}", flush=True)
         print(f"Step {i+1}/{len(timesteps_to_run)}  (t={t})", flush=True)
         print(f"{'='*60}", flush=True)
+
+        if args.particle_filter:
+            B = args.num_particles
+            particle_losses = torch.zeros(B)
+            new_latents = torch.empty_like(latents)
+
+            # Linear beta annealing over the guidance trajectory (common in SMC:
+            # start close to the untilted prior, sharpen the tilt toward the
+            # target as steps progress).
+            frac = i / max(len(timesteps_to_run) - 1, 1)
+            beta_t = args.beta_min + (args.beta_max - args.beta_min) * frac
+
+            def vae_decode_checkpoint(lat):
+                return architect.vae.decode(lat.to(architect.vae.dtype)).sample
+
+            for b in range(B):
+                latents_step_b = latents[b:b + 1].detach().requires_grad_(True)
+
+                noise_pred_b = predict_noise_cfg(
+                    architect.unet, architect.scheduler,
+                    latents_step_b, t, cfg_encoder_states, added_cond_kwargs, args.guidance_scale,
+                )
+                pred_x0_b = compute_pred_x0_direct(architect.scheduler, noise_pred_b, t, latents_step_b)
+                pred_x0_scaled_b = pred_x0_b / architect.vae.config.scaling_factor
+
+                pixel_x0_b = torch.utils.checkpoint.checkpoint(
+                    vae_decode_checkpoint, pred_x0_scaled_b, use_reentrant=False
+                )
+                pixel_x0_norm_b = torch.clamp((pixel_x0_b + 1.0) / 2.0, 0.0, 1.0)
+
+                grad_b, loss_b, zeta_b, loss_norm_b, vl_clip_flat_b = run_dps_step_clip(
+                    latents=latents_step_b,
+                    latents_step=latents_step_b,
+                    noise_pred=noise_pred_b,
+                    pixel_x0_norm=pixel_x0_norm_b,
+                    sprinter=sprinter,
+                    all_clip_embeddings=all_clip_embeddings,
+                    num_variations=args.num_variations,
+                    variation_batch_size=1,
+                    base_zeta_prime=args.base_zeta,
+                    clip_model=clip_model,
+                    clip_processor=clip_processor,
+                    vae=sprinter.vae,
+                    vae_scaling_factor=sprinter.vae.config.scaling_factor,
+                    variation_prompt=args.sprinter_variation_prompt,
+                    loss_fn=loss_fn,
+                    loss_scale=args.loss_scale,
+                    controlnet_scale=args.controlnet_scale,
+                    backsel_k=args.backsel_k,
+                    backsel_rule=args.backsel_rule,
+                    backsel_generator=backsel_generator,
+                    witness_floor=args.witness_floor,
+                    witness_temperature=args.witness_temperature,
+                    witness_replacement=args.witness_replacement,
+                    witness_bandwidth_scale=args.bandwidth_scale,
+                    witness_kernel_alpha=args.kernel_alpha,
+                    uniform_normalize_by_nsel=args.uniform_normalize_by_nsel,
+                )
+
+                grad_norm_b = grad_b.norm().item()
+                zeta_val_b  = zeta_b.item() if isinstance(zeta_b, torch.Tensor) else zeta_b
+                mmd_display_b = mmd_report(loss_b) if args.loss_fn == "mmd" else loss_b
+                particle_losses[b] = loss_norm_b.item()
+                print(f"  [P{b}] MMD={mmd_display_b.item():.6f}  ζi={zeta_val_b:.4f}  "
+                      f"∥∇∥={grad_norm_b:.6f}", flush=True)
+
+                if torch.isnan(grad_b).any():
+                    print(f"  ⚠️  NaN in gradient at step {i} particle {b} — skipping correction",
+                          flush=True)
+                    correction_b = torch.zeros_like(latents_step_b)
+                elif args.use_adam:
+                    grad_f32_b = grad_b.float()
+                    adam_t[b] += 1
+                    adam_m[b:b + 1].mul_(args.adam_beta1).add_(grad_f32_b, alpha=1 - args.adam_beta1)
+                    adam_v[b:b + 1].mul_(args.adam_beta2).addcmul_(
+                        grad_f32_b, grad_f32_b, value=1 - args.adam_beta2
+                    )
+                    m_hat = adam_m[b:b + 1] / (1 - args.adam_beta1 ** adam_t[b])
+                    v_hat = adam_v[b:b + 1] / (1 - args.adam_beta2 ** adam_t[b])
+                    adam_update_b = args.adam_lr * m_hat / (v_hat.sqrt() + args.adam_eps)
+                    correction_b = -adam_update_b.to(latents_step_b.dtype)
+                else:
+                    correction_b = -zeta_b * grad_b
+
+                correction_norm_b = correction_b.norm().item()
+
+                step_gradients.append({
+                    "step":            i + 1,
+                    "particle":        b,
+                    "timestep":        t.item(),
+                    "gradient_norm":   grad_norm_b,
+                    "mmd_loss":        mmd_display_b.item(),
+                    "zeta_i":          zeta_val_b,
+                    "loss_norm":       loss_norm_b.item(),
+                    "correction_norm": correction_norm_b,
+                })
+
+                wandb.log({
+                    f"particle_{b}/mmd_loss":        mmd_display_b.item(),
+                    f"particle_{b}/gradient_norm":   grad_norm_b,
+                    f"particle_{b}/zeta":            zeta_val_b,
+                    f"particle_{b}/correction_norm": correction_norm_b,
+                }, commit=False)
+
+                with torch.no_grad():
+                    sd_b = {
+                        "step":                i + 1,
+                        "timestep":            t.item(),
+                        "mmd_loss":            mmd_display_b.item(),
+                        "zeta_i":              zeta_val_b,
+                        "latents_step_cpu":    latents_step_b.detach().cpu(),
+                        "pred_x0_cpu":         pred_x0_b.detach().cpu(),
+                        "variation_clip_flat": vl_clip_flat_b,
+                    }
+
+                # One separate figure (with its own PCA plot vs. the shared
+                # target) per particle -- not one figure shared across all B.
+                visualize_step(
+                    sd_b, architect, sprinter, target_clip_np,
+                    num_cond=5, save_path=os.path.join(steps_dir, f"step_{i:03d}_particle_{b}.png"),
+                    pca_fixed=pca_fixed, group_names=group_names, group_sizes=group_sizes,
+                    controlnet_scale=args.controlnet_scale,
+                    wandb_key=f"particle_{b}/step_visualization", commit=False,
+                )
+
+                new_latents[b:b + 1] = denoise_step(
+                    architect.scheduler, noise_pred_b, t, latents_step_b, correction=correction_b
+                )
+
+                del grad_b, loss_b, mmd_display_b, loss_norm_b, zeta_b, correction_b
+                del pixel_x0_b, pixel_x0_norm_b, pred_x0_b, noise_pred_b, latents_step_b
+                gc.collect(); torch.cuda.empty_cache()
+
+            # ── SMC reweighting + adaptive (systematic) resampling ───────────
+            # Tilted target: Q(x) ∝ P(x) * exp(-beta_t * loss(x)) -- low-loss
+            # particles get upweighted. Resample only when ESS < B/2, the
+            # standard adaptive trigger, to avoid resampling (and its added
+            # variance) every single step.
+            log_w = -beta_t * particle_losses
+            log_w = log_w - log_w.max()
+            w = torch.exp(log_w)
+            w = w / w.sum()
+            ess = 1.0 / (w ** 2).sum().item()
+
+            resampled_idx = None
+            if ess < B / 2:
+                idx = systematic_resample(w, generator=backsel_generator)
+                new_latents = new_latents[idx].clone()
+                if args.use_adam:
+                    adam_m = adam_m[idx].clone()
+                    adam_v = adam_v[idx].clone()
+                    adam_t = [adam_t[j] for j in idx.tolist()]
+                resampled_idx = idx.tolist()
+                print(f"  [PF] Resampled at step {i+1}: ESS={ess:.2f} < {B/2:.1f}  "
+                      f"idx={resampled_idx}", flush=True)
+            else:
+                print(f"  [PF] No resample at step {i+1}: ESS={ess:.2f} >= {B/2:.1f}", flush=True)
+
+            wandb.log({
+                "pf/beta_t":     beta_t,
+                "pf/ess":        ess,
+                "pf/mean_loss":  particle_losses.mean().item(),
+                "pf/min_loss":   particle_losses.min().item(),
+                "pf/resampled":  int(resampled_idx is not None),
+            }, commit=True)
+
+            latents = new_latents
+            continue
 
         latents_step = latents.detach().requires_grad_(True)
 
@@ -944,9 +1194,22 @@ def main():
         del pixel_x0, pixel_x0_norm, pred_x0
         gc.collect(); torch.cuda.empty_cache()
 
-    del latents_step, noise_pred
-    torch.cuda.empty_cache()
-    print(f"\n✅ MLGD-F complete! {len(step_vis_data)} steps stored.", flush=True)
+    final_particle_losses = None
+    if args.particle_filter:
+        # `latents` still holds all B final particles here. Reduce to a single
+        # "best" particle (lowest last-step training loss) for the rest of the
+        # pipeline below, which is written for a single trajectory -- but keep
+        # every particle's final scribble/loss around too, saved separately.
+        final_particle_losses = particle_losses.clone()
+        best_particle_idx = int(torch.argmin(final_particle_losses))
+        print(f"\n✅ P-MLGD-F complete! Best particle: {best_particle_idx} "
+              f"(loss={final_particle_losses[best_particle_idx].item():.6f})", flush=True)
+        all_particle_latents = latents.clone()
+        latents = latents[best_particle_idx:best_particle_idx + 1].clone()
+    else:
+        del latents_step, noise_pred
+        torch.cuda.empty_cache()
+        print(f"\n✅ MLGD-F complete! {len(step_vis_data)} steps stored.", flush=True)
 
     # ── 10. Final MMD evaluation ────────────────────────────────────────────
     # Uses a larger, fixed sample size (FINAL_MMD_N=250 on both sides) than the
@@ -992,6 +1255,25 @@ def main():
     with torch.no_grad():
         final_mlgd_f_pil = latent_to_pil(latents, architect.vae, architect.image_processor)
     final_mlgd_f_pil.save(os.path.join(args.output_dir, "final_scribble_mlgd_f.png"))
+
+    if args.particle_filter:
+        # Every particle's final scribble + loss, not just the best one picked
+        # above for the single-trajectory pipeline below.
+        particles_dir = os.path.join(args.output_dir, "particles")
+        os.makedirs(particles_dir, exist_ok=True)
+        with torch.no_grad():
+            for b in range(all_particle_latents.shape[0]):
+                pil_b = latent_to_pil(
+                    all_particle_latents[b:b + 1], architect.vae, architect.image_processor
+                )
+                pil_b.save(os.path.join(particles_dir, f"final_scribble_particle_{b}.png"))
+        with open(os.path.join(particles_dir, "final_losses.json"), "w") as f:
+            json.dump({
+                "final_particle_losses": final_particle_losses.tolist(),
+                "best_particle_idx":     best_particle_idx,
+            }, f, indent=2)
+        print(f"✅ All {all_particle_latents.shape[0]} final particle scribbles + "
+              f"losses saved to {particles_dir}/", flush=True)
 
     final_regular_pil = None
     if args.run_unguided:

@@ -38,6 +38,11 @@ AGE_STEP="${AGE_STEP:-1}"
 N_PER_AGE="${N_PER_AGE:-0}"
 AGE_GENDER="${AGE_GENDER:-man}"
 AGE_SOURCE="${AGE_SOURCE:-mid}"  # min|mid|max -- which age's portrait the init scribble comes from
+PARTICLE_FILTER="${PARTICLE_FILTER:-false}"  # true = P-MLGD-F (SMC particle filter) instead of single trajectory
+NUM_PARTICLES="${NUM_PARTICLES:-10}"
+BETA_MIN="${BETA_MIN:-0.0}"
+BETA_MAX="${BETA_MAX:-50.0}"
+RESAMPLE_SCHEME="${RESAMPLE_SCHEME:-systematic}"
 
 # ── 2. Caches — redirect to lab storage to avoid home quota issues ────────────
 # Uncomment and set LAB_ROOT to a writable directory on your cluster:
@@ -65,6 +70,10 @@ echo "    AGE_MIN/MAX/STEP : $AGE_MIN/$AGE_MAX/$AGE_STEP"
 echo "    N_PER_AGE      : $N_PER_AGE"
 echo "    AGE_GENDER     : $AGE_GENDER"
 echo "    AGE_SOURCE     : $AGE_SOURCE"
+echo "    PARTICLE_FILTER : $PARTICLE_FILTER"
+echo "    NUM_PARTICLES  : $NUM_PARTICLES"
+echo "    BETA_MIN/MAX   : $BETA_MIN/$BETA_MAX"
+echo "    RESAMPLE_SCHEME : $RESAMPLE_SCHEME"
 python -c "import torch; print(f'GPU: {torch.cuda.is_available()}')"
 echo "============================================"
 
@@ -117,6 +126,15 @@ CMD_ARGS=(
     --seed "$SEED"
 )
 [ "$UNIFORM_NORMALIZE_BY_NSEL" = "true" ] && CMD_ARGS+=(--uniform_normalize_by_nsel)
+if [ "$PARTICLE_FILTER" = "true" ]; then
+    CMD_ARGS+=(
+        --particle_filter
+        --num_particles "$NUM_PARTICLES"
+        --beta_min "$BETA_MIN"
+        --beta_max "$BETA_MAX"
+        --resample_scheme "$RESAMPLE_SCHEME"
+    )
+fi
 
 python scripts/run_mlgd_f.py "${CMD_ARGS[@]}"
 

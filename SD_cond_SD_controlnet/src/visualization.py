@@ -4,6 +4,10 @@ visualization.py — Step-level and final visualizations for MLGD-F.
 Functions:
     plot_row                  Horizontal strip of PIL images with a title.
     visualize_step            Per-DPS-step 2×(2+num_cond+1) grid + wandb log.
+                              In P-MLGD-F (particle-filter) mode, run_mlgd_f.py
+                              calls this once per particle per step (each with
+                              its own wandb_key) for B separate figures, each
+                              with its own PCA plot against the shared target.
     compare_scribbles_heatmap Pixel-difference heatmap between two scribbles.
 """
 
@@ -43,6 +47,7 @@ def visualize_step(
     sd, architect, sprinter, target_clip_np,
     num_cond=4, save_path=None, pca_fixed=None,
     group_names=None, group_sizes=None, controlnet_scale=0.8,
+    wandb_key="step_visualization", commit=True,
 ):
     """
     Generate the per-step visualization grid: 2×(2+num_cond+1) when regular
@@ -70,6 +75,15 @@ def visualize_step(
                           pipeline uses (target-building, guidance, eval), so this
                           plot's samples are conditioned consistently with them
                           (run_mlgd_f.py passes args.controlnet_scale).
+        wandb_key:      wandb log key for this figure. Default matches the
+                        single-trajectory MLGD-F usage; run_mlgd_f.py's
+                        particle-filter mode passes a distinct key per particle
+                        (e.g. "particle_3/step_visualization") so all B
+                        per-particle figures show up as separate panels
+                        instead of overwriting one another.
+        commit:         passed straight to wandb.log. Particle-filter mode
+                        passes False for every particle but the last so all B
+                        figures land under the same step before committing.
     """
     i = sd["step"]
     has_regular = sd.get("latents_step_regular_cpu") is not None
@@ -204,7 +218,7 @@ def visualize_step(
     axes[dps_row, n_cols - 1].axis("on")
 
     plt.tight_layout()
-    wandb.log({"step_visualization": wandb.Image(fig)}, step=i + 1, commit=True)
+    wandb.log({wandb_key: wandb.Image(fig)}, step=i + 1, commit=commit)
 
     if save_path:
         fig.savefig(save_path, dpi=100, bbox_inches="tight")

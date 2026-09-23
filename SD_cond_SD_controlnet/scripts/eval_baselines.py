@@ -444,7 +444,13 @@ def main():
     # ── Avg scribble ──
     print('\nBuilding avg scribble...')
     avg_scribble = build_avg_scribble(cfg, source_scribble, sprinter, hed, device)
+    avg_scribble.save(out_dir / 'scribble_avg.png')
+    print('  Saved scribble_avg.png')
+
+    print('\nBuilding avg scribble (latent)...')
     avg_scribble_latent = build_avg_scribble_latent(cfg, source_scribble, sprinter, hed, device)
+    avg_scribble_latent.save(out_dir / 'scribble_avg_latent.png')
+    print('  Saved scribble_avg_latent.png')
 
     # ── Guided SDEdit scribble ──
     print('\nBuilding guided SDEdit scribble...')

@@ -299,9 +299,13 @@ def build_avg_scribble_latent(cfg, source_scribble, sprinter, hed, device):
             ).images
         avg_latent = frac * latent if avg_latent is None else avg_latent + frac * latent
 
-    with torch.no_grad():
-        portrait = latent_to_pil(avg_latent, sprinter.vae, sprinter.image_processor)
+    # SDXL's VAE overflows to NaN when decoded in fp16 -- the pipeline normally
+    # upcasts to fp32 before its own internal decode, but output_type='latent'
+    # skips that decode entirely, so we upcast by hand before calling it here.
+    # Without this, avg_latent decodes to a solid black image.
     sprinter.vae.to(dtype=torch.float32)
+    with torch.no_grad():
+        portrait = latent_to_pil(avg_latent.float(), sprinter.vae, sprinter.image_processor)
 
     avg_np = np.array(hed(portrait, scribble=True)).astype(np.uint8)
     return Image.fromarray(avg_np)

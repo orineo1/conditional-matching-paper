@@ -1,3 +1,5 @@
+> **This repository is superseded by [orineo1/GlobalConditional](https://github.com/orineo1/GlobalConditional)**, which holds the maintained code for all experiments of the paper. The code here reproduces arXiv v1 (2605.09439) and is no longer updated.
+
 # Inverse Design for Conditional Distribution Matching
 
 ## Overview

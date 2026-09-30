@@ -64,6 +64,7 @@ Each experiment folder (e.g. `experiments/BalancedTarget/`) contains the scribbl
 | `source_portrait.png` | Source portrait used for HED scribble extraction |
 | `sdedit_search.png` | MMD curve over the SDEdit candidate search |
 | `baselines_meta.json` | Timing, MMD scores, and seed info for all baseline candidates |
+| `eval/` | N-sample evaluation of every method (`scripts/eval_all_experiments.py`): `scribbles_all.png`, `target_*.png`, `preview_<method>.png`, `results_table.csv`, `eval_results.json` |
 
 ---
 
@@ -153,15 +154,17 @@ python scripts/run_mlgd_f.py \
 
 ## Baseline evaluation
 
-After running MLGD-F and placing results in `experiments/<ExperimentName>/`, generate
-competing baseline scribbles with a fair time-matched budget:
+Two steps, both on the cluster. Step 1 builds the competing scribbles with a fair
+time-matched budget; step 2 scores every scribble on N generated images.
+
+**Step 1 — build baseline scribbles** (`avg`, `avg_latent`, `avg_prompt`, `sdedit`, `sdedit_best`):
 
 ```bash
 export ENV_PATH=/path/to/your/env
-sbatch slurm/run_eval_baselines.sh SkewedTarget 241      # 241 = MLGD-F runtime in minutes
-sbatch slurm/run_eval_baselines.sh BalancedTarget 241
-sbatch slurm/run_eval_baselines.sh GenderInterpolation 241
-sbatch slurm/run_eval_baselines.sh AgeInterpolation 177
+sbatch run_eval_baselines.sh SkewedTarget 241      # 241 = MLGD-F runtime in minutes
+sbatch run_eval_baselines.sh BalancedTarget 241
+sbatch run_eval_baselines.sh GenderInterpolation 241
+sbatch run_eval_baselines.sh AgeInterpolation 177
 ```
 
 Or run directly:
@@ -172,9 +175,28 @@ python scripts/eval_baselines.py \
     --lgd_cm_minutes 241
 ```
 
-This generates `avg`, `avg_latent`, `avg_prompt`, `sdedit`, and `sdedit_best` scribbles and saves them under
-`experiments/<ExperimentName>/baselines/`. The SDEdit search is given the same
-wall-clock budget as the MLGD-F run.
+This saves the scribbles under `experiments/<ExperimentName>/baselines/`. The SDEdit
+search is given the same wall-clock budget as the MLGD-F run.
+
+**Step 2 — evaluate all methods on N images** (target distribution, MMD / root-MMD / SWD,
+p(male) with 95% CI, previews, results JSON). Scripted port of
+`notebooks/eval_all_experiments.ipynb`:
+
+```bash
+sbatch run_eval_all_experiments.sh BalancedTarget 2000   # one experiment, N=2000
+sbatch run_eval_all_experiments.sh all 2000              # all experiments -> experiments/eval_all_results.json
+sbatch run_eval_all_experiments.sh BalancedTarget 100    # quick smoke test
+```
+
+Or run directly:
+
+```bash
+python scripts/eval_all_experiments.py --experiment BalancedTarget --n_eval 2000
+```
+
+Scribbles are read from `experiments/<Exp>/baselines/` first, then `experiments/<Exp>/`.
+Outputs go to `experiments/<Exp>/eval/` (override with `--output_dir`). Pass
+`--skip_missing` to evaluate whatever scribbles exist instead of failing on a missing one.
 
 ---
 

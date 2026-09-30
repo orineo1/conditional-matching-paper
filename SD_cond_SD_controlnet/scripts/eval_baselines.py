@@ -311,6 +311,54 @@ def build_avg_scribble_latent(cfg, source_scribble, sprinter, hed, device):
     return Image.fromarray(avg_np)
 
 
+def build_avg_scribble_prompt_interp(cfg, source_scribble, sprinter, hed, device):
+    """
+    Interpolates in CLIP TEXT-PROMPT EMBEDDING space: encode each group's prompt
+    once, take the frac-weighted average of (prompt_embeds, pooled_prompt_embeds),
+    and generate a SINGLE image from that one averaged embedding -- unlike
+    build_avg_scribble/_latent, which generate one image PER group and blend
+    those post-hoc (pixels or VAE latents).
+    """
+    SEED     = cfg['seed']
+    cn_scale = cfg['controlnet_scale']
+    mode     = cfg['mode']
+
+    if mode == 'age':
+        ages = list(range(cfg['age_min'], cfg['age_max'], cfg['age_step']))
+        prompts = [
+            f'a superrealistic portrait photograph of a {age}-year-old man, studio lighting, sharp focus, photographic'
+            for age in ages]
+        fracs = [1.0 / len(ages)] * len(ages)
+    else:
+        prompts = [g['prompt'] for g in cfg['groups']]
+        fracs   = [g['frac']   for g in cfg['groups']]
+
+    avg_embeds, avg_pooled = None, None
+    for prompt, frac in zip(prompts, fracs):
+        with torch.no_grad():
+            prompt_embeds, _, pooled_embeds, _ = sprinter.encode_prompt(
+                prompt=prompt, device=device,
+                num_images_per_prompt=1, do_classifier_free_guidance=False,
+            )
+        avg_embeds = frac * prompt_embeds if avg_embeds is None else avg_embeds + frac * prompt_embeds
+        avg_pooled = frac * pooled_embeds if avg_pooled is None else avg_pooled + frac * pooled_embeds
+
+    gen = torch.Generator(device=sprinter.device).manual_seed(SEED)
+    sprinter.vae.to(dtype=torch.float16)
+    with torch.no_grad():
+        portrait = sprinter(
+            prompt_embeds=avg_embeds, pooled_prompt_embeds=avg_pooled,
+            image=[source_scribble],
+            num_inference_steps=2, guidance_scale=0.0,
+            controlnet_conditioning_scale=cn_scale,
+            output_type='pil', generator=gen,
+        ).images[0]
+    sprinter.vae.to(dtype=torch.float32)
+
+    scribble_np = np.array(hed(portrait, scribble=True)).astype(np.uint8)
+    return Image.fromarray(scribble_np)
+
+
 # ── SAVE HELPERS ──────────────────────────────────────────────────────────────
 
 def save_scribble_grid(scribbles_dict, out_dir):
@@ -456,6 +504,11 @@ def main():
     avg_scribble_latent.save(out_dir / 'scribble_avg_latent.png')
     print('  Saved scribble_avg_latent.png')
 
+    print('\nBuilding avg scribble (prompt-embedding interp)...')
+    avg_scribble_prompt = build_avg_scribble_prompt_interp(cfg, source_scribble, sprinter, hed, device)
+    avg_scribble_prompt.save(out_dir / 'scribble_avg_prompt.png')
+    print('  Saved scribble_avg_prompt.png')
+
     # ── Guided SDEdit scribble ──
     print('\nBuilding guided SDEdit scribble...')
     sdedit_scribble = run_sdedit(
@@ -497,6 +550,7 @@ def main():
         'lgd_cm':      lgd_scribble,
         'avg':         avg_scribble,
         'avg_latent':  avg_scribble_latent,
+        'avg_prompt':  avg_scribble_prompt,
         'sdedit':      sdedit_scribble,
         'sdedit_cand0': first_cand,
     }
@@ -560,6 +614,7 @@ def main():
         'source':      source_scribble,
         'avg':         avg_scribble,
         'avg_latent':  avg_scribble_latent,
+        'avg_prompt':  avg_scribble_prompt,
         'sdedit':      sdedit_scribble,
         'sdedit_best': sdedit_best,
         'lgd_cm':      lgd_scribble,
@@ -574,6 +629,7 @@ def main():
         'scribble/source':      wandb.Image(source_scribble),
         'scribble/avg':         wandb.Image(avg_scribble),
         'scribble/avg_latent':  wandb.Image(avg_scribble_latent),
+        'scribble/avg_prompt':  wandb.Image(avg_scribble_prompt),
         'scribble/sdedit':      wandb.Image(sdedit_scribble),
         'scribble/sdedit_best': wandb.Image(sdedit_best),
         'scribble/lgd_cm':      wandb.Image(lgd_scribble),

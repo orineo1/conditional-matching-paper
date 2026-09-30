@@ -56,6 +56,8 @@ Each experiment folder (e.g. `experiments/BalancedTarget/`) contains the scribbl
 | `scribble_source.png` | Source oval scribble used as SDEdit initialisation |
 | `scribble_mlgdd.png` | **MLGD-F (distilled)** output |
 | `scribble_avg.png` | Weighted average of per-group HED scribbles (baseline) |
+| `scribble_avg_latent.png` | Weighted average of per-group VAE latents, decoded once, then HED (baseline) |
+| `scribble_avg_prompt.png` | Single image from the frac-weighted average of the groups' CLIP text embeddings, then HED (baseline) |
 | `scribble_sdedit.png` | Guided SDEdit scribble with a descriptive prompt (baseline) |
 | `scribble_sdedit_best.png` | Best unguided SDEdit candidate over a time-matched search budget (baseline) |
 | `scribbles_all.png` | Side-by-side grid of all scribbles |
@@ -170,7 +172,7 @@ python scripts/eval_baselines.py \
     --lgd_cm_minutes 241
 ```
 
-This generates `avg`, `sdedit`, and `sdedit_best` scribbles and saves them under
+This generates `avg`, `avg_latent`, `avg_prompt`, `sdedit`, and `sdedit_best` scribbles and saves them under
 `experiments/<ExperimentName>/baselines/`. The SDEdit search is given the same
 wall-clock budget as the MLGD-F run.
 
